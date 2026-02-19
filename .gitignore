@@ -1,0 +1,39 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# Virtual environments
+.venv/
+venv/
+backend/.venv/
+
+# Environment files
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# Node
+node_modules/
+backend/node_modules/
+
+# Local runtime / logs
+*.log
+
+# Generated API artifacts (regenerate when needed)
+generated/openapi/openapi.json
+generated/types/api-types.ts
