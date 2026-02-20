@@ -70,6 +70,3 @@ This project is being developed as part of a **Senior Design** course and focuse
 ## License
 
 This project is for educational purposes.
-
-
-
