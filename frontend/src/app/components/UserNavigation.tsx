@@ -17,6 +17,7 @@ export function UserNavigation({
   
   const navItems = [
     { label: "Dashboard", active: activePage === "Dashboard", path: "/user-home" },
+    { label: "Forms", active: activePage === "Forms", path: "/forms" },
     { label: "My Resources", active: activePage === "My Resources", path: "/my-resources" },
     { label: "Promotions & Edits", active: activePage === "Promotions & Edits", path: "/promotions-edits" },
     { label: "User", active: false, secondary: true, path: "#" },
