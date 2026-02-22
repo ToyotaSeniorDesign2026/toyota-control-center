@@ -13,6 +13,7 @@ import PromotionsEdits from "./pages/PromotionsEdits";
 import Forms from "./pages/Forms";
 import ExcelReport from "./pages/ExcelReport";
 import SQLJob from "./pages/SQLJob";
+import PowerPoint from "./pages/PowerPoint";
 import { LoginPage } from "./pages/LoginPage";
 
 // Create the router with all routes
@@ -44,6 +45,10 @@ export const router = createBrowserRouter([
   {
     path: "/sql-job",
     Component: SQLJob,
+  },
+  {
+    path: "/powerpoint",
+    Component: PowerPoint,
   },
   {
     path: "/",
