@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
-import { Send, Sparkles, PenSquare, FileSpreadsheet } from "lucide-react";
+import { Send, Sparkles, PenSquare, FileSpreadsheet, Database } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
@@ -177,6 +177,29 @@ export default function UserHome() {
                 className="gap-2 bg-[#ed0923] text-white hover:bg-[#d10820]"
               >
                 Open Excel Form
+              </Button>
+            </div>
+          </div>
+
+          {/* SQL Job Form Entry */}
+          <div className="rounded-lg border border-red-200 bg-red-50 shadow-sm">
+            <div className="flex flex-col gap-4 p-6 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#ed0923]">
+                  <Database className="h-5 w-5 text-white" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-semibold text-gray-900">SQL Job</h2>
+                  <p className="mt-1 text-sm text-gray-600">
+                    Use the guided form to schedule recurring SQL jobs.
+                  </p>
+                </div>
+              </div>
+              <Button
+                onClick={() => navigate("/sql-job")}
+                className="gap-2 bg-[#ed0923] text-white hover:bg-[#d10820]"
+              >
+                Open SQL Form
               </Button>
             </div>
           </div>
