@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Send, Sparkles, PenSquare } from "lucide-react";
+import { useNavigate } from "react-router";
+import { Send, Sparkles, PenSquare, FileSpreadsheet } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
@@ -19,6 +20,7 @@ export default function UserHome() {
   >([]);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
+  const navigate = useNavigate();
 
   const handleSend = () => {
     if (message.trim()) {
@@ -57,7 +59,7 @@ export default function UserHome() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <UserNavigation 
+      <UserNavigation
         activePage="Dashboard"
         onProfileClick={() => setIsProfileOpen(true)}
       />
@@ -156,6 +158,29 @@ export default function UserHome() {
             </div>
           </div>
 
+          {/* Excel Report Form Entry */}
+          <div className="rounded-lg border border-red-200 bg-red-50 shadow-sm">
+            <div className="flex flex-col gap-4 p-6 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#ed0923]">
+                  <FileSpreadsheet className="h-5 w-5 text-white" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-semibold text-gray-900">Excel Report Job</h2>
+                  <p className="mt-1 text-sm text-gray-600">
+                    Use the guided form to create recurring Excel report jobs.
+                  </p>
+                </div>
+              </div>
+              <Button
+                onClick={() => navigate("/excel-report")}
+                className="gap-2 bg-[#ed0923] text-white hover:bg-[#d10820]"
+              >
+                Open Excel Form
+              </Button>
+            </div>
+          </div>
+
           {/* Manual Resource Creation Section */}
           <div className="rounded-lg border-2 border-dashed border-gray-300 bg-white shadow-sm">
             <div className="p-6">
@@ -185,13 +210,13 @@ export default function UserHome() {
           </div>
         </div>
       </main>
-      
-      <UserProfilePanel 
-        isOpen={isProfileOpen} 
-        onClose={() => setIsProfileOpen(false)} 
+
+      <UserProfilePanel
+        isOpen={isProfileOpen}
+        onClose={() => setIsProfileOpen(false)}
       />
-      
-      <ManualResourceCreationModal 
+
+      <ManualResourceCreationModal
         isOpen={isManualModalOpen}
         onClose={() => setIsManualModalOpen(false)}
       />

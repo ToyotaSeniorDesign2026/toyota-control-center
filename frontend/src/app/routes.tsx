@@ -10,6 +10,7 @@ import Profile from "./pages/Profile";
 import UserHome from "./pages/UserHome";
 import MyResources from "./pages/MyResources";
 import PromotionsEdits from "./pages/PromotionsEdits";
+import ExcelReport from "./pages/ExcelReport";
 import { LoginPage } from "./pages/LoginPage";
 
 // Create the router with all routes
@@ -29,6 +30,10 @@ export const router = createBrowserRouter([
   {
     path: "/promotions-edits",
     Component: PromotionsEdits,
+  },
+  {
+    path: "/excel-report",
+    Component: ExcelReport,
   },
   {
     path: "/",
