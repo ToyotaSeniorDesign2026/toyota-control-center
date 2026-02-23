@@ -1,0 +1,32 @@
+{
+  "2111.09854v1": {
+    "title": "Towards semi-classical analysis for sub-elliptic operators",
+    "authors": [
+      "Veronique Fischer"
+    ],
+    "summary": "We discuss the recent developments of semi-classical and micro-local analysis in the context of nilpotent Lie groups and for sub-elliptic operators. In particular, we give an overview of pseudo-differential calculi recently defined on nilpotent Lie groups as well as of the notion of quantum limits in the Euclidean and nilpotent cases.",
+    "pdf_url": "https://arxiv.org/pdf/2111.09854v1",
+    "published": "2021-11-18"
+  },
+  "cs/0306115v1": {
+    "title": "D0 Regional Analysis Center Concepts",
+    "authors": [
+      "L. Lueking",
+      "representing the D0 Remote Analysis Task Force"
+    ],
+    "summary": "The D0 experiment is facing many exciting challenges providing a computing environment for its worldwide collaboration. Transparent access to data for processing and analysis has been enabled through deployment of its SAM system to collaborating sites and additional functionality will be provided soon with SAMGrid components. In order to maximize access to global storage, computational and intellectual resources, and to enable the system to scale to the large demands soon to be realized, several strategic sites have been identified as Regional Analysis Centers (RAC's). These sites play an expanded role within the system. The philosophy and function of these centers is discussed and details of their composition and operation are outlined. The plan for future additional centers is also addressed.",
+    "pdf_url": "https://arxiv.org/pdf/cs/0306115v1",
+    "published": "2003-06-19"
+  },
+  "0811.0600v2": {
+    "title": "Asymptotic analysis and diffusion limit of the Persistent Turning Walker Model",
+    "authors": [
+      "Patrick Cattiaux",
+      "Djalil Chafai",
+      "S\u00e9bastien Motsch"
+    ],
+    "summary": "The Persistent Turning Walker Model (PTWM) was introduced by Gautrais et al in Mathematical Biology for the modelling of fish motion. It involves a nonlinear pathwise functional of a non-elliptic hypo-elliptic diffusion. This diffusion solves a kinetic Fokker-Planck equation based on an Ornstein-Uhlenbeck Gaussian process. The long time \"diffusive\" behavior of this model was recently studied by Degond & Motsch using partial differential equations techniques. This model is however intrinsically probabilistic. In the present paper, we show how the long time diffusive behavior of this model can be essentially recovered and extended by using appropriate tools from stochastic analysis. The approach can be adapted to many other kinetic \"probabilistic\" models.",
+    "pdf_url": "https://arxiv.org/pdf/0811.0600v2",
+    "published": "2008-11-04"
+  }
+}

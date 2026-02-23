@@ -1,0 +1,7 @@
+WikiEval
+EVOR-BENCH
+SciTLDR
+MTEB
+GenEval
+DPG-Bench
+Midjourney-30K
