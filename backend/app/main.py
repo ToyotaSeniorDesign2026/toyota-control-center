@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.api.routers import audit, auth, discovery, integrations, logs, policy, resources, runs
+from app.api.routers import audit, auth, integrations, policy, resources, runs
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.middleware.audit_middleware import AuditMiddleware
@@ -16,9 +16,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth.router, prefix="/auth", tags=["auth"])
     app.include_router(resources.router, prefix="/resources", tags=["resources-registry"])
-    app.include_router(discovery.router, prefix="/discovery", tags=["discovery"])
     app.include_router(runs.router, prefix="/runs", tags=["run-orchestration"])
-    app.include_router(logs.router, prefix="/logging", tags=["logging"])
 
     app.include_router(policy.router, prefix="/policy", tags=["policy"])
     app.include_router(audit.router, prefix="/audit", tags=["audit"])
