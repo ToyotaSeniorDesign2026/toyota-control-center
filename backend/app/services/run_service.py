@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import HTTPException, status
 
 from app.core.db import new_id, now_iso
-from app.schemas.run import PromotionStatusOut, RunCreate
+from app.schemas.run import RunCreate
 from app.services.approval_service import create_approval_request
 from app.services.audit_service import write_audit
 from app.services.connector_service import execute_resource
@@ -113,52 +113,32 @@ def list_runs(db, user):
     return [r for r in runs if r["requested_by"] == user.id]
 
 
-def promote_run(
+def query_runs(
     db,
     user,
-    run_id: str,
-    target_environment: str,
-    git_ref: str | None = None,
-    pr_number: int | None = None,
-    commit_sha: str | None = None,
+    resource_id: str | None = None,
+    status: str | None = None,
+    updated_since: str | None = None,
+    limit: int = 200,
+    cursor: str | None = None,
 ):
-    run = get_run(db, user, run_id)
-    if target_environment not in {"dev", "semi-prod", "prod"}:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid target environment")
+    runs = sorted(list_runs(db, user), key=lambda r: r["updated_at"], reverse=True)
 
-    run["target_environment"] = target_environment
-    run["status"] = "promotion_requested"
-    run["promotion_status"] = "queued"
-    run["git_ref"] = git_ref
-    run["pr_number"] = pr_number
-    run["commit_sha"] = commit_sha
-    run["updated_at"] = now_iso()
+    if resource_id:
+        runs = [r for r in runs if r["resource_id"] == resource_id]
+    if status:
+        runs = [r for r in runs if r["status"].lower() == status.lower()]
+    if updated_since:
+        runs = [r for r in runs if r["updated_at"] >= updated_since]
 
-    append_run_log(
-        db,
-        run_id,
-        "INFO",
-        "Promotion requested",
-        {
-            "target_environment": target_environment,
-            "git_ref": git_ref,
-            "pr_number": pr_number,
-            "commit_sha": commit_sha,
-        },
-    )
-    write_audit(
-        db,
-        user,
-        "RUN_PROMOTION_REQUESTED",
-        {
-            "run_id": run_id,
-            "target_environment": target_environment,
-            "git_ref": git_ref,
-            "pr_number": pr_number,
-            "commit_sha": commit_sha,
-        },
-    )
-    return run
+    start = int(cursor) if cursor is not None else 0
+    items = runs[start : start + limit]
+    next_cursor = str(start + len(items)) if start + len(items) < len(runs) else None
+
+    return {
+        "items": items,
+        "next_cursor": next_cursor,
+    }
 
 
 def stop_run(db, user, run_id: str):
@@ -184,19 +164,3 @@ def retry_run(db, user, run_id: str):
     append_run_log(db, run_id, "INFO", "Retry requested", {"new_run": True})
     write_audit(db, user, "RUN_RETRY_REQUESTED", {"run_id": run_id})
     return create_run_and_maybe_execute(db, user, payload)
-
-
-def get_run_promotion_status(db, user, run_id: str) -> PromotionStatusOut:
-    run = get_run(db, user, run_id)
-    return PromotionStatusOut(
-        run_id=run["id"],
-        resource_id=run["resource_id"],
-        promotion_status=run.get("promotion_status") or "not_requested",
-        target_environment=run["target_environment"],
-        git_ref=run.get("git_ref"),
-        pr_number=run.get("pr_number"),
-        commit_sha=run.get("commit_sha"),
-        workflow_run_id=run.get("workflow_run_id"),
-        workflow_url=run.get("workflow_url"),
-        updated_at=run["updated_at"],
-    )

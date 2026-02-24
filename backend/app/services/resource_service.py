@@ -40,6 +40,7 @@ def _last_run_for_resource(db, resource_id: str) -> dict | None:
 
 def _enrich_resource(db, resource: dict) -> dict:
     item = dict(resource)
+    item.setdefault("kind", "runtime")
     owner = db.users.get(item["owner_id"])
     item["owner_name"] = owner["name"] if owner else None
 
@@ -66,6 +67,7 @@ def create_resource(db, user, payload: ResourceCreate):
     resource = {
         "id": resource_id,
         "name": payload.name,
+        "kind": payload.kind,
         "type": payload.type,
         "connector": payload.connector,
         "owner_id": user.id,
@@ -97,6 +99,50 @@ def update_resource(db, user, resource_id: str, payload: ResourceUpdate):
     return _enrich_resource(db, resource)
 
 
+def delete_resource(db, user, resource_id: str):
+    resource = db.resources.get(resource_id)
+    if not resource:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+    if not _can_access(user, resource):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
+
+    related_run_ids = [run_id for run_id, run in db.runs.items() if run["resource_id"] == resource_id]
+    for run_id in related_run_ids:
+        db.runs.pop(run_id, None)
+        db.run_logs.pop(run_id, None)
+    db.resources.pop(resource_id, None)
+    write_audit(db, user, "RESOURCE_DELETED", {"resource_id": resource_id, "deleted_runs": len(related_run_ids)})
+
+
+def apply_resource_action(db, user, resource_id: str, action: str):
+    resource = db.resources.get(resource_id)
+    if not resource:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+    if not _can_access(user, resource):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
+
+    action_l = action.lower()
+    status_map = {
+        "activate": "healthy",
+        "pause": "paused",
+        "deploy": "deploying",
+        "archive": "archived",
+    }
+    if action_l not in status_map:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unsupported resource action")
+
+    if action_l == "deploy" and resource.get("kind") != "artifact":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Deploy action is only valid for artifact resources",
+        )
+
+    resource["status"] = status_map[action_l]
+    resource["updated_at"] = now_iso()
+    write_audit(db, user, "RESOURCE_ACTION_APPLIED", {"resource_id": resource_id, "action": action_l})
+    return _enrich_resource(db, resource)
+
+
 def get_resource(db, user, resource_id: str):
     resource = db.resources.get(resource_id)
     if not resource:
@@ -119,6 +165,7 @@ def query_resources(
     db,
     user,
     q: str | None = None,
+    kind: str | None = None,
     type: str | None = None,
     status: str | None = None,
     risk_level: str | None = None,
@@ -139,9 +186,13 @@ def query_resources(
             for r in resources
             if ql in r["name"].lower()
             or ql in r["id"].lower()
+            or ql in (r.get("kind") or "").lower()
+            or ql in r["type"].lower()
             or ql in (r.get("owner_name") or "").lower()
             or any(ql in tag.lower() for tag in r.get("tags", []))
         ]
+    if kind:
+        resources = [r for r in resources if (r.get("kind") or "").lower() == kind.lower()]
     if type:
         resources = [r for r in resources if r["type"].lower() == type.lower()]
     if status:
@@ -193,6 +244,7 @@ def search_resources(db, user, q: str | None = None, type: str | None = None, st
         db,
         user,
         q=q,
+        kind=None,
         type=type,
         status=status,
         env=env,
@@ -210,6 +262,7 @@ def import_resources_from_github(db, user, payload: ImportGithubRequest):
     resource = {
         "id": resource_id,
         "name": f"{generated_name}-{payload.resource_type}",
+        "kind": "runtime",
         "type": payload.resource_type,
         "connector": "github",
         "owner_id": user.id,
@@ -232,41 +285,4 @@ def import_resources_from_github(db, user, payload: ImportGithubRequest):
     return {
         "imported_count": 1,
         "resources": [_enrich_resource(db, resource)],
-    }
-
-
-def get_resource_promotion_status(db, user, resource_id: str):
-    resource = db.resources.get(resource_id)
-    if not resource:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
-    if not _can_access(user, resource):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
-
-    resource_runs = [r for r in db.runs.values() if r["resource_id"] == resource_id]
-    if not resource_runs:
-        return {
-            "resource_id": resource_id,
-            "promotion_status": "not_requested",
-            "latest_run_id": None,
-            "target_environment": resource["environment"],
-            "git_ref": None,
-            "pr_number": None,
-            "commit_sha": None,
-            "workflow_run_id": None,
-            "workflow_url": None,
-            "updated_at": resource["updated_at"],
-        }
-
-    latest = sorted(resource_runs, key=lambda r: r["updated_at"], reverse=True)[0]
-    return {
-        "resource_id": resource_id,
-        "promotion_status": latest.get("promotion_status") or "not_requested",
-        "latest_run_id": latest["id"],
-        "target_environment": latest["target_environment"],
-        "git_ref": latest.get("git_ref"),
-        "pr_number": latest.get("pr_number"),
-        "commit_sha": latest.get("commit_sha"),
-        "workflow_run_id": latest.get("workflow_run_id"),
-        "workflow_url": latest.get("workflow_url"),
-        "updated_at": latest["updated_at"],
     }

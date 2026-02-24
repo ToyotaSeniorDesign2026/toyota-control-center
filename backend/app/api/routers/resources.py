@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 
 from app.api.deps import get_current_user, get_db
 from app.schemas.resource import (
@@ -9,17 +9,11 @@ from app.schemas.resource import (
     ResourceCreate,
     ResourceListOut,
     ResourceOut,
-    ResourcePromotionStatusOut,
     ResourceUpdate,
 )
-from app.services.resource_service import (
-    create_resource,
-    get_resource,
-    get_resource_promotion_status,
-    import_resources_from_github,
-    query_resources,
-    update_resource,
-)
+from app.schemas.run import RunCreate, RunCreateRequest, RunOut
+from app.services.resource_service import apply_resource_action, create_resource, delete_resource, get_resource, import_resources_from_github, query_resources, update_resource
+from app.services.run_service import create_run_and_maybe_execute
 
 router = APIRouter()
 
@@ -39,19 +33,42 @@ def patch_resource(resource_id: str, payload: ResourceUpdate, db=Depends(get_db)
     return update_resource(db, user, resource_id, payload)
 
 
+@router.delete("/{resource_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_resource(resource_id: str, db=Depends(get_db), user=Depends(get_current_user)):
+    delete_resource(db, user, resource_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get("/{resource_id}", response_model=ResourceOut)
 def read_resource(resource_id: str, db=Depends(get_db), user=Depends(get_current_user)):
     return get_resource(db, user, resource_id)
 
 
-@router.get("/{resource_id}/promotion-status", response_model=ResourcePromotionStatusOut)
-def read_resource_promotion_status(resource_id: str, db=Depends(get_db), user=Depends(get_current_user)):
-    return get_resource_promotion_status(db, user, resource_id)
+@router.post("/{resource_id}/actions/{action}", response_model=ResourceOut)
+def resource_action(resource_id: str, action: str, db=Depends(get_db), user=Depends(get_current_user)):
+    return apply_resource_action(db, user, resource_id, action)
+
+
+@router.post("/{resource_id}/runs", response_model=RunOut, status_code=status.HTTP_201_CREATED)
+def create_resource_run(
+    resource_id: str,
+    payload: RunCreateRequest,
+    db=Depends(get_db),
+    user=Depends(get_current_user),
+):
+    run_payload = RunCreate(
+        resource_id=resource_id,
+        action=payload.action,
+        target_environment=payload.target_environment,
+        params=payload.params,
+    )
+    return create_run_and_maybe_execute(db, user, run_payload)
 
 
 @router.get("", response_model=ResourceListOut)
 def read_resources(
     q: str | None = Query(default=None),
+    kind: str | None = Query(default=None),
     type: str | None = Query(default=None),
     status: str | None = Query(default=None),
     risk_level: str | None = Query(default=None),
@@ -69,6 +86,7 @@ def read_resources(
         db,
         user,
         q=q,
+        kind=kind,
         type=type,
         status=status,
         risk_level=risk_level,

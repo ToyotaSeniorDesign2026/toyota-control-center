@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
 class ResourceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+    kind: Literal["runtime", "artifact"] = "runtime"
     type: str = Field(min_length=1, max_length=80)
     connector: str = Field(min_length=1, max_length=80)
     environment: str = Field(default="dev")
@@ -15,6 +18,8 @@ class ResourceCreate(BaseModel):
 
 class ResourceUpdate(BaseModel):
     name: str | None = None
+    kind: Literal["runtime", "artifact"] | None = None
+    type: str | None = None
     connector: str | None = None
     environment: str | None = None
     config: dict | None = None
@@ -28,6 +33,7 @@ class ResourceOut(BaseModel):
 
     id: str
     name: str
+    kind: Literal["runtime", "artifact"]
     type: str
     connector: str
     owner_id: str
@@ -52,19 +58,6 @@ class ResourceListOut(BaseModel):
     page: int
     page_size: int
     has_more: bool
-
-
-class ResourcePromotionStatusOut(BaseModel):
-    resource_id: str
-    promotion_status: str
-    latest_run_id: str | None = None
-    target_environment: str
-    git_ref: str | None = None
-    pr_number: int | None = None
-    commit_sha: str | None = None
-    workflow_run_id: str | None = None
-    workflow_url: str | None = None
-    updated_at: str
 
 
 class ImportGithubRequest(BaseModel):
