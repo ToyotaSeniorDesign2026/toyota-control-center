@@ -1,8 +1,12 @@
 from fastapi import Depends
 
-from app.core.db import get_db
+from app.core.database import get_db_session
 from app.core.rbac import require_role
 from app.core.security import get_current_user
+
+
+def get_db():
+    yield from get_db_session()
 
 
 def require_root(user=Depends(get_current_user)):

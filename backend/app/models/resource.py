@@ -11,6 +11,7 @@ class Resource(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(24), nullable=False, default="runtime", index=True)
     type: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
     connector: Mapped[str] = mapped_column(String(80), nullable=False)
     owner_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)

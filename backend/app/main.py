@@ -2,6 +2,7 @@ from fastapi import FastAPI
 
 from app.api.routers import audit, auth, integrations, policy, resources, runs
 from app.core.config import settings
+from app.core.database import init_db
 from app.core.logging import setup_logging
 from app.middleware.audit_middleware import AuditMiddleware
 from app.middleware.request_id import RequestIdMiddleware
@@ -9,6 +10,7 @@ from app.middleware.request_id import RequestIdMiddleware
 
 def create_app() -> FastAPI:
     setup_logging()
+    init_db()
     app = FastAPI(title=settings.app_name, version=settings.app_version)
 
     app.add_middleware(RequestIdMiddleware)
