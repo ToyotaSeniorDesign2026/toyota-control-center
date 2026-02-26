@@ -12,7 +12,7 @@ from app.schemas.run import RunCreate
 from app.services.approval_service import create_approval_request
 from app.services.audit_service import write_audit
 from app.services.connector_service import execute_resource
-from app.services.log_service import append_run_log
+from app.services.log_service import append_run_log, sync_run_execution_status
 from app.services.policy_service import evaluate_run_request
 
 
@@ -128,6 +128,7 @@ def create_run_and_maybe_execute(db: Session, user, payload: RunCreate):
     db.add(run)
     db.commit()
     db.refresh(run)
+    sync_run_execution_status(db, run)
     append_run_log(db, run_id, "INFO", "Run created", {"resource_id": payload.resource_id})
 
     decision = evaluate_run_request(db, user, _run_to_out(run))
@@ -141,6 +142,7 @@ def create_run_and_maybe_execute(db: Session, user, payload: RunCreate):
         db.add(run)
         db.commit()
         db.refresh(run)
+        sync_run_execution_status(db, run)
         append_run_log(db, run_id, "WARN", "Run blocked by policy", {"decision": decision.model_dump()})
         write_audit(db, user, "RUN_GATED", {"run_id": run_id, "status": "blocked"})
         return _run_to_out(run)
@@ -151,6 +153,7 @@ def create_run_and_maybe_execute(db: Session, user, payload: RunCreate):
         db.add(run)
         db.commit()
         db.refresh(run)
+        sync_run_execution_status(db, run)
         append_run_log(db, run_id, "WARN", "Run waiting for approval", {"approval_id": approval["id"]})
         write_audit(db, user, "RUN_GATED", {"run_id": run_id, "status": "pending_approval"})
         return _run_to_out(run)
@@ -161,6 +164,7 @@ def create_run_and_maybe_execute(db: Session, user, payload: RunCreate):
     db.add(run)
     db.commit()
     db.refresh(run)
+    sync_run_execution_status(db, run)
     append_run_log(db, run_id, "INFO", f"{initial_exec_status.title()} started")
 
     result = execute_resource(db, user, _run_to_out(run))
@@ -176,6 +180,7 @@ def create_run_and_maybe_execute(db: Session, user, payload: RunCreate):
     db.add(run)
     db.commit()
     db.refresh(run)
+    sync_run_execution_status(db, run)
 
     append_run_log(
         db,
@@ -252,6 +257,7 @@ def stop_run(db: Session, user, run_id: str):
     db.add(run)
     db.commit()
     db.refresh(run)
+    sync_run_execution_status(db, run)
     append_run_log(db, run_id, "WARN", "Run stopped by user")
     write_audit(db, user, "RUN_STOPPED", {"run_id": run_id})
     return _run_to_out(run)

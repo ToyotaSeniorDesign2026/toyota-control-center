@@ -7,6 +7,7 @@ from app.core.db import new_id, now_iso
 from app.models.approval import Approval
 from app.models.run import Run
 from app.services.audit_service import write_audit
+from app.services.log_service import sync_run_execution_status
 
 
 def _approval_to_out(approval: Approval) -> dict:
@@ -60,6 +61,8 @@ def approve_request(db: Session, admin, approval_id: str):
     db.add(approval)
     db.commit()
     db.refresh(approval)
+    if run:
+        sync_run_execution_status(db, run)
 
     write_audit(db, admin, "APPROVAL_GRANTED", {"approval_id": approval_id, "run_id": approval.run_id})
     return _approval_to_out(approval)

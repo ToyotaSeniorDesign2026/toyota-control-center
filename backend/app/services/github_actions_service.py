@@ -7,7 +7,7 @@ from app.models.audit_event import WorkflowEvent
 from app.models.run import Run
 from app.schemas.integrations import GithubActionsWebhookPayload
 from app.services.audit_service import write_audit
-from app.services.log_service import append_run_log
+from app.services.log_service import append_run_log, sync_run_execution_status
 
 
 _ALLOWED_STATUSES = {"queued", "in_progress", "success", "failed", "cancelled"}
@@ -81,6 +81,7 @@ def handle_github_actions_webhook(db: Session, payload: GithubActionsWebhookPayl
 
     db.add(matched_run)
     db.commit()
+    sync_run_execution_status(db, matched_run)
 
     append_run_log(
         db,

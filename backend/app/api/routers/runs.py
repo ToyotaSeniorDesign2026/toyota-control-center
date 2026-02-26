@@ -8,8 +8,8 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_current_user, get_db
-from app.schemas.run import RunListOut, RunLogsOut, RunOut, RunStatusOut
-from app.services.log_service import get_run_events, get_run_logs, get_run_status
+from app.schemas.run import RunListOut, RunLogsOut, RunLogsPurgeOut, RunOut, RunStatusOut
+from app.services.log_service import get_run_events, get_run_logs, get_run_status, purge_run_logs
 from app.services.run_service import (
     get_run,
     query_runs,
@@ -60,6 +60,11 @@ def read_logs(
     user=Depends(get_current_user),
 ):
     return get_run_logs(db, user, run_id=run_id, limit=limit, cursor=cursor)
+
+
+@router.delete("/{run_id}/logs", response_model=RunLogsPurgeOut)
+def delete_logs(run_id: str, db=Depends(get_db), user=Depends(get_current_user)):
+    return purge_run_logs(db, user, run_id=run_id)
 
 
 @router.get("/{run_id}/events/stream")
