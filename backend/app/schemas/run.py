@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Pydantic schemas for run creation, run state views, logs, and event payloads."""
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -68,3 +70,8 @@ class RunStatusOut(BaseModel):
 class RunListOut(BaseModel):
     items: list[RunOut]
     next_cursor: str | None = None
+
+
+class RunEventOut(BaseModel):
+    event: str
+    data: dict = Field(default_factory=dict)

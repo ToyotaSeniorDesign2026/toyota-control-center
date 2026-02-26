@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Resource service layer: SQL-backed resource CRUD, filtering, and runtime/artifact actions."""
+
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -9,6 +11,7 @@ from app.models.run import Run
 from app.models.user import User
 from app.schemas.resource import ImportGithubRequest, ResourceCreate, ResourceUpdate
 from app.services.audit_service import write_audit
+from app.services.resource_type_service import get_resource_type_contract, validate_resource_contract
 
 
 def _can_access(user, resource: Resource) -> bool:
@@ -82,7 +85,17 @@ def _resource_to_out(db: Session, resource: Resource) -> dict:
     }
 
 
+def _require_kind(resource: Resource, expected_kind: str):
+    if (resource.kind or "runtime") != expected_kind:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Resource kind must be '{expected_kind}' for this endpoint",
+        )
+
+
 def create_resource(db: Session, user, payload: ResourceCreate):
+    validate_resource_contract(payload.kind, payload.type, payload.config)
+
     resource_id = new_id("res")
     ts = now_iso()
     resource = Resource(
@@ -116,6 +129,11 @@ def update_resource(db: Session, user, resource_id: str, payload: ResourceUpdate
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
 
     updates = payload.model_dump(exclude_unset=True)
+    candidate_kind = updates.get("kind", resource.kind)
+    candidate_type = updates.get("type", resource.type)
+    candidate_config = updates.get("config", resource.config or {})
+    validate_resource_contract(candidate_kind, candidate_type, candidate_config)
+
     for key, value in updates.items():
         setattr(resource, key, value)
     resource.updated_at = now_iso()
@@ -156,14 +174,15 @@ def apply_resource_action(db: Session, user, resource_id: str, action: str):
         "activate": "healthy",
         "pause": "paused",
         "deploy": "deploying",
+        "publish": "published",
         "archive": "archived",
     }
     if action_l not in status_map:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unsupported resource action")
-    if action_l == "deploy" and resource.kind != "artifact":
+    if action_l in {"deploy", "publish"} and resource.kind != "artifact":
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Deploy action is only valid for artifact resources",
+            detail="Deploy/publish actions are only valid for artifact resources",
         )
 
     resource.status = status_map[action_l]
@@ -173,6 +192,154 @@ def apply_resource_action(db: Session, user, resource_id: str, action: str):
     db.refresh(resource)
     write_audit(db, user, "RESOURCE_ACTION_APPLIED", {"resource_id": resource_id, "action": action_l})
     return _resource_to_out(db, resource)
+
+
+def get_runtime_status(db: Session, user, resource_id: str):
+    resource = db.get(Resource, resource_id)
+    if not resource:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+    if not _can_access(user, resource):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
+    _require_kind(resource, "runtime")
+
+    latest_run = _last_run_for_resource(db, resource.id)
+    cfg = resource.config or {}
+    return {
+        "resource_id": resource.id,
+        "status": resource.status,
+        "last_run_id": latest_run.id if latest_run else None,
+        "last_run_status": latest_run.status if latest_run else None,
+        "last_heartbeat_at": cfg.get("last_heartbeat_at"),
+        "schedule": cfg.get("schedule"),
+        "updated_at": resource.updated_at,
+    }
+
+
+def get_runtime_health(db: Session, user, resource_id: str):
+    status_out = get_runtime_status(db, user, resource_id)
+    return {
+        "resource_id": status_out["resource_id"],
+        "health": status_out["status"],
+        "updated_at": status_out["updated_at"],
+    }
+
+
+def heartbeat_runtime_resource(db: Session, user, resource_id: str):
+    resource = db.get(Resource, resource_id)
+    if not resource:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+    if not _can_access(user, resource):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
+    _require_kind(resource, "runtime")
+    contract = get_resource_type_contract(resource.type)
+    if contract and not contract["run_capabilities"].get("supports_heartbeat", False):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Type '{resource.type}' does not support heartbeat",
+        )
+
+    cfg = dict(resource.config or {})
+    cfg["last_heartbeat_at"] = now_iso()
+    resource.config = cfg
+    resource.updated_at = now_iso()
+    db.add(resource)
+    db.commit()
+    db.refresh(resource)
+    write_audit(db, user, "RESOURCE_HEARTBEAT_RECORDED", {"resource_id": resource_id})
+    return get_runtime_status(db, user, resource_id)
+
+
+def get_runtime_schedule(db: Session, user, resource_id: str):
+    resource = db.get(Resource, resource_id)
+    if not resource:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+    if not _can_access(user, resource):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
+    _require_kind(resource, "runtime")
+    cfg = resource.config or {}
+    return {
+        "resource_id": resource.id,
+        "schedule": cfg.get("schedule"),
+        "updated_at": resource.updated_at,
+    }
+
+
+def set_runtime_schedule(db: Session, user, resource_id: str, schedule: str):
+    resource = db.get(Resource, resource_id)
+    if not resource:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+    if not _can_access(user, resource):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
+    _require_kind(resource, "runtime")
+    contract = get_resource_type_contract(resource.type)
+    if contract and not contract["run_capabilities"].get("supports_schedule", False):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Type '{resource.type}' does not support schedules",
+        )
+
+    cfg = dict(resource.config or {})
+    cfg["schedule"] = schedule
+    resource.config = cfg
+    resource.updated_at = now_iso()
+    db.add(resource)
+    db.commit()
+    db.refresh(resource)
+    write_audit(db, user, "RESOURCE_SCHEDULE_UPDATED", {"resource_id": resource_id, "schedule": schedule})
+    return {
+        "resource_id": resource.id,
+        "schedule": schedule,
+        "updated_at": resource.updated_at,
+    }
+
+
+def get_artifact_version(db: Session, user, resource_id: str):
+    resource = db.get(Resource, resource_id)
+    if not resource:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+    if not _can_access(user, resource):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
+    _require_kind(resource, "artifact")
+    cfg = resource.config or {}
+    return {
+        "resource_id": resource.id,
+        "version": cfg.get("version", "v1"),
+        "status": resource.status,
+        "updated_at": resource.updated_at,
+    }
+
+
+def set_artifact_version(db: Session, user, resource_id: str, version: str):
+    resource = db.get(Resource, resource_id)
+    if not resource:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+    if not _can_access(user, resource):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
+    _require_kind(resource, "artifact")
+
+    cfg = dict(resource.config or {})
+    cfg["version"] = version
+    validate_resource_contract(resource.kind, resource.type, cfg)
+    resource.config = cfg
+    resource.updated_at = now_iso()
+    db.add(resource)
+    db.commit()
+    db.refresh(resource)
+    write_audit(db, user, "ARTIFACT_VERSION_UPDATED", {"resource_id": resource_id, "version": version})
+    return {
+        "resource_id": resource.id,
+        "version": version,
+        "status": resource.status,
+        "updated_at": resource.updated_at,
+    }
+
+
+def artifact_deploy(db: Session, user, resource_id: str):
+    return apply_resource_action(db, user, resource_id, "deploy")
+
+
+def artifact_publish(db: Session, user, resource_id: str):
+    return apply_resource_action(db, user, resource_id, "publish")
 
 
 def get_resource(db: Session, user, resource_id: str):
@@ -292,6 +459,13 @@ def import_resources_from_github(db: Session, user, payload: ImportGithubRequest
     resource_id = new_id("res")
     generated_name = payload.path.split("/")[-1] if payload.path else payload.repo.split("/")[-1]
 
+    config = {
+        "repo": payload.repo,
+        "path": payload.path,
+        "ref": payload.ref,
+    }
+    validate_resource_contract("runtime", payload.resource_type, config)
+
     resource = Resource(
         id=resource_id,
         name=f"{generated_name}-{payload.resource_type}",
@@ -303,11 +477,7 @@ def import_resources_from_github(db: Session, user, payload: ImportGithubRequest
         environment="dev",
         status="healthy",
         data_sensitivity="low",
-        config={
-            "repo": payload.repo,
-            "path": payload.path,
-            "ref": payload.ref,
-        },
+        config=config,
         tags=["github-import"],
         created_at=ts,
         updated_at=ts,

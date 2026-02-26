@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Run logging/polling service: append logs, fetch run status/logs, and build event payloads."""
+
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -78,4 +80,15 @@ def get_run_status(db: Session, user, run_id: str):
         "risk_level": run.risk_level,
         "requires_approval": run.requires_approval,
         "updated_at": run.updated_at,
+    }
+
+
+def get_run_events(db: Session, user, run_id: str, cursor: str | None = None, limit: int = 200):
+    status_evt = get_run_status(db, user, run_id)
+    logs_out = get_run_logs(db, user, run_id, limit=limit, cursor=cursor)
+    events = [{"event": "run.status", "data": status_evt}]
+    events.extend({"event": "run.log", "data": log} for log in logs_out["logs"])
+    return {
+        "events": events,
+        "next_cursor": logs_out["next_cursor"],
     }

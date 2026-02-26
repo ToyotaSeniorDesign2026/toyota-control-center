@@ -1,6 +1,8 @@
+"""FastAPI app entrypoint and router wiring for the control-plane API."""
+
 from fastapi import FastAPI
 
-from app.api.routers import audit, auth, integrations, policy, resources, runs
+from app.api.routers import audit, auth, integrations, policy, resource_types, resources, runs
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.logging import setup_logging
@@ -17,6 +19,7 @@ def create_app() -> FastAPI:
     app.add_middleware(AuditMiddleware)
 
     app.include_router(auth.router, prefix="/auth", tags=["auth"])
+    app.include_router(resource_types.router, prefix="/resource-types", tags=["resource-types"])
     app.include_router(resources.router, prefix="/resources", tags=["resources-registry"])
     app.include_router(runs.router, prefix="/runs", tags=["run-orchestration"])
 

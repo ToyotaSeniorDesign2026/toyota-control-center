@@ -1,3 +1,5 @@
+"""Approval service: create and approve run approval records and sync run approval state."""
+
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -51,7 +53,7 @@ def approve_request(db: Session, admin, approval_id: str):
 
     run = db.get(Run, approval.run_id)
     if run:
-        run.status = "approved"
+        run.requires_approval = False
         run.updated_at = now_iso()
         db.add(run)
 

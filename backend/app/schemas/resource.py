@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Pydantic schemas for resource CRUD and runtime/artifact-specific resource views."""
+
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -58,6 +60,43 @@ class ResourceListOut(BaseModel):
     page: int
     page_size: int
     has_more: bool
+
+
+class RuntimeStatusOut(BaseModel):
+    resource_id: str
+    status: str
+    last_run_id: str | None = None
+    last_run_status: str | None = None
+    last_heartbeat_at: str | None = None
+    schedule: str | None = None
+    updated_at: str
+
+
+class RuntimeHealthOut(BaseModel):
+    resource_id: str
+    health: str
+    updated_at: str
+
+
+class RuntimeScheduleUpdate(BaseModel):
+    schedule: str = Field(min_length=1, max_length=255)
+
+
+class RuntimeScheduleOut(BaseModel):
+    resource_id: str
+    schedule: str | None = None
+    updated_at: str
+
+
+class ArtifactVersionOut(BaseModel):
+    resource_id: str
+    version: str
+    status: str
+    updated_at: str
+
+
+class ArtifactVersionUpdate(BaseModel):
+    version: str = Field(min_length=1, max_length=80)
 
 
 class ImportGithubRequest(BaseModel):
