@@ -1,18 +1,43 @@
 from __future__ import annotations
 
+"""Resource registry/router: shared CRUD plus runtime/artifact behavior endpoints."""
+
 from fastapi import APIRouter, Depends, Query, Response, status
 
 from app.api.deps import get_current_user, get_db
 from app.schemas.resource import (
+    ArtifactVersionOut,
+    ArtifactVersionUpdate,
     ImportGithubRequest,
     ImportGithubResponse,
     ResourceCreate,
     ResourceListOut,
     ResourceOut,
+    RuntimeHealthOut,
+    RuntimeScheduleOut,
+    RuntimeScheduleUpdate,
+    RuntimeStatusOut,
     ResourceUpdate,
 )
 from app.schemas.run import RunCreate, RunCreateRequest, RunOut
-from app.services.resource_service import apply_resource_action, create_resource, delete_resource, get_resource, import_resources_from_github, query_resources, update_resource
+from app.services.resource_service import (
+    apply_resource_action,
+    artifact_deploy,
+    artifact_publish,
+    create_resource,
+    delete_resource,
+    get_artifact_version,
+    get_resource,
+    get_runtime_health,
+    get_runtime_schedule,
+    get_runtime_status,
+    heartbeat_runtime_resource,
+    import_resources_from_github,
+    query_resources,
+    set_artifact_version,
+    set_runtime_schedule,
+    update_resource,
+)
 from app.services.run_service import create_run_and_maybe_execute
 
 router = APIRouter()
@@ -63,6 +88,61 @@ def create_resource_run(
         params=payload.params,
     )
     return create_run_and_maybe_execute(db, user, run_payload)
+
+
+@router.get("/{resource_id}/runtime-status", response_model=RuntimeStatusOut)
+def read_runtime_status(resource_id: str, db=Depends(get_db), user=Depends(get_current_user)):
+    return get_runtime_status(db, user, resource_id)
+
+
+@router.get("/{resource_id}/runtime/health", response_model=RuntimeHealthOut)
+def read_runtime_health(resource_id: str, db=Depends(get_db), user=Depends(get_current_user)):
+    return get_runtime_health(db, user, resource_id)
+
+
+@router.post("/{resource_id}/runtime/heartbeat", response_model=RuntimeStatusOut)
+def runtime_heartbeat(resource_id: str, db=Depends(get_db), user=Depends(get_current_user)):
+    return heartbeat_runtime_resource(db, user, resource_id)
+
+
+@router.get("/{resource_id}/runtime/schedule", response_model=RuntimeScheduleOut)
+def read_runtime_schedule(resource_id: str, db=Depends(get_db), user=Depends(get_current_user)):
+    return get_runtime_schedule(db, user, resource_id)
+
+
+@router.put("/{resource_id}/runtime/schedule", response_model=RuntimeScheduleOut)
+def update_runtime_schedule(
+    resource_id: str,
+    payload: RuntimeScheduleUpdate,
+    db=Depends(get_db),
+    user=Depends(get_current_user),
+):
+    return set_runtime_schedule(db, user, resource_id, payload.schedule)
+
+
+@router.get("/{resource_id}/artifact/version", response_model=ArtifactVersionOut)
+def read_artifact_version(resource_id: str, db=Depends(get_db), user=Depends(get_current_user)):
+    return get_artifact_version(db, user, resource_id)
+
+
+@router.put("/{resource_id}/artifact/version", response_model=ArtifactVersionOut)
+def update_artifact_version(
+    resource_id: str,
+    payload: ArtifactVersionUpdate,
+    db=Depends(get_db),
+    user=Depends(get_current_user),
+):
+    return set_artifact_version(db, user, resource_id, payload.version)
+
+
+@router.post("/{resource_id}/artifact/deploy", response_model=ResourceOut)
+def deploy_artifact(resource_id: str, db=Depends(get_db), user=Depends(get_current_user)):
+    return artifact_deploy(db, user, resource_id)
+
+
+@router.post("/{resource_id}/artifact/publish", response_model=ResourceOut)
+def publish_artifact(resource_id: str, db=Depends(get_db), user=Depends(get_current_user)):
+    return artifact_publish(db, user, resource_id)
 
 
 @router.get("", response_model=ResourceListOut)

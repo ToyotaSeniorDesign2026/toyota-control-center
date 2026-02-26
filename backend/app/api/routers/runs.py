@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+"""Run orchestration/router: run lookup, lightweight polling, logs, retry/cancel, and SSE events."""
+
+import json
+
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_current_user, get_db
 from app.schemas.run import RunListOut, RunLogsOut, RunOut, RunStatusOut
-from app.services.log_service import get_run_logs, get_run_status
+from app.services.log_service import get_run_events, get_run_logs, get_run_status
 from app.services.run_service import (
     get_run,
     query_runs,
@@ -55,6 +60,27 @@ def read_logs(
     user=Depends(get_current_user),
 ):
     return get_run_logs(db, user, run_id=run_id, limit=limit, cursor=cursor)
+
+
+@router.get("/{run_id}/events/stream")
+def stream_run_events(
+    run_id: str,
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=1000),
+    db=Depends(get_db),
+    user=Depends(get_current_user),
+):
+    events_out = get_run_events(db, user, run_id=run_id, cursor=cursor, limit=limit)
+
+    def _iter_events():
+        for evt in events_out["events"]:
+            yield f"event: {evt['event']}\n"
+            yield f"data: {json.dumps(evt['data'])}\n\n"
+        if events_out["next_cursor"] is not None:
+            yield "event: cursor\n"
+            yield f"data: {json.dumps({'next_cursor': events_out['next_cursor']})}\n\n"
+
+    return StreamingResponse(_iter_events(), media_type="text/event-stream")
 
 
 @router.post("/{run_id}/cancel", response_model=RunOut)

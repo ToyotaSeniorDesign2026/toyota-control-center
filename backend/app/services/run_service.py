@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Run service layer: run creation/execution, state machine enforcement, and run queries."""
+
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -14,6 +16,22 @@ from app.services.log_service import append_run_log
 from app.services.policy_service import evaluate_run_request
 
 
+_RUNTIME_TRANSITIONS = {
+    "queued": {"executing", "failed", "stopped"},
+    "executing": {"running", "failed", "stopped"},
+    "running": {"failed", "stopped"},
+    "failed": set(),
+    "stopped": set(),
+}
+
+_ARTIFACT_TRANSITIONS = {
+    "queued": {"building", "failed"},
+    "building": {"deployed", "failed"},
+    "deployed": set(),
+    "failed": set(),
+}
+
+
 def _assert_run_access(user, run: Run):
     if user.role == "root":
         return
@@ -22,6 +40,30 @@ def _assert_run_access(user, run: Run):
     if user.role == "user" and user.id == run.requested_by:
         return
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
+
+
+def _run_kind(db: Session, run: Run) -> str:
+    resource = db.get(Resource, run.resource_id)
+    return resource.kind if resource and resource.kind else "runtime"
+
+
+def _can_transition(kind: str, current: str, new_status: str) -> bool:
+    table = _RUNTIME_TRANSITIONS if kind == "runtime" else _ARTIFACT_TRANSITIONS
+    return new_status in table.get(current, set())
+
+
+def _transition_run_or_409(db: Session, run: Run, new_status: str):
+    kind = _run_kind(db, run)
+    current = run.status
+    if current == new_status:
+        return
+    if not _can_transition(kind, current, new_status):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Invalid transition for {kind} run: {current} -> {new_status}",
+        )
+    run.status = new_status
+    run.updated_at = now_iso()
 
 
 def _run_to_out(run: Run) -> dict:
@@ -67,7 +109,7 @@ def create_run_and_maybe_execute(db: Session, user, payload: RunCreate):
         domain=resource.owner_domain,
         action=payload.action,
         target_environment=payload.target_environment,
-        status="pending_policy",
+        status="queued",
         risk_level="low",
         risk_score=0,
         requires_approval=False,
@@ -93,37 +135,44 @@ def create_run_and_maybe_execute(db: Session, user, payload: RunCreate):
     run.risk_score = decision.risk_score
     run.requires_approval = decision.requires_approval
 
-    if decision.status in {"blocked", "pending_approval"}:
-        run.status = decision.status
-        run.updated_at = now_iso()
+    if decision.status == "blocked":
+        _transition_run_or_409(db, run, "failed")
+        run.error = "Blocked by policy"
         db.add(run)
         db.commit()
         db.refresh(run)
-        append_run_log(db, run_id, "WARN", "Run gated by policy", {"decision": decision.model_dump()})
-
-        if decision.requires_approval:
-            approval = create_approval_request(db, user, _run_to_out(run))
-            run.approval_id = approval["id"]
-            run.updated_at = now_iso()
-            db.add(run)
-            db.commit()
-            db.refresh(run)
-
-        write_audit(db, user, "RUN_GATED", {"run_id": run_id, "status": decision.status})
+        append_run_log(db, run_id, "WARN", "Run blocked by policy", {"decision": decision.model_dump()})
+        write_audit(db, user, "RUN_GATED", {"run_id": run_id, "status": "blocked"})
         return _run_to_out(run)
 
-    run.status = "executing"
-    run.updated_at = now_iso()
+    if decision.requires_approval:
+        approval = create_approval_request(db, user, _run_to_out(run))
+        run.approval_id = approval["id"]
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        append_run_log(db, run_id, "WARN", "Run waiting for approval", {"approval_id": approval["id"]})
+        write_audit(db, user, "RUN_GATED", {"run_id": run_id, "status": "pending_approval"})
+        return _run_to_out(run)
+
+    kind = _run_kind(db, run)
+    initial_exec_status = "executing" if kind == "runtime" else "building"
+    _transition_run_or_409(db, run, initial_exec_status)
     db.add(run)
     db.commit()
     db.refresh(run)
-    append_run_log(db, run_id, "INFO", "Connector execution started")
+    append_run_log(db, run_id, "INFO", f"{initial_exec_status.title()} started")
 
     result = execute_resource(db, user, _run_to_out(run))
     run.connector_run_id = result["connector_run_id"]
-    run.status = result["status"]
-    run.error = result["error"]
-    run.updated_at = now_iso()
+
+    if result["error"]:
+        _transition_run_or_409(db, run, "failed")
+        run.error = result["error"]
+    else:
+        next_status = "running" if kind == "runtime" else "deployed"
+        _transition_run_or_409(db, run, next_status)
+        run.error = None
     db.add(run)
     db.commit()
     db.refresh(run)
@@ -131,7 +180,7 @@ def create_run_and_maybe_execute(db: Session, user, payload: RunCreate):
     append_run_log(
         db,
         run_id,
-        "INFO" if result["status"] == "succeeded" else "ERROR",
+        "INFO" if run.status in {"running", "deployed"} else "ERROR",
         "Connector execution finished",
         result,
     )
@@ -192,11 +241,14 @@ def stop_run(db: Session, user, run_id: str):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     _assert_run_access(user, run)
 
-    if run.status in {"succeeded", "failed", "blocked", "stopped"}:
+    if run.status in {"failed", "stopped", "deployed"}:
         return _run_to_out(run)
 
-    run.status = "stopped"
-    run.updated_at = now_iso()
+    kind = _run_kind(db, run)
+    cancel_status = "stopped" if kind == "runtime" else "failed"
+    _transition_run_or_409(db, run, cancel_status)
+    if kind == "artifact":
+        run.error = "Cancelled by user"
     db.add(run)
     db.commit()
     db.refresh(run)
