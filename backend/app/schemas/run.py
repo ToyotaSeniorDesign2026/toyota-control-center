@@ -75,3 +75,8 @@ class RunListOut(BaseModel):
 class RunEventOut(BaseModel):
     event: str
     data: dict = Field(default_factory=dict)
+
+
+class RunLogsPurgeOut(BaseModel):
+    run_id: str
+    deleted_logs: int

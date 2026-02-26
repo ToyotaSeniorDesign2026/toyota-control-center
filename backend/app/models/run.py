@@ -32,3 +32,15 @@ class Run(Base):
 
     created_at: Mapped[str] = mapped_column(String(64), nullable=False)
     updated_at: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class RunExecutionStatus(Base):
+    __tablename__ = "run_execution_status"
+
+    run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    risk_level: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    requires_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    last_log_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    log_count: Mapped[int] = mapped_column(nullable=False, default=0)
