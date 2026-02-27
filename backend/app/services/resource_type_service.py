@@ -20,6 +20,19 @@ _RESOURCE_TYPE_REGISTRY = [
         "approval_defaults": {"required_above_risk_score": 60, "always_required_environments": ["prod"]},
     },
     {
+        "type": "research",
+        "kind": "runtime",
+        "required_config_schema": {"required": ["topic"], "optional": ["max_results", "schedule"]},
+        "supported_resource_actions": ["activate", "pause", "archive"],
+        "run_capabilities": {
+            "supports_retry": True,
+            "supports_cancel": True,
+            "supports_schedule": True,
+            "supports_heartbeat": True,
+        },
+        "approval_defaults": {"required_above_risk_score": 60, "always_required_environments": ["prod"]},
+    },
+    {
         "type": "agent",
         "kind": "runtime",
         "required_config_schema": {"required": ["entrypoint"], "optional": ["schedule", "timeout_seconds"]},

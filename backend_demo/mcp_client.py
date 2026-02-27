@@ -10,6 +10,7 @@ from google import genai
 from google.genai import types as genai_types
 from typing import Union, Type, List, Dict, Any
 from pydantic import BaseModel
+import argparse
 import json
 import copy
 import asyncio
@@ -265,10 +266,19 @@ class MCPChatBot:
 
 
 async def main():
+    parser = argparse.ArgumentParser(description="MCP chatbot client")
+    parser.add_argument("--query", type=str, default=None, help="Run a single query and exit")
+    args = parser.parse_args()
+
     chatbot = MCPChatBot()
     try:
         await chatbot.connect_to_servers()
-        await chatbot.chat_loop()
+        if args.query:
+            output = await chatbot.process_query(args.query)
+            if output:
+                print(output)
+        else:
+            await chatbot.chat_loop()
     finally:
         await chatbot.cleanup()
 
