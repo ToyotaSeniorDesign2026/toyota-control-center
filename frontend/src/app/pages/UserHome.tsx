@@ -167,34 +167,44 @@ export default function UserHome() {
           <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
             <div className="space-y-6 xl:col-span-2">
               <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
-                <div className="border-b border-gray-200 p-5">
-                  <h2 className="text-lg font-semibold text-gray-900">Required Actions Preview</h2>
-                  <p className="mt-1 text-sm text-gray-600">
-                    {pendingCount} pending. Open the full queue for all action details.
-                  </p>
+                <div className="border-b border-gray-200 bg-gradient-to-r from-[#ed0923]/10 to-transparent p-5">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="h-5 w-5 text-[#ed0923]" />
+                    <h2 className="text-lg font-semibold text-gray-900">AI Build Assistant</h2>
+                  </div>
                 </div>
-                <div className="divide-y divide-gray-100">
-                  {requiredActionPreview.map((item) => (
-                    <div key={item.id} className="flex items-start justify-between gap-3 p-4">
-                      <div className="min-w-0">
-                        <div className="mb-1 flex items-center gap-2">
-                          <span className={`inline-flex rounded-full px-2 py-1 text-[11px] font-semibold ${requiredActionStateBadge(item.state)}`}>
-                            {item.state}
-                          </span>
-                          <span className="text-xs text-gray-500">{item.runAfter}</span>
-                        </div>
-                        <p className="truncate text-sm font-medium text-gray-900">{item.subject}</p>
-                      </div>
-                      {item.state === "pending" && <AlertTriangle className="h-4 w-4 text-amber-500" />}
-                    </div>
-                  ))}
-                </div>
-                <div className="border-t border-gray-200 p-4">
+                <div className="space-y-3 p-5">
+                  <Textarea
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    placeholder="Describe the job you want AI to plan..."
+                    rows={4}
+                    className="border-gray-200"
+                  />
+                  <div className="grid grid-cols-1 gap-2">
+                    {starterPrompts.map((item) => (
+                      <button
+                        key={item}
+                        onClick={() => setPrompt(item)}
+                        className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-left text-xs text-gray-700 hover:border-[#ed0923] hover:bg-red-50"
+                      >
+                        {item}
+                      </button>
+                    ))}
+                  </div>
                   <Button
-                    onClick={() => navigate("/required-actions")}
-                    className="bg-[#ed0923] text-white hover:bg-[#d10820]"
+                    onClick={createPreview}
+                    className="w-full bg-[#ed0923] text-white hover:bg-[#d10820]"
                   >
-                    Go to Required Actions
+                    <Send className="mr-2 h-4 w-4" />
+                    Generate Preview
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="w-full border-gray-300"
+                    onClick={() => setIsManualModalOpen(true)}
+                  >
+                    Manually Create Job
                   </Button>
                 </div>
               </div>
@@ -242,44 +252,34 @@ export default function UserHome() {
 
             <div className="space-y-6">
               <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
-                <div className="border-b border-gray-200 bg-gradient-to-r from-[#ed0923]/10 to-transparent p-5">
-                  <div className="flex items-center gap-2">
-                    <Sparkles className="h-5 w-5 text-[#ed0923]" />
-                    <h2 className="text-lg font-semibold text-gray-900">AI Build Assistant</h2>
-                  </div>
+                <div className="border-b border-gray-200 p-5">
+                  <h2 className="text-lg font-semibold text-gray-900">Required Actions Preview</h2>
+                  <p className="mt-1 text-sm text-gray-600">
+                    {pendingCount} pending. Open the full queue for all action details.
+                  </p>
                 </div>
-                <div className="space-y-3 p-5">
-                  <Textarea
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
-                    placeholder="Describe the job you want AI to plan..."
-                    rows={4}
-                    className="border-gray-200"
-                  />
-                  <div className="grid grid-cols-1 gap-2">
-                    {starterPrompts.map((item) => (
-                      <button
-                        key={item}
-                        onClick={() => setPrompt(item)}
-                        className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-left text-xs text-gray-700 hover:border-[#ed0923] hover:bg-red-50"
-                      >
-                        {item}
-                      </button>
-                    ))}
-                  </div>
+                <div className="divide-y divide-gray-100">
+                  {requiredActionPreview.map((item) => (
+                    <div key={item.id} className="flex items-start justify-between gap-3 p-4">
+                      <div className="min-w-0">
+                        <div className="mb-1 flex items-center gap-2">
+                          <span className={`inline-flex rounded-full px-2 py-1 text-[11px] font-semibold ${requiredActionStateBadge(item.state)}`}>
+                            {item.state}
+                          </span>
+                          <span className="text-xs text-gray-500">{item.runAfter}</span>
+                        </div>
+                        <p className="truncate text-sm font-medium text-gray-900">{item.subject}</p>
+                      </div>
+                      {item.state === "pending" && <AlertTriangle className="h-4 w-4 text-amber-500" />}
+                    </div>
+                  ))}
+                </div>
+                <div className="border-t border-gray-200 p-4">
                   <Button
-                    onClick={createPreview}
-                    className="w-full bg-[#ed0923] text-white hover:bg-[#d10820]"
+                    onClick={() => navigate("/required-actions")}
+                    className="bg-[#ed0923] text-white hover:bg-[#d10820]"
                   >
-                    <Send className="mr-2 h-4 w-4" />
-                    Generate Preview
-                  </Button>
-                  <Button
-                    variant="outline"
-                    className="w-full border-gray-300"
-                    onClick={() => setIsManualModalOpen(true)}
-                  >
-                    Manually Create Job
+                    Go to Required Actions
                   </Button>
                 </div>
               </div>
