@@ -72,11 +72,11 @@ From the directory containing `fastmcp_docs.py`:
 uv run --with fastmcp python fastmcp_docs.py
 ```
 
-That’s it.
+That’s it!
 
-The server will start using stdio transport (ideal for MCP clients like Claude Desktop, Cursor, etc.).
+The server will start using stdio transport, which is ideal for MCP clients like Claude Desktop, Cursor, etc.
 
-Or, even easier, you can just run the launcher script with zero config:
+Or, for an even easier way, you can just run the launcher script with zero config:
 
 ```
 ./run_fastmcp_docs.sh
