@@ -4,6 +4,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
 import { useUser } from "../contexts/UserContext";
 import { useState } from "react";
 import { NotificationPanel } from "./notifications/NotificationPanel";
+import ChatAgent from "./user/ChatAgent";
 
 export function UserNavigation({ 
   activePage = "Dashboard",
@@ -24,8 +25,9 @@ export function UserNavigation({
   ];
 
   return (
-    <header className="border-b border-gray-200 bg-white">
-      <div className="flex h-16 items-center justify-between px-6">
+    <>
+      <header className="border-b border-gray-200 bg-white">
+        <div className="flex h-16 items-center justify-between px-6">
         {/* Left: Logo and Nav */}
         <div className="flex items-center gap-8">
           <Link to="/user-home" className="flex items-center gap-2">
@@ -87,13 +89,16 @@ export function UserNavigation({
             )}
           </Avatar>
         </div>
-      </div>
-      
-      {/* Notification Panel */}
-      <NotificationPanel 
-        isOpen={isNotificationPanelOpen} 
-        onClose={() => setIsNotificationPanelOpen(false)} 
-      />
-    </header>
+        </div>
+        
+        {/* Notification Panel */}
+        <NotificationPanel 
+          isOpen={isNotificationPanelOpen} 
+          onClose={() => setIsNotificationPanelOpen(false)} 
+        />
+      </header>
+
+      <ChatAgent />
+    </>
   );
 }

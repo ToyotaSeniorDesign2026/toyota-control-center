@@ -1,4 +1,4 @@
-import React, { useState, ChangeEvent, FormEvent } from 'react';
+import React, { useEffect, useState, ChangeEvent, FormEvent } from 'react';
 import { useNavigate } from "react-router";
 import { 
   Calendar, 
@@ -81,7 +81,12 @@ const presentationTemplates: PresentationTemplate[] = [
   }
 ];
 
-const PowerPointForm: React.FC = () => {
+interface PowerPointFormProps {
+  initialData?: Record<string, unknown>;
+  aiPrompt?: string;
+}
+
+const PowerPointForm: React.FC<PowerPointFormProps> = ({ initialData, aiPrompt }) => {
   const navigate = useNavigate();
   const [formData, setFormData] = useState<FormData>({
     jobName: '',
@@ -104,8 +109,18 @@ const PowerPointForm: React.FC = () => {
   const [errors, setErrors] = useState<FormErrors>({});
   const [showSuccess, setShowSuccess] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showAIPrefill, setShowAIPrefill] = useState(false);
 
   const selectedTemplate = presentationTemplates.find(t => t.id === formData.presentationType);
+
+  useEffect(() => {
+    if (!initialData) return;
+    setFormData((prev) => ({
+      ...prev,
+      ...initialData,
+    }));
+    setShowAIPrefill(true);
+  }, [initialData]);
 
   const handleInputChange = (
     e: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
@@ -208,6 +223,15 @@ const PowerPointForm: React.FC = () => {
           <div style={styles.successBanner}>
             <CheckCircle size={20} color="#10B981" />
             <span>Job created successfully! Redirecting to dashboard...</span>
+          </div>
+        )}
+
+        {showAIPrefill && (
+          <div style={styles.infoBox}>
+            <Info size={16} color="#EB0A1E" />
+            <span>
+              AI prefilled this form{aiPrompt ? ` from prompt: "${aiPrompt}"` : ""}. Review and adjust before submit.
+            </span>
           </div>
         )}
 
