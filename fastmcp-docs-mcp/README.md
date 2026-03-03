@@ -8,9 +8,9 @@ The server is optimized for LLM use:
 - `search_documentation`: ask a question in natural language and get back the relevant documentation paths or excerpts needed to answer it.
 
 The runtime is split cleanly:
-- [fastmcp_docs.py](/fastmcp_docs.py): thin MCP entrypoint
-- [fastmcp_docs_backend.py](/fastmcp_docs_backend.py): normalization, parsing, caching, inventory, and fetch logic
-- [utils/normalize_fastmcp_scrape.py](/utils/normalize_fastmcp_scrape.py): route inventory generation
+- [fastmcp_docs.py](/fastmcp-docs-mcp/fastmcp_docs.py): thin MCP entrypoint
+- [fastmcp_docs_backend.py](/fastmcp-docs-mcp/fastmcp_docs_backend.py): normalization, parsing, caching, inventory, and fetch logic
+- [utils/normalize_fastmcp_scrape.py](/fastmcp-docs-mcp/utils/normalize_fastmcp_scrape.py): route inventory generation
 
 Primary Tools
 - `list_docs`: Discover available routes. Filters by source (inventory, llms_txt, or both).
