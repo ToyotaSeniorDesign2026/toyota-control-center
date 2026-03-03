@@ -15,7 +15,7 @@ const policyChecks = [
     id: "1",
     name: "Data Classification Compliance",
     status: "passed",
-    description: "Resource properly classifies sensitive data",
+    description: "Job properly classifies sensitive data",
   },
   {
     id: "2",
@@ -149,10 +149,10 @@ export function ApprovalDetailDrawer({
         <div className="mt-4 grid grid-cols-2 gap-4">
           <div>
             <div className="text-xs font-medium text-gray-500 uppercase">
-              Resource
+              Job
             </div>
             <div className="mt-1 text-sm font-semibold text-gray-900">
-              {approval.resourceName}
+              {approval.jobName}
             </div>
           </div>
           <div>
@@ -223,10 +223,10 @@ export function ApprovalDetailDrawer({
                     <p className="text-sm text-gray-700">
                       This change promotes the{" "}
                       <span className="font-semibold">
-                        {approval.resourceName}
+                        {approval.jobName}
                       </span>{" "}
                       from {approval.fromEnvironment} to{" "}
-                      {approval.toEnvironment}. The resource will now access PII
+                      {approval.toEnvironment}. The job will now access PII
                       data and connect to an external API for customer
                       enrichment. Schedule frequency increases from daily to
                       every 5 minutes.
@@ -274,7 +274,7 @@ export function ApprovalDetailDrawer({
                   </div>
                 </div>
 
-                {/* Affected Resources */}
+                {/* Affected Jobs */}
                 <div>
                   <h3 className="text-sm font-semibold text-gray-900 mb-3">
                     Affected Connectors

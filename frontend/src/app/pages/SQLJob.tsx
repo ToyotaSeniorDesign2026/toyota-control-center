@@ -12,7 +12,7 @@ export default function SQLJob() {
   return (
     <div className="min-h-screen bg-gray-50">
       <UserNavigation
-        activePage="My Resources"
+        activePage="Forms"
         onProfileClick={() => setIsProfileOpen(true)}
       />
       <main className="mx-auto max-w-[1600px] px-6 py-8">

@@ -2,12 +2,12 @@ import { X, ChevronRight, ChevronLeft } from "lucide-react";
 import { Button } from "./ui/button";
 import { useState } from "react";
 
-interface ManualResourceCreationModalProps {
+interface ManualJobCreationModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
-export function ManualResourceCreationModal({ isOpen, onClose }: ManualResourceCreationModalProps) {
+export function ManualJobCreationModal({ isOpen, onClose }: ManualJobCreationModalProps) {
   const [currentStep, setCurrentStep] = useState(1);
   const [formData, setFormData] = useState({
     name: "",
@@ -64,7 +64,7 @@ export function ManualResourceCreationModal({ isOpen, onClose }: ManualResourceC
     }
   };
 
-  const resourceTypes = [
+  const jobTypes = [
     { value: "AI Agent", label: "AI Agent", color: "purple" },
     { value: "SQL Query", label: "SQL Query", color: "green" },
     { value: "dbt Model", label: "dbt Model", color: "orange" },
@@ -103,7 +103,7 @@ export function ManualResourceCreationModal({ isOpen, onClose }: ManualResourceC
         <div className="border-b border-gray-200 bg-gray-50 px-6 py-4">
           <div className="flex items-start justify-between">
             <div className="flex-1">
-              <h2 className="text-xl font-semibold text-gray-900">Create Resource Manually</h2>
+              <h2 className="text-xl font-semibold text-gray-900">Create Job Manually</h2>
               <p className="mt-1 text-sm text-gray-600">
                 Step {currentStep} of {totalSteps}
               </p>
@@ -130,13 +130,13 @@ export function ManualResourceCreationModal({ isOpen, onClose }: ManualResourceC
 
         {/* Content */}
         <div className="overflow-y-auto max-h-[calc(90vh-240px)] p-6">
-          {/* Step 1: Resource Name */}
+          {/* Step 1: Job Name */}
           {currentStep === 1 && (
             <div className="space-y-4">
               <div>
-                <h3 className="text-lg font-semibold text-gray-900 mb-2">Resource Name</h3>
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">Job Name</h3>
                 <p className="text-sm text-gray-600 mb-4">
-                  Choose a unique and descriptive name for your resource
+                  Choose a unique and descriptive name for your job
                 </p>
               </div>
               <div>
@@ -158,17 +158,17 @@ export function ManualResourceCreationModal({ isOpen, onClose }: ManualResourceC
             </div>
           )}
 
-          {/* Step 2: Resource Type */}
+          {/* Step 2: Job Type */}
           {currentStep === 2 && (
             <div className="space-y-4">
               <div>
-                <h3 className="text-lg font-semibold text-gray-900 mb-2">Resource Type</h3>
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">Job Type</h3>
                 <p className="text-sm text-gray-600 mb-4">
-                  Select the type of resource you want to create
+                  Select the type of job you want to create
                 </p>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                {resourceTypes.map((type) => (
+                {jobTypes.map((type) => (
                   <button
                     key={type.value}
                     onClick={() => setFormData({ ...formData, type: type.value })}
@@ -190,7 +190,7 @@ export function ManualResourceCreationModal({ isOpen, onClose }: ManualResourceC
               <div>
                 <h3 className="text-lg font-semibold text-gray-900 mb-2">Environment</h3>
                 <p className="text-sm text-gray-600 mb-4">
-                  Choose where this resource will be deployed
+                  Choose where this job will be deployed
                 </p>
               </div>
               <div className="space-y-3">
@@ -218,7 +218,7 @@ export function ManualResourceCreationModal({ isOpen, onClose }: ManualResourceC
               <div>
                 <h3 className="text-lg font-semibold text-gray-900 mb-2">Description</h3>
                 <p className="text-sm text-gray-600 mb-4">
-                  Provide a detailed description of what this resource does
+                  Provide a detailed description of what this job does
                 </p>
               </div>
               <div>
@@ -229,7 +229,7 @@ export function ManualResourceCreationModal({ isOpen, onClose }: ManualResourceC
                   id="description"
                   value={formData.description}
                   onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  placeholder="Describe the purpose, functionality, and any important details about this resource..."
+                  placeholder="Describe the purpose, functionality, and any important details about this job..."
                   rows={6}
                   className="w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm placeholder:text-gray-400 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923] resize-none"
                 />
@@ -287,7 +287,7 @@ export function ManualResourceCreationModal({ isOpen, onClose }: ManualResourceC
                 disabled={!isStepValid()}
                 className="bg-[#ed0923] text-white hover:bg-[#d10820]"
               >
-                Create Resource
+                Create Job
               </Button>
             )}
           </div>

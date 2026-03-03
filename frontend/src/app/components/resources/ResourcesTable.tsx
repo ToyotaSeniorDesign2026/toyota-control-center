@@ -1,4 +1,4 @@
-import { FilterType } from "../../pages/Resources";
+import { FilterType } from "../../pages/Jobs";
 import {
   MoreVertical,
   Play,
@@ -42,7 +42,7 @@ import {
 } from "../ui/tooltip";
 import { useState } from "react";
 
-interface ResourcesTableProps {
+interface JobsTableProps {
   searchQuery: string;
   typeFilter: string;
   statusFilter: string;
@@ -50,7 +50,7 @@ interface ResourcesTableProps {
   activeFilter: FilterType;
 }
 
-interface Resource {
+interface Job {
   id: string;
   name: string;
   type: "AI Agent" | "Airflow" | "dbt" | "SQL" | "BI" | "Excel" | "PowerPoint";
@@ -63,7 +63,7 @@ interface Resource {
   tags?: string[];
 }
 
-const mockResources: Resource[] = [
+const mockJobs: Job[] = [
   {
     id: "1",
     name: "customer_churn_predictor",
@@ -186,7 +186,7 @@ const mockResources: Resource[] = [
   },
 ];
 
-function getTypeIcon(type: Resource["type"]) {
+function getTypeIcon(type: Job["type"]) {
   switch (type) {
     case "AI Agent":
       return <Bot className="h-4 w-4" />;
@@ -205,7 +205,7 @@ function getTypeIcon(type: Resource["type"]) {
   }
 }
 
-function StatusBadge({ status }: { status: Resource["status"] }) {
+function StatusBadge({ status }: { status: Job["status"] }) {
   const variants = {
     healthy: "bg-green-50 text-green-700 border-green-200",
     warning: "bg-yellow-50 text-yellow-700 border-yellow-200",
@@ -256,38 +256,38 @@ function EmptyState() {
           <Package className="h-12 w-12 text-gray-400" />
         </div>
         <h3 className="mt-4 text-lg font-semibold text-gray-900">
-          No resources yet.
+          No jobs yet.
         </h3>
         <p className="mt-2 text-sm text-gray-600">
           Create your first AI agent or automation job to get started.
         </p>
         <button className="mt-6 inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">
           <Play className="h-4 w-4" />
-          Create Resource
+          Create Job
         </button>
       </div>
     </div>
   );
 }
 
-export function ResourcesTable({
+export function JobsTable({
   searchQuery,
   typeFilter,
   statusFilter,
   riskFilter,
   activeFilter,
-}: ResourcesTableProps) {
+}: JobsTableProps) {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
 
-  // Filter resources based on all criteria
-  const filteredResources = mockResources.filter((resource) => {
+  // Filter jobs based on all criteria
+  const filteredJobs = mockJobs.filter((job) => {
     // Search filter
     if (
       searchQuery &&
-      !resource.name.toLowerCase().includes(searchQuery.toLowerCase()) &&
-      !resource.owner.toLowerCase().includes(searchQuery.toLowerCase()) &&
-      !resource.tags?.some((tag) =>
+      !job.name.toLowerCase().includes(searchQuery.toLowerCase()) &&
+      !job.owner.toLowerCase().includes(searchQuery.toLowerCase()) &&
+      !job.tags?.some((tag) =>
         tag.toLowerCase().includes(searchQuery.toLowerCase())
       )
     ) {
@@ -295,53 +295,53 @@ export function ResourcesTable({
     }
 
     // Type filter
-    if (typeFilter !== "All Types" && resource.type !== typeFilter) {
+    if (typeFilter !== "All Types" && job.type !== typeFilter) {
       return false;
     }
 
     // Status filter
     if (
       statusFilter !== "All Status" &&
-      resource.status !== statusFilter.toLowerCase()
+      job.status !== statusFilter.toLowerCase()
     ) {
       return false;
     }
 
     // Risk filter
-    if (riskFilter === "Low" && resource.riskScore >= 30) return false;
+    if (riskFilter === "Low" && job.riskScore >= 30) return false;
     if (
       riskFilter === "Medium" &&
-      (resource.riskScore < 30 || resource.riskScore >= 60)
+      (job.riskScore < 30 || job.riskScore >= 60)
     )
       return false;
-    if (riskFilter === "High" && resource.riskScore < 60) return false;
+    if (riskFilter === "High" && job.riskScore < 60) return false;
 
     // Sidebar filter
-    if (activeFilter === "high-risk" && resource.riskScore < 60) return false;
-    if (activeFilter === "failed" && resource.status !== "failed") return false;
+    if (activeFilter === "high-risk" && job.riskScore < 60) return false;
+    if (activeFilter === "failed" && job.status !== "failed") return false;
 
     return true;
   });
 
   // Pagination calculations
-  const totalPages = Math.ceil(filteredResources.length / itemsPerPage);
+  const totalPages = Math.ceil(filteredJobs.length / itemsPerPage);
   const startIndex = (currentPage - 1) * itemsPerPage;
   const endIndex = startIndex + itemsPerPage;
-  const paginatedResources = filteredResources.slice(startIndex, endIndex);
+  const paginatedJobs = filteredJobs.slice(startIndex, endIndex);
 
   // Reset to page 1 when filters change
   if (currentPage > totalPages && totalPages > 0) {
     setCurrentPage(1);
   }
 
-  if (filteredResources.length === 0 && searchQuery === "" && typeFilter === "All Types") {
+  if (filteredJobs.length === 0 && searchQuery === "" && typeFilter === "All Types") {
     return <EmptyState />;
   }
 
-  if (filteredResources.length === 0) {
+  if (filteredJobs.length === 0) {
     return (
       <div className="rounded-lg border border-gray-200 bg-white p-12 text-center shadow-sm">
-        <p className="text-gray-600">No resources match your filters.</p>
+        <p className="text-gray-600">No jobs match your filters.</p>
       </div>
     );
   }
@@ -353,7 +353,7 @@ export function ResourcesTable({
           <TableHeader>
             <TableRow className="border-gray-200 hover:bg-transparent">
               <TableHead className="text-xs font-medium uppercase tracking-wide text-gray-500">
-                Resource Name
+                Job Name
               </TableHead>
               <TableHead className="text-xs font-medium uppercase tracking-wide text-gray-500">
                 Type
@@ -380,36 +380,36 @@ export function ResourcesTable({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {paginatedResources.map((resource) => (
+            {paginatedJobs.map((job) => (
               <TableRow
-                key={resource.id}
+                key={job.id}
                 className="border-gray-200 hover:bg-gray-50"
               >
                 <TableCell className="font-medium text-gray-900">
                   <button className="hover:text-blue-600 transition-colors">
-                    {resource.name}
+                    {job.name}
                   </button>
                 </TableCell>
                 <TableCell>
                   <div className="flex items-center gap-2 text-gray-700">
-                    {getTypeIcon(resource.type)}
-                    <span className="text-sm">{resource.type}</span>
+                    {getTypeIcon(job.type)}
+                    <span className="text-sm">{job.type}</span>
                   </div>
                 </TableCell>
                 <TableCell className="text-gray-600">
-                  {resource.environment}
+                  {job.environment}
                 </TableCell>
-                <TableCell className="text-gray-600">{resource.lastRun}</TableCell>
+                <TableCell className="text-gray-600">{job.lastRun}</TableCell>
                 <TableCell>
-                  <StatusBadge status={resource.status} />
+                  <StatusBadge status={job.status} />
                 </TableCell>
                 <TableCell>
-                  <RiskScore score={resource.riskScore} />
+                  <RiskScore score={job.riskScore} />
                 </TableCell>
                 <TableCell className="font-mono text-xs text-gray-600">
-                  {resource.schedule}
+                  {job.schedule}
                 </TableCell>
-                <TableCell className="text-gray-600">{resource.owner}</TableCell>
+                <TableCell className="text-gray-600">{job.owner}</TableCell>
                 <TableCell>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
@@ -475,7 +475,7 @@ export function ResourcesTable({
               <span className="font-medium">
                 {startIndex + 1}-{endIndex}
               </span>{" "}
-              of <span className="font-medium">{filteredResources.length}</span>{" "}
+              of <span className="font-medium">{filteredJobs.length}</span>{" "}
               results
             </p>
           </div>

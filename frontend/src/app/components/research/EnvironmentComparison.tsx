@@ -5,7 +5,7 @@ interface EnvironmentCardProps {
   name: string;
   color: string;
   stats: {
-    totalResources: number;
+    totalJobs: number;
     successRate: number;
     avgRiskScore: number;
     openApprovals: number;
@@ -39,9 +39,9 @@ function EnvironmentCard({ name, color, stats }: EnvironmentCardProps) {
 
       <div className="space-y-2">
         <div className="flex items-center justify-between border-b border-gray-100 pb-2">
-          <span className="text-xs text-gray-600">Total Resources</span>
+          <span className="text-xs text-gray-600">Total Jobs</span>
           <span className="text-sm font-semibold text-gray-900">
-            {stats.totalResources}
+            {stats.totalJobs}
           </span>
         </div>
 
@@ -100,7 +100,7 @@ export function EnvironmentComparison() {
       name: "Dev",
       color: "bg-[#ed0923]",
       stats: {
-        totalResources: 89,
+        totalJobs: 89,
         successRate: 91,
         avgRiskScore: 15,
         openApprovals: 0,
@@ -111,7 +111,7 @@ export function EnvironmentComparison() {
       name: "Semi-Prod",
       color: "bg-yellow-500",
       stats: {
-        totalResources: 64,
+        totalJobs: 64,
         successRate: 94,
         avgRiskScore: 28,
         openApprovals: 7,
@@ -122,7 +122,7 @@ export function EnvironmentComparison() {
       name: "Prod",
       color: "bg-green-500",
       stats: {
-        totalResources: 148,
+        totalJobs: 148,
         successRate: 97,
         avgRiskScore: 12,
         openApprovals: 2,

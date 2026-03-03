@@ -18,7 +18,7 @@ import { AutomationTrendsChart } from "../components/research/AutomationTrendsCh
 import { RiskDistribution } from "../components/research/RiskDistribution";
 import { ProductivityImpact } from "../components/research/ProductivityImpact";
 import { EnvironmentComparison } from "../components/research/EnvironmentComparison";
-import { TopPerformingResources } from "../components/research/TopPerformingResources";
+import { TopPerformingJobs } from "../components/research/TopPerformingJobs";
 
 export default function Research() {
   return (
@@ -99,9 +99,9 @@ export default function Research() {
         <EnvironmentComparison />
       </div>
 
-      {/* Top Performing Resources */}
+      {/* Top Performing Jobs */}
       <div>
-        <TopPerformingResources />
+        <TopPerformingJobs />
       </div>
     </>
   );

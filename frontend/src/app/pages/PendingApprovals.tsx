@@ -1,16 +1,17 @@
 import { useState } from "react";
-import { CheckCircle } from "lucide-react";
+import { Clock } from "lucide-react";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
 import { JobDetailModal } from "../components/JobDetailModal";
 import {
   formatJobDate,
+  getJobStatusColor,
   getJobTypeColor,
-  mockMyJobs,
+  mockPendingApprovals,
   type Job,
 } from "./jobsData";
 
-export default function MyJobs() {
+export default function PendingApprovals() {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
@@ -29,28 +30,28 @@ export default function MyJobs() {
     <div className="min-h-screen bg-gray-50">
       <UserNavigation
         activePage="Jobs"
-        activeSubPage="My Jobs"
+        activeSubPage="Pending Approvals"
         onProfileClick={() => setIsProfileOpen(true)}
       />
       <main className="mx-auto max-w-[1600px] px-6 py-8">
         <div className="space-y-6">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">My Jobs</h1>
+            <h1 className="text-3xl font-bold text-gray-900">Pending Approvals</h1>
             <p className="mt-1 text-sm text-gray-600">
-              View all jobs you created and inspect details for each item.
+              Jobs currently waiting for review and approval.
             </p>
           </div>
 
           <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
             <div className="border-b border-gray-200 bg-gray-50 px-5 py-4">
               <div className="flex items-center gap-2">
-                <CheckCircle className="h-5 w-5 text-green-600" />
-                <h3 className="font-semibold text-gray-900">My Jobs</h3>
+                <Clock className="h-5 w-5 text-yellow-600" />
+                <h3 className="font-semibold text-gray-900">Pending Approvals</h3>
               </div>
-              <p className="mt-1 text-xs text-gray-600">{mockMyJobs.length} total jobs</p>
+              <p className="mt-1 text-xs text-gray-600">{mockPendingApprovals.length} awaiting admin review</p>
             </div>
             <div className="divide-y divide-gray-200">
-              {mockMyJobs.map((job) => (
+              {mockPendingApprovals.map((job) => (
                 <div
                   key={job.id}
                   className="cursor-pointer p-4 transition-colors hover:bg-gray-50"
@@ -66,11 +67,11 @@ export default function MyJobs() {
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-xs text-gray-500">{formatJobDate(job.createdAt)}</span>
-                    {job.environment && (
-                      <span className="rounded bg-gray-100 px-2 py-1 text-xs font-medium text-gray-700">
-                        {job.environment}
-                      </span>
-                    )}
+                    <span
+                      className={`rounded border px-2 py-1 text-xs font-medium ${getJobStatusColor(job.status)}`}
+                    >
+                      Pending
+                    </span>
                   </div>
                 </div>
               ))}

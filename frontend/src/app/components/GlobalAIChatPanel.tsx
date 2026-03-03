@@ -4,12 +4,12 @@ import { useState } from "react";
 import { useAI } from "../contexts/AIContext";
 
 const examplePrompts = [
-  "Show resource trends",
+  "Show job trends",
   "Graph approval times",
   "Summarize risks",
   "Analyze recent job failures",
   "Compare this month vs last month",
-  "Show top performing resources",
+  "Show top performing jobs",
 ];
 
 export function GlobalAIChatPanel() {

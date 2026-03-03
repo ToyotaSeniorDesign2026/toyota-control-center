@@ -8,7 +8,7 @@ interface AIChatPanelProps {
 }
 
 const examplePrompts = [
-  "Show resource trends",
+  "Show job trends",
   "Graph approval times",
   "Summarize risks",
 ];

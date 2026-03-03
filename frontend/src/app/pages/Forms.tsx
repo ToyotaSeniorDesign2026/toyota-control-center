@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
-import { Database, FileSpreadsheet, Presentation } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
@@ -26,7 +25,26 @@ function buildName(prefix: string, prompt: string): string {
 export default function Forms() {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [aiPrompt, setAiPrompt] = useState("");
+  const [isAutofillChooserOpen, setIsAutofillChooserOpen] = useState(false);
   const navigate = useNavigate();
+  const draftForm = {
+    jobName: "dealer_scorecard_q2",
+    route: "/sql-job",
+    progress: "60%",
+    aiDraft: {
+      jobName: "dealer_scorecard_q2",
+      description: "Quarterly dealer scorecard with regional KPI rollups.",
+      owner: "dealer.analytics@toyota.com",
+      reportTemplate: "dealer_performance",
+      dateRange: "90",
+      regionFilter: "all",
+      departmentFilter: "all",
+      minAmount: "5000",
+      outputDestination: "email",
+      emailRecipients: "dealer.analytics@toyota.com",
+      dataSensitivity: "internal",
+    },
+  };
 
   const openExcelWithAI = () => {
     const draft = {
@@ -92,6 +110,48 @@ export default function Forms() {
     navigate("/powerpoint", { state: { aiPrompt, aiDraft: draft } });
   };
 
+  const savedTemplateOptions = [
+    {
+      label: "Saved Template: q2_dealer_scorecard",
+      route: "/sql-job",
+      draft: {
+        jobName: "q2_dealer_scorecard",
+        description: "Quarterly dealer scorecard and KPI ranking output.",
+        owner: "dealer.analytics@toyota.com",
+        reportTemplate: "dealer_performance",
+        dateRange: "90",
+        regionFilter: "all",
+        departmentFilter: "all",
+        minAmount: "5000",
+        outputDestination: "email",
+        emailRecipients: "dealer.analytics@toyota.com",
+        dataSensitivity: "internal",
+      },
+    },
+    {
+      label: "Saved Template: monthly_exec_finance_deck",
+      route: "/powerpoint",
+      draft: {
+        jobName: "monthly_exec_finance_deck",
+        description: "Executive finance summary with revenue and margin charts.",
+        owner: "finance.ops@toyota.com",
+        presentationType: "executive_dashboard",
+        dataSource: "financial_database",
+        includeTables: true,
+        includeCharts: true,
+        includeImages: false,
+        outputFormat: "pptx",
+        emailRecipients: "finance.ops@toyota.com",
+        dataSensitivity: "internal",
+      },
+    },
+  ];
+
+  const openSavedTemplate = (route: string, draft: Record<string, unknown>) => {
+    navigate(route, { state: { aiPrompt, aiDraft: draft } });
+    setIsAutofillChooserOpen(false);
+  };
+
   return (
     <div className="min-h-screen bg-gray-50">
       <UserNavigation
@@ -105,6 +165,32 @@ export default function Forms() {
             <p className="mt-1 text-sm text-gray-600">
               Choose a guided form to create scheduled jobs quickly.
             </p>
+          </div>
+
+          <div className="rounded-lg border border-amber-200 bg-amber-50 shadow-sm">
+            <div className="flex flex-col gap-4 p-6 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900">
+                  Continue editing {draftForm.jobName} form
+                </h2>
+                <p className="mt-1 text-sm text-gray-600">
+                  This form is half-filled and saved at {draftForm.progress} completion.
+                </p>
+              </div>
+              <Button
+                onClick={() =>
+                  navigate(draftForm.route, {
+                    state: {
+                      aiPrompt: "Resume saved draft form",
+                      aiDraft: draftForm.aiDraft,
+                    },
+                  })
+                }
+                className="gap-2 bg-[#ed0923] text-white hover:bg-[#d10820]"
+              >
+                Continue Editing
+              </Button>
+            </div>
           </div>
 
           <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
@@ -123,82 +209,41 @@ export default function Forms() {
                 className="w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm placeholder:text-gray-400 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
               />
               <div className="flex flex-wrap gap-3">
-                <Button onClick={openExcelWithAI} className="bg-[#ed0923] text-white hover:bg-[#d10820]">
-                  Autofill Excel
-                </Button>
-                <Button onClick={openSQLWithAI} className="bg-[#ed0923] text-white hover:bg-[#d10820]">
-                  Autofill SQL
-                </Button>
-                <Button onClick={openPowerPointWithAI} className="bg-[#ed0923] text-white hover:bg-[#d10820]">
-                  Autofill PowerPoint
+                <Button
+                  onClick={() => setIsAutofillChooserOpen((prev) => !prev)}
+                  className="bg-[#ed0923] text-white hover:bg-[#d10820]"
+                >
+                  Choose Form to Autofill
                 </Button>
               </div>
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-red-200 bg-red-50 shadow-sm">
-            <div className="flex flex-col gap-4 p-6 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#ed0923]">
-                  <FileSpreadsheet className="h-5 w-5 text-white" />
+              {isAutofillChooserOpen && (
+                <div className="rounded-lg border border-gray-200 bg-white p-4">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Pre Built Forms</p>
+                  <div className="mb-4 flex flex-wrap gap-2">
+                    <Button variant="outline" className="border-gray-300" onClick={openExcelWithAI}>
+                      Excel Report Job
+                    </Button>
+                    <Button variant="outline" className="border-gray-300" onClick={openSQLWithAI}>
+                      SQL Job
+                    </Button>
+                    <Button variant="outline" className="border-gray-300" onClick={openPowerPointWithAI}>
+                      PowerPoint Job
+                    </Button>
+                  </div>
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Saved Templates</p>
+                  <div className="flex flex-col gap-2">
+                    {savedTemplateOptions.map((option) => (
+                      <button
+                        key={option.label}
+                        onClick={() => openSavedTemplate(option.route, option.draft)}
+                        className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-left text-sm text-gray-700 hover:border-[#ed0923] hover:bg-red-50"
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-                <div>
-                  <h2 className="text-xl font-semibold text-gray-900">Excel Report Job</h2>
-                  <p className="mt-1 text-sm text-gray-600">
-                    Use the guided form to create recurring Excel report jobs.
-                  </p>
-                </div>
-              </div>
-              <Button
-                onClick={() => navigate("/excel-report")}
-                className="gap-2 bg-[#ed0923] text-white hover:bg-[#d10820]"
-              >
-                Open Excel Form
-              </Button>
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-red-200 bg-red-50 shadow-sm">
-            <div className="flex flex-col gap-4 p-6 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#ed0923]">
-                  <Database className="h-5 w-5 text-white" />
-                </div>
-                <div>
-                  <h2 className="text-xl font-semibold text-gray-900">SQL Job</h2>
-                  <p className="mt-1 text-sm text-gray-600">
-                    Use the guided form to schedule recurring SQL jobs.
-                  </p>
-                </div>
-              </div>
-              <Button
-                onClick={() => navigate("/sql-job")}
-                className="gap-2 bg-[#ed0923] text-white hover:bg-[#d10820]"
-              >
-                Open SQL Form
-              </Button>
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-red-200 bg-red-50 shadow-sm">
-            <div className="flex flex-col gap-4 p-6 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#ed0923]">
-                  <Presentation className="h-5 w-5 text-white" />
-                </div>
-                <div>
-                  <h2 className="text-xl font-semibold text-gray-900">PowerPoint Job</h2>
-                  <p className="mt-1 text-sm text-gray-600">
-                    Use the guided form to generate scheduled presentations.
-                  </p>
-                </div>
-              </div>
-              <Button
-                onClick={() => navigate("/powerpoint")}
-                className="gap-2 bg-[#ed0923] text-white hover:bg-[#d10820]"
-              >
-                Open PowerPoint Form
-              </Button>
+              )}
             </div>
           </div>
         </div>

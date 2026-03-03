@@ -1,27 +1,55 @@
-import { Bell } from "lucide-react";
+import { Bell, CalendarDays, ChevronDown } from "lucide-react";
 import { Link } from "react-router";
 import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
 import { useUser } from "../contexts/UserContext";
 import { useState } from "react";
 import { NotificationPanel } from "./notifications/NotificationPanel";
 import ChatAgent from "./user/ChatAgent";
+import { pendingRequiredActionsCount } from "../pages/requiredActionsData";
 
 export function UserNavigation({ 
   activePage = "Dashboard",
+  activeSubPage,
   onProfileClick
 }: { 
   activePage?: string;
+  activeSubPage?:
+    | "Pre Built Forms"
+    | "Saved Templates"
+    | "My Jobs"
+    | "Pending Approvals"
+    | "Running Jobs"
+    | "Promotions"
+    | "Edits";
   onProfileClick?: () => void;
 }) {
   const { profile } = useUser();
   const [isNotificationPanelOpen, setIsNotificationPanelOpen] = useState(false);
+  const isFormsActive = activePage === "Forms";
+  const isJobsActive = activePage === "Jobs";
+  const isPromotionsActive = activePage === "Promotions & Edits";
   
   const navItems = [
     { label: "Dashboard", active: activePage === "Dashboard", path: "/user-home" },
-    { label: "Forms", active: activePage === "Forms", path: "/forms" },
-    { label: "My Resources", active: activePage === "My Resources", path: "/my-resources" },
-    { label: "Promotions & Edits", active: activePage === "Promotions & Edits", path: "/promotions-edits" },
-    { label: "User", active: false, secondary: true, path: "#" },
+    {
+      label: "Required Actions",
+      active: activePage === "Required Actions",
+      path: "/required-actions",
+      badge: pendingRequiredActionsCount(),
+    },
+  ];
+  const jobsItems = [
+    { label: "My Jobs", path: "/jobs/my-jobs" },
+    { label: "Pending Approvals", path: "/jobs/pending-approvals" },
+    { label: "Running Jobs", path: "/jobs/running-jobs" },
+  ];
+  const promotionsItems = [
+    { label: "Promotions", path: "/promotions-edits/promotions" },
+    { label: "Edits", path: "/promotions-edits/edits" },
+  ];
+  const formsItems = [
+    { label: "Pre Built Forms", path: "/forms/pre-built-forms" },
+    { label: "Saved Templates", path: "/forms/saved-templates" },
   ];
 
   return (
@@ -40,32 +68,132 @@ export function UserNavigation({
           </Link>
           <nav className="flex items-center gap-1">
             {navItems.map((item) => (
-              item.secondary ? (
-                <span
-                  key={item.label}
-                  className="px-3 py-2 text-sm font-medium text-gray-400"
-                >
+              <Link
+                key={item.label}
+                to={item.path}
+                className={`px-3 py-2 text-sm font-medium transition-colors rounded-md ${
+                  item.active
+                    ? "bg-gray-100 text-gray-900"
+                    : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+                }`}
+              >
+                <span className="inline-flex items-center gap-2">
                   {item.label}
+                  {typeof item.badge === "number" && item.badge > 0 && (
+                    <span className="inline-flex min-w-[18px] items-center justify-center rounded-full bg-[#ed0923] px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                      {item.badge}
+                    </span>
+                  )}
                 </span>
-              ) : (
-                <Link
-                  key={item.label}
-                  to={item.path}
-                  className={`px-3 py-2 text-sm font-medium transition-colors rounded-md ${
-                    item.active
-                      ? "bg-gray-100 text-gray-900"
-                      : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
-                  }`}
-                >
-                  {item.label}
-                </Link>
-              )
+              </Link>
             ))}
+            <div className="group relative">
+              <Link
+                to="/forms"
+                className={`flex items-center gap-1 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                  isFormsActive
+                    ? "bg-gray-100 text-gray-900"
+                    : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+                }`}
+              >
+                Forms
+                <ChevronDown className="h-4 w-4" />
+              </Link>
+              <div className="absolute left-0 top-full z-50 hidden min-w-[210px] pt-2 group-hover:block">
+                <div className="rounded-md border border-gray-200 bg-white py-1 shadow-lg">
+                  {formsItems.map((item) => (
+                    <Link
+                      key={item.label}
+                      to={item.path}
+                      className={`block px-3 py-2 text-sm ${
+                        activeSubPage === item.label
+                          ? "bg-red-50 text-[#ed0923]"
+                          : "text-gray-700 hover:bg-gray-50"
+                      }`}
+                    >
+                      {item.label}
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="group relative">
+              <Link
+                to="/jobs/my-jobs"
+                className={`flex items-center gap-1 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                  isJobsActive
+                    ? "bg-gray-100 text-gray-900"
+                    : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+                }`}
+              >
+                Jobs
+                <ChevronDown className="h-4 w-4" />
+              </Link>
+              <div className="absolute left-0 top-full z-50 hidden min-w-[220px] pt-2 group-hover:block">
+                <div className="rounded-md border border-gray-200 bg-white py-1 shadow-lg">
+                  {jobsItems.map((item) => (
+                    <Link
+                      key={item.label}
+                      to={item.path}
+                      className={`block px-3 py-2 text-sm ${
+                        activeSubPage === item.label
+                          ? "bg-red-50 text-[#ed0923]"
+                          : "text-gray-700 hover:bg-gray-50"
+                      }`}
+                    >
+                      {item.label}
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="group relative">
+              <Link
+                to="/promotions-edits/promotions"
+                className={`flex items-center gap-1 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                  isPromotionsActive
+                    ? "bg-gray-100 text-gray-900"
+                    : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+                }`}
+              >
+                Promotions & Edits
+                <ChevronDown className="h-4 w-4" />
+              </Link>
+              <div className="absolute left-0 top-full z-50 hidden min-w-[180px] pt-2 group-hover:block">
+                <div className="rounded-md border border-gray-200 bg-white py-1 shadow-lg">
+                  {promotionsItems.map((item) => (
+                    <Link
+                      key={item.label}
+                      to={item.path}
+                      className={`block px-3 py-2 text-sm ${
+                        activeSubPage === item.label
+                          ? "bg-red-50 text-[#ed0923]"
+                          : "text-gray-700 hover:bg-gray-50"
+                      }`}
+                    >
+                      {item.label}
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <span className="px-3 py-2 text-sm font-medium text-gray-400">User</span>
           </nav>
         </div>
 
         {/* Right: Notifications, User */}
         <div className="flex items-center gap-4">
+          <Link
+            to="/calendar"
+            className={`rounded-lg p-2 transition-colors ${
+              activePage === "Calendar"
+                ? "bg-red-50 text-[#ed0923]"
+                : "text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            }`}
+          >
+            <CalendarDays className="h-5 w-5" />
+          </Link>
+
           {/* Notifications */}
           <button
             className="relative rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"

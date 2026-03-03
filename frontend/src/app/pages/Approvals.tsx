@@ -17,7 +17,7 @@ type FilterTab = "all" | "pending-my-approval" | "approved" | "rejected" | "high
 const mockApprovals: Approval[] = [
   {
     id: "APR-2024-1847",
-    resourceName: "customer_segmentation_model",
+    jobName: "customer_segmentation_model",
     changeType: "Promote",
     fromEnvironment: "Semi-Prod",
     toEnvironment: "Production",
@@ -29,7 +29,7 @@ const mockApprovals: Approval[] = [
   },
   {
     id: "APR-2024-1846",
-    resourceName: "etl_customer_data_pipeline",
+    jobName: "etl_customer_data_pipeline",
     changeType: "Update",
     fromEnvironment: "Dev",
     toEnvironment: "Dev",
@@ -41,7 +41,7 @@ const mockApprovals: Approval[] = [
   },
   {
     id: "APR-2024-1845",
-    resourceName: "sales_forecast_dbt",
+    jobName: "sales_forecast_dbt",
     changeType: "Create",
     fromEnvironment: "Dev",
     toEnvironment: "Semi-Prod",
@@ -53,7 +53,7 @@ const mockApprovals: Approval[] = [
   },
   {
     id: "APR-2024-1844",
-    resourceName: "user_retention_agent",
+    jobName: "user_retention_agent",
     changeType: "Promote",
     fromEnvironment: "Dev",
     toEnvironment: "Production",
@@ -65,7 +65,7 @@ const mockApprovals: Approval[] = [
   },
   {
     id: "APR-2024-1843",
-    resourceName: "legacy_reporting_sql",
+    jobName: "legacy_reporting_sql",
     changeType: "Delete",
     fromEnvironment: "Production",
     toEnvironment: "Production",
@@ -77,7 +77,7 @@ const mockApprovals: Approval[] = [
   },
   {
     id: "APR-2024-1842",
-    resourceName: "inventory_sync_airflow",
+    jobName: "inventory_sync_airflow",
     changeType: "Update",
     fromEnvironment: "Semi-Prod",
     toEnvironment: "Semi-Prod",
@@ -115,7 +115,7 @@ export default function Approvals() {
   // Apply search and additional filters
   const displayApprovals = filteredApprovals.filter((approval) => {
     const matchesSearch = 
-      approval.resourceName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      approval.jobName.toLowerCase().includes(searchQuery.toLowerCase()) ||
       approval.id.toLowerCase().includes(searchQuery.toLowerCase());
     
     const matchesEnvironment =
@@ -156,7 +156,7 @@ export default function Approvals() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Approvals</h1>
           <p className="mt-2 text-sm text-gray-600">
-            Review and approve resource changes before promotion.
+            Review and approve job changes before promotion.
           </p>
         </div>
       </div>
@@ -206,7 +206,7 @@ export default function Approvals() {
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
               <input
                 type="text"
-                placeholder="Search by resource name or approval ID..."
+                placeholder="Search by job name or approval ID..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="h-9 w-full rounded-md border border-gray-200 bg-white pl-10 pr-4 text-sm placeholder:text-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
@@ -245,7 +245,7 @@ export default function Approvals() {
 
       {/* Main Content Grid */}
       <div className="mb-6">
-        {/* Resources Needing Approval (Full Width) */}
+        {/* Jobs Needing Approval (Full Width) */}
         {displayApprovals.length > 0 ? (
           <ApprovalsTable
             approvals={displayApprovals}

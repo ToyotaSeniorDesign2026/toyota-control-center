@@ -9,7 +9,7 @@ import {
   TableRow,
 } from "../ui/table";
 
-interface Resource {
+interface Job {
   id: string;
   name: string;
   type: string;
@@ -19,7 +19,7 @@ interface Resource {
   riskTrend: "up" | "down" | "stable";
 }
 
-const mockResources: Resource[] = [
+const mockJobs: Job[] = [
   {
     id: "1",
     name: "customer_churn_predictor",
@@ -94,7 +94,7 @@ const mockResources: Resource[] = [
   },
 ];
 
-function RiskTrendIndicator({ trend }: { trend: Resource["riskTrend"] }) {
+function RiskTrendIndicator({ trend }: { trend: Job["riskTrend"] }) {
   if (trend === "down") {
     return (
       <div className="flex items-center gap-1 text-green-600">
@@ -119,19 +119,19 @@ function RiskTrendIndicator({ trend }: { trend: Resource["riskTrend"] }) {
   );
 }
 
-export function TopPerformingResources() {
+export function TopPerformingJobs() {
   const [searchQuery, setSearchQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 5;
 
-  const filteredResources = mockResources.filter((resource) =>
-    resource.name.toLowerCase().includes(searchQuery.toLowerCase())
+  const filteredJobs = mockJobs.filter((job) =>
+    job.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const totalPages = Math.ceil(filteredResources.length / itemsPerPage);
+  const totalPages = Math.ceil(filteredJobs.length / itemsPerPage);
   const startIndex = (currentPage - 1) * itemsPerPage;
   const endIndex = startIndex + itemsPerPage;
-  const paginatedResources = filteredResources.slice(startIndex, endIndex);
+  const paginatedJobs = filteredJobs.slice(startIndex, endIndex);
 
   // Reset to page 1 when search changes
   React.useEffect(() => {
@@ -142,13 +142,13 @@ export function TopPerformingResources() {
     <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
       <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
         <h2 className="text-lg font-semibold text-gray-900">
-          Top Performing Resources
+          Top Performing Jobs
         </h2>
         <div className="relative">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
           <input
             type="text"
-            placeholder="Search resources..."
+            placeholder="Search jobs..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="h-9 w-64 rounded-md border border-gray-200 bg-white pl-10 pr-4 text-sm placeholder:text-gray-400 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
@@ -161,7 +161,7 @@ export function TopPerformingResources() {
           <TableHeader>
             <TableRow className="border-gray-200 hover:bg-transparent">
               <TableHead className="py-2 text-xs font-medium uppercase tracking-wide text-gray-500">
-                Resource Name
+                Job Name
               </TableHead>
               <TableHead className="py-2 text-xs font-medium uppercase tracking-wide text-gray-500">
                 Type
@@ -181,36 +181,36 @@ export function TopPerformingResources() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {paginatedResources.map((resource) => (
+            {paginatedJobs.map((job) => (
               <TableRow
-                key={resource.id}
+                key={job.id}
                 className="border-gray-200 hover:bg-gray-50"
               >
                 <TableCell className="py-2 font-medium text-gray-900">
-                  {resource.name}
+                  {job.name}
                 </TableCell>
-                <TableCell className="py-2 text-gray-600">{resource.type}</TableCell>
+                <TableCell className="py-2 text-gray-600">{job.type}</TableCell>
                 <TableCell className="py-2 text-gray-900">
-                  {resource.totalRuns.toLocaleString()}
+                  {job.totalRuns.toLocaleString()}
                 </TableCell>
                 <TableCell className="py-2">
                   <span
                     className={`font-medium ${
-                      resource.successRate >= 98
+                      job.successRate >= 98
                         ? "text-green-600"
-                        : resource.successRate >= 95
+                        : job.successRate >= 95
                         ? "text-yellow-600"
                         : "text-red-600"
                     }`}
                   >
-                    {resource.successRate}%
+                    {job.successRate}%
                   </span>
                 </TableCell>
                 <TableCell className="py-2 text-gray-600">
-                  {resource.avgDuration}
+                  {job.avgDuration}
                 </TableCell>
                 <TableCell className="py-2">
-                  <RiskTrendIndicator trend={resource.riskTrend} />
+                  <RiskTrendIndicator trend={job.riskTrend} />
                 </TableCell>
               </TableRow>
             ))}
@@ -222,8 +222,8 @@ export function TopPerformingResources() {
       {totalPages > 1 && (
         <div className="flex items-center justify-between border-t border-gray-200 px-4 py-3">
           <div className="text-sm text-gray-600">
-            Showing {startIndex + 1} to {Math.min(endIndex, filteredResources.length)} of{" "}
-            {filteredResources.length} resources
+            Showing {startIndex + 1} to {Math.min(endIndex, filteredJobs.length)} of{" "}
+            {filteredJobs.length} jobs
           </div>
           <div className="flex items-center gap-2">
             <button

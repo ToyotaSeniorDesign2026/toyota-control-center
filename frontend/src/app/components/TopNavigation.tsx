@@ -38,7 +38,7 @@ export function TopNavigation({
     // Admin navigation
     return [
       { label: "Dashboard", active: activePage === "Dashboard", path: "/" },
-      { label: "Resources", active: activePage === "Resources", path: "/resources" },
+      { label: "Jobs", active: activePage === "Jobs", path: "/jobs" },
       { label: "Runs", active: activePage === "Runs", path: "/runs" },
       { label: "Research", active: activePage === "Research", path: "/research" },
       { label: "Approvals", active: activePage === "Approvals", path: "/approvals" },
