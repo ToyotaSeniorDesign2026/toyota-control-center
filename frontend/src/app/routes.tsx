@@ -24,6 +24,7 @@ import { LoginPage } from "./pages/LoginPage";
 import CalendarPage from "./pages/Calendar";
 import RequiredActionForm from "./pages/RequiredActionForm";
 import RequiredActions from "./pages/RequiredActions";
+import CreateJob from "./pages/CreateJob";
 
 // Create the router with all routes
 export const router = createBrowserRouter([
@@ -102,6 +103,10 @@ export const router = createBrowserRouter([
   {
     path: "/required-actions",
     Component: RequiredActions,
+  },
+  {
+    path: "/create-job",
+    Component: CreateJob,
   },
   {
     path: "/",

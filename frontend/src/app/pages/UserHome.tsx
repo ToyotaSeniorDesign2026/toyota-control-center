@@ -4,26 +4,17 @@ import {
   CheckCircle2,
   Clock3,
   PlayCircle,
-  Send,
   Sparkles,
 } from "lucide-react";
 import { useNavigate } from "react-router";
 import { Button } from "../components/ui/button";
-import { Textarea } from "../components/ui/textarea";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
-import { ManualJobCreationModal } from "../components/ManualResourceCreationModal";
 import {
   pendingRequiredActionsCount,
   requiredActionItems,
   requiredActionStateBadge,
 } from "./requiredActionsData";
-
-const starterPrompts = [
-  "Create a weekly dealer performance SQL report for Texas",
-  "Build a monthly executive PowerPoint for finance leaders",
-  "Set up a daily Excel job for warranty claim trends",
-];
 
 const kpis = [
   { label: "My Active Jobs", value: 12, hint: "+2 this week", tone: "text-green-600" },
@@ -36,73 +27,14 @@ const recentJobs = [
   { name: "Monthly Dealer KPI Deck", type: "PowerPoint", schedule: "Monthly, day 1", status: "Healthy" },
   { name: "Warranty Claims Rollup", type: "Excel", schedule: "Weekly, Mon 08:00", status: "Running" },
   { name: "Customer Churn Analysis", type: "SQL", schedule: "Daily, 06:00", status: "Needs Attention" },
+  { name: "Quarterly Revenue Report", type: "PowerPoint", schedule: "Quarterly, day 1", status: "Healthy" },
 ];
-
-type PreviewTemplateForm = {
-  formName: string;
-  jobType: "SQL" | "Excel" | "PowerPoint" | "AI Agent";
-  schedule: string;
-  owner: string;
-  destination: string;
-  description: string;
-};
-
-function buildTemplateDraft(prompt: string): PreviewTemplateForm {
-  const lower = prompt.toLowerCase();
-  const jobType: PreviewTemplateForm["jobType"] = lower.includes("powerpoint")
-    ? "PowerPoint"
-    : lower.includes("excel")
-      ? "Excel"
-      : lower.includes("agent")
-        ? "AI Agent"
-        : "SQL";
-  const schedule = lower.includes("daily")
-    ? "Daily - 08:00"
-    : lower.includes("weekly")
-      ? "Weekly - Monday 08:00"
-      : "Monthly - Day 1 09:00";
-  const formName = prompt
-    ? `form_${prompt.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 36)}`
-    : "form_new_job";
-
-  return {
-    formName,
-    jobType,
-    schedule,
-    owner: lower.includes("finance") ? "finance.ops@toyota.com" : "analyst@toyota.com",
-    destination: "Email + Dashboard",
-    description: prompt || "AI-generated form draft.",
-  };
-}
 
 export default function UserHome() {
   const navigate = useNavigate();
   const [isProfileOpen, setIsProfileOpen] = useState(false);
-  const [prompt, setPrompt] = useState("");
-  const [isManualModalOpen, setIsManualModalOpen] = useState(false);
-  const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
-  const [previewForm, setPreviewForm] = useState<PreviewTemplateForm>(buildTemplateDraft(""));
   const requiredActionPreview = requiredActionItems.slice(0, 3);
   const pendingCount = pendingRequiredActionsCount();
-
-  const createPreview = () => {
-    const value = prompt.trim();
-    if (!value) return;
-    setPreviewForm(buildTemplateDraft(value));
-    setIsPreviewModalOpen(true);
-    setPrompt("");
-  };
-
-  const handleSaveTemplate = () => {
-    console.log("Save form:", previewForm);
-    setIsPreviewModalOpen(false);
-  };
-
-  const handleCreateTemplate = () => {
-    console.log("Create form:", previewForm);
-    setIsPreviewModalOpen(false);
-    navigate("/forms");
-  };
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -119,16 +51,22 @@ export default function UserHome() {
                 Track jobs, submit forms, and use AI assistance to draft workflow requests.
               </p>
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-3">
               <Button
-                variant="outline"
-                className="border-gray-300"
+                className="bg-[#ed0923] text-white hover:bg-[#d10820]"
+                onClick={() => navigate("/create-job")}
+              >
+                <Sparkles className="mr-2 h-4 w-4" />
+                Create Job with AI
+              </Button>
+              <Button
+                className="bg-white border border-gray-200 text-gray-700 hover:bg-gray-50"
                 onClick={() => navigate("/forms")}
               >
                 Open Forms
               </Button>
               <Button
-                className="bg-[#ed0923] text-white hover:bg-[#d10820]"
+                className="bg-white border border-gray-200 text-gray-700 hover:bg-gray-50"
                 onClick={() => navigate("/jobs/my-jobs")}
               >
                 Go to My Jobs
@@ -166,49 +104,6 @@ export default function UserHome() {
 
           <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
             <div className="space-y-6 xl:col-span-2">
-              <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
-                <div className="border-b border-gray-200 bg-gradient-to-r from-[#ed0923]/10 to-transparent p-5">
-                  <div className="flex items-center gap-2">
-                    <Sparkles className="h-5 w-5 text-[#ed0923]" />
-                    <h2 className="text-lg font-semibold text-gray-900">AI Build Assistant</h2>
-                  </div>
-                </div>
-                <div className="space-y-3 p-5">
-                  <Textarea
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
-                    placeholder="Describe the job you want AI to plan..."
-                    rows={4}
-                    className="border-gray-200"
-                  />
-                  <div className="grid grid-cols-1 gap-2">
-                    {starterPrompts.map((item) => (
-                      <button
-                        key={item}
-                        onClick={() => setPrompt(item)}
-                        className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-left text-xs text-gray-700 hover:border-[#ed0923] hover:bg-red-50"
-                      >
-                        {item}
-                      </button>
-                    ))}
-                  </div>
-                  <Button
-                    onClick={createPreview}
-                    className="w-full bg-[#ed0923] text-white hover:bg-[#d10820]"
-                  >
-                    <Send className="mr-2 h-4 w-4" />
-                    Generate Preview
-                  </Button>
-                  <Button
-                    variant="outline"
-                    className="w-full border-gray-300"
-                    onClick={() => setIsManualModalOpen(true)}
-                  >
-                    Manually Create Job
-                  </Button>
-                </div>
-              </div>
-
               <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
                 <div className="border-b border-gray-200 p-5">
                   <h2 className="text-lg font-semibold text-gray-900">Recent Jobs</h2>
@@ -296,7 +191,7 @@ export default function UserHome() {
                 Review Promotions
               </Button>
               <Button variant="outline" className="border-gray-300" onClick={() => navigate("/calendar")}>
-                Open Run History
+                Open Run Calendar
               </Button>
             </div>
           </div>
@@ -304,105 +199,6 @@ export default function UserHome() {
       </main>
 
       <UserProfilePanel isOpen={isProfileOpen} onClose={() => setIsProfileOpen(false)} />
-      <ManualJobCreationModal
-        isOpen={isManualModalOpen}
-        onClose={() => setIsManualModalOpen(false)}
-      />
-
-      {isPreviewModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
-          <div className="w-full max-w-2xl rounded-xl border border-gray-200 bg-white shadow-xl">
-            <div className="border-b border-gray-200 bg-gray-50 p-5">
-              <h2 className="text-xl font-semibold text-gray-900">AI Job Preview Form</h2>
-              <p className="mt-1 text-sm text-gray-600">
-                Review and edit this generated form before saving or creating.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 gap-4 p-5 md:grid-cols-2">
-              <div>
-                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Form Name</label>
-                <input
-                  value={previewForm.formName}
-                  onChange={(e) => setPreviewForm((prev) => ({ ...prev, formName: e.target.value }))}
-                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Job Type</label>
-                <select
-                  value={previewForm.jobType}
-                  onChange={(e) =>
-                    setPreviewForm((prev) => ({ ...prev, jobType: e.target.value as PreviewTemplateForm["jobType"] }))
-                  }
-                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
-                >
-                  <option value="SQL">SQL</option>
-                  <option value="Excel">Excel</option>
-                  <option value="PowerPoint">PowerPoint</option>
-                  <option value="AI Agent">AI Agent</option>
-                </select>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Schedule</label>
-                <input
-                  value={previewForm.schedule}
-                  onChange={(e) => setPreviewForm((prev) => ({ ...prev, schedule: e.target.value }))}
-                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Owner</label>
-                <input
-                  value={previewForm.owner}
-                  onChange={(e) => setPreviewForm((prev) => ({ ...prev, owner: e.target.value }))}
-                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
-                />
-              </div>
-              <div className="md:col-span-2">
-                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Destination</label>
-                <input
-                  value={previewForm.destination}
-                  onChange={(e) => setPreviewForm((prev) => ({ ...prev, destination: e.target.value }))}
-                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
-                />
-              </div>
-              <div className="md:col-span-2">
-                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Description</label>
-                <Textarea
-                  value={previewForm.description}
-                  onChange={(e) => setPreviewForm((prev) => ({ ...prev, description: e.target.value }))}
-                  rows={4}
-                  className="border-gray-200"
-                />
-              </div>
-            </div>
-
-            <div className="flex flex-wrap justify-end gap-2 border-t border-gray-200 bg-gray-50 p-4">
-              <Button
-                variant="outline"
-                className="border-gray-300"
-                onClick={() => setIsPreviewModalOpen(false)}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="outline"
-                className="border-[#ed0923] text-[#ed0923] hover:bg-red-50"
-                onClick={handleSaveTemplate}
-              >
-                Save Form
-              </Button>
-              <Button
-                className="bg-[#ed0923] text-white hover:bg-[#d10820]"
-                onClick={handleCreateTemplate}
-              >
-                Create Form
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

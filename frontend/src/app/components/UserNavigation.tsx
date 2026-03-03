@@ -4,7 +4,6 @@ import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
 import { useUser } from "../contexts/UserContext";
 import { useState } from "react";
 import { NotificationPanel } from "./notifications/NotificationPanel";
-import ChatAgent from "./user/ChatAgent";
 import { pendingRequiredActionsCount } from "../pages/requiredActionsData";
 
 export function UserNavigation({ 
@@ -31,6 +30,11 @@ export function UserNavigation({
   
   const navItems = [
     { label: "Dashboard", active: activePage === "Dashboard", path: "/user-home" },
+    {
+      label: "Create Job",
+      active: activePage === "Create Job",
+      path: "/create-job",
+    },
     {
       label: "Required Actions",
       active: activePage === "Required Actions",
@@ -225,8 +229,6 @@ export function UserNavigation({
           onClose={() => setIsNotificationPanelOpen(false)} 
         />
       </header>
-
-      <ChatAgent />
     </>
   );
 }
