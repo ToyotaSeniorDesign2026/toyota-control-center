@@ -84,6 +84,12 @@ Or, for an even easier way, you can just run the launcher script with zero confi
 chmod +x run_fastmcp_docs.sh
 ```
 
+To launch it with its own testing UI (MCP Inspector), run:
+
+```
+npx -y @modelcontextprotocol/inspector uv run --with fastmcp fastmcp_docs.py
+```
+
 ---
 
 ## ⚡ Quick Start for MCP Client Config
