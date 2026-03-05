@@ -1,0 +1,18 @@
+{
+  "$schema": "https://gofastmcp.com/public/schemas/fastmcp.json/v1.json",
+  "source": {
+    "path": "server.py",
+    "entrypoint": "mcp"
+  },
+  "environment": {
+    "requirements": "requirements/testing.txt"
+  },
+  "deployment": {
+    "transport": "stdio",
+    "log_level": "DEBUG",
+    "env": {
+      "FASTMCP_TESTING": "true",
+      "DATABASE_URL": "sqlite:///./test.db"
+    }
+  }
+}

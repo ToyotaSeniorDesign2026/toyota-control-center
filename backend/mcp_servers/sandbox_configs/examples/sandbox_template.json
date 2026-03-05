@@ -1,0 +1,33 @@
+{
+
+  "<SERVER-NAME>": {
+
+    "type": "stdio",
+    "command": "npx",
+    "args": ["-y", "@example/mcp-server"],
+    "envFile": "${workspaceFolder}/.env",
+
+    "sandboxEnabled": true,
+    "sandbox": {
+      "filesystem": {
+        "allowWrite": ["${workspaceFolder}/output"],
+        "denyRead": ["${workspaceFolder}/docs"],
+        "denyWrite": ["${workspaceFolder}/src"]
+      },
+      "network": {
+        "allowedDomains": ["api.example.com"],
+        "deniedDomains": ["*.social_media.com"]
+      }
+    },
+
+    "dev": {
+      "watch": "**/*.py",
+      "debug": {
+        "type": "debugpy",
+        "debugpyPath": "/path/to/debugpy"
+      }
+    }
+
+  }
+
+}

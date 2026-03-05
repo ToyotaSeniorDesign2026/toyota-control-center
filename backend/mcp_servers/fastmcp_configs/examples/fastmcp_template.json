@@ -1,0 +1,45 @@
+{
+
+  "<SERVER-NAME>": {
+
+    "$schema": "https://gofastmcp.com/public/schemas/fastmcp.json/latest.json",
+    "source": {
+      "path": "src/server.py",
+      "entrypoint": "mcp",
+      "type": "filesystem"
+    },
+    "environment": {
+      "type": "uv",
+      "python": "3.12",
+      "dependencies": [
+        "fastmcp>=3.0.0",
+        "httpx",
+        "pandas>=2.0"
+      ],
+      "requirements": "requirements.txt",
+      "project": ".",
+      "editable": [
+        "."
+      ]
+    },
+    "deployment": {
+      "transport": "http",
+      "host": "127.0.0.1",
+      "port": 8000,
+      "path": "/mcp/",
+      "log_level": "DEBUG",
+      "env": {
+        "API_KEY": "your-secret-key",
+        "DATABASE_URL": "postgres://${DB_USER}@${DB_HOST}/mydb"
+      },
+      "cwd": ".",
+      "args": [
+        "--config",
+        "config.json",
+        "--debug"
+      ]
+    }
+
+  }
+
+}

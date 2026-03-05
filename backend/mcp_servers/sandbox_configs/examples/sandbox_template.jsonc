@@ -1,0 +1,93 @@
+{
+
+  "<SERVER-NAME>": {
+
+    // `type` (string) [REQUIRED]
+    // 	Server connection type.
+    // Allowed: "stdio" | "http" | "sse" | "streamable-http"
+    "type": "stdio",
+
+    // `command` (string) [REQUIRED FOR "stdio" TRANSPORT]
+    // Command to start the server executable.
+    "command": "npx",
+
+    // `args` (list[str])
+    // Array of arguments passed to the command.
+    "args": ["-y", "@example/mcp-server"],
+
+    // `env` (object)
+    // Environment variables for the server process.
+    "env": {
+      "API_KEY": "your-secret-key",
+      "DEBUG": "true"
+    },
+
+    // `envFile` (string)
+    // Path to an environment file to load more variables.
+    "envFile": "${workspaceFolder}/.env",
+
+    // `url` (string) [REQUIRED FOR "http" | "streamable-http" | "sse" | TRANSPORTS]
+    // The remote endpoint URL for the server.
+    "url": "https://api.example.com/mcp",
+
+    // `headers` (object)
+    // HTTP headers sent with "http", "sse", or "streamable-http" requests for authentication or configuration.
+    "headers": {
+      "Authorization": "Bearer your-token"
+    },
+
+    // `sandboxEnabled` (boolean)
+    // Run the server in an isolated "sandboxed" environment (only supported on macOS and Linux).
+    "sandboxEnabled": true,
+    // `sandbox` (object)
+    // Defines restrictions for the isolated environment.
+    "sandbox": {
+
+      // `filesystem` (object)
+      // Restrictions on file system access for the server process. Permit predefined path values like ${workspaceFolder}.
+      "filesystem": {
+        // `allowWrite` (list[str])
+        // File paths that the server is allowed to write to.
+        "allowWrite": ["${workspaceFolder}/output"],
+        // `denyRead` (list[str])
+        // File paths that the server is not allowed to read.
+        "denyRead": ["${workspaceFolder}/docs"],
+        // `denyWrite` (list[str])
+        // File paths that the server is not allowed to write to.
+        "denyWrite": ["${workspaceFolder}/src"]
+      },
+
+      // `network` (object)
+      // Restrictions on network access for the server. Support predefined domains and wildcards (e.g. *.example.com).
+      "network": {
+        // `allowedDomains` (list[str]):
+        // Domains that the server is allowed to access.
+        "allowedDomains": ["api.example.com"],
+        // `deniedDomains` (list[str]):
+        // Domains that the server is not allowed to access.
+        "deniedDomains": ["*.social_media.com"]
+      }
+
+    },
+
+    // `dev` (object)
+    // Development settings for the server, such as auto-restart on file changes and debugging configuration.
+    "dev": {
+      // `watch` (string)
+      // A file glob pattern to watch for files change that will restart the MCP server.
+      "watch": "**/*.py",
+      // `debug` (object)
+      // Enables you to set up a debugger with the MCP server.
+      "debug": {
+        // `type` (string) [REQUIRED]
+        // Debugger type. Supported values depend on the server's language (Python, Node.js) and runtime environment.
+        "type": "debugpy",
+        // `debugpyPath` (string) [REQUIRED FOR "debugpy" DEBUGGER]
+        // Path to the debugpy package for Python debugging if not installed in the default Python environment.
+        "debugpyPath": "/path/to/debugpy"
+      }
+    }
+
+  }
+
+}

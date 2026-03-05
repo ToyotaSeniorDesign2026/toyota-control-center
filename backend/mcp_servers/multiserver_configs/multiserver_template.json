@@ -1,0 +1,57 @@
+{
+
+  "mcpServers": {
+
+    "local-assistant": {
+      "name": "Local Python Assistant",
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--with", "fastmcp", "src/mcp_server.py"],
+      "env": {
+        "API_KEY": "your-secret-key",
+        "DEBUG": "true"
+      },
+      "cwd": ".",
+      "oath": {
+        "client_id": "local-client-id",
+        "auth_url": "https://auth.example.com/authorize",
+        "callbackPort": 8080
+      }
+    },
+
+    "weather-service": {
+      "name": "Curated Weather API",
+      "type": "sse",
+      "url": "https://gofastmcp.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${API_TOKEN}",
+        "X-Custom-Header": "production-v1"
+      },
+      "include_tags": ["forecast"],
+      "tools": {
+        "get_weather": {
+          "name": "miami_forecast",
+          "description": "Get the current 5-day forecast for Miami only.",
+          "arguments": {
+            "city": {
+              "default": "Miami",
+              "hide": true
+            }
+          }
+        }
+      }
+    },
+
+    "cloud-storage": {
+      "name": "Remote File Browser",
+      "type": "streamable-http",
+      "url": "https://files.example.com/mcp",
+      "headers": {
+        "X-Project-ID": "alpha-niner"
+      },
+      "exclude_tags": ["admin", "delete"]
+    }
+
+  }
+
+}
