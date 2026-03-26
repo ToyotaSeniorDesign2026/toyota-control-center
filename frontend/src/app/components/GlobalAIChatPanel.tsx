@@ -125,40 +125,40 @@ export function GlobalAIChatPanel() {
         )}
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+        <div className="flex-1 overflow-y-auto p-6 space-y-4 flex flex-col">
           {messages.map((msg, index) => (
             <div
               key={index}
               className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
             >
               <div
-                className={`max-w-[80%] rounded-lg p-4 ${
+                className={`rounded-lg p-4 text-sm flex-shrink-0 max-w-[85%] ${
                   msg.role === "user"
                     ? "bg-[#ed0923] text-white"
                     : "bg-gray-100 text-gray-900"
                 }`}
               >
-                <p className="text-sm">{msg.content}</p>
+                <p className="whitespace-pre-wrap break-words">{msg.content}</p>
               </div>
             </div>
           ))}
         </div>
 
         {/* Input */}
-        <div className="border-t border-gray-200 p-4">
-          <div className="flex gap-2">
+        <div className="border-t border-gray-200 p-4 flex-shrink-0 w-full">
+          <div className="flex gap-2 w-full">
             <input
               type="text"
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               onKeyPress={(e) => e.key === "Enter" && handleSend()}
               placeholder="Type your message..."
-              className="flex-1 rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm placeholder:text-gray-400 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+              className="flex-1 rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm placeholder:text-gray-400 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923] min-w-0"
             />
             <Button
               onClick={handleSend}
               disabled={!message.trim()}
-              className="h-auto rounded-lg bg-[#ed0923] px-4 py-3 hover:bg-[#d10820] disabled:opacity-50 disabled:cursor-not-allowed"
+              className="h-auto rounded-lg bg-[#ed0923] px-4 py-3 hover:bg-[#d10820] disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
             >
               <Send className="h-5 w-5" />
             </Button>
