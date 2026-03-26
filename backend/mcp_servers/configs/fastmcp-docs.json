@@ -1,0 +1,4 @@
+{
+  "command": "uv",
+  "args": ["run", "--with", "fastmcp", "internal/fastmcp-docs/fastmcp_docs.py"]
+}
