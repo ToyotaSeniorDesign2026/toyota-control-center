@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from app.schemas.run import MCPExecutionConfig, MCPJobConfig, RunCreate
-from app.services.connector_service import execute_resource
+from app.services.connector_service import dispatch_execution, get_executor
 from app.services.execution_service import build_execution_request, build_job_spec, resolve_effective_mcp_config
 
 
@@ -85,7 +85,7 @@ class MCPJobServiceTests(unittest.TestCase):
         self.assertEqual(execution_request.mcp_config.tool_name, "search_papers")
         self.assertEqual(execution_request.job_spec["metadata"]["resource_id"], "res_123")
 
-    def test_execute_resource_uses_mcp_service_when_execution_backend_is_mcp(self) -> None:
+    def test_get_executor_returns_mcp_executor_for_mcp_requests(self) -> None:
         execution_request = build_execution_request(
             run_id="run_1",
             resource=SimpleNamespace(
@@ -105,8 +105,32 @@ class MCPJobServiceTests(unittest.TestCase):
             trigger_source="api",
         )
 
-        with patch("app.services.connector_service.execute_job_via_mcp") as execute_job:
-            execute_job.return_value = {
+        executor = get_executor(execution_request)
+
+        self.assertEqual(executor.backend_name, "mcp")
+
+    def test_dispatch_execution_uses_registered_executor(self) -> None:
+        execution_request = build_execution_request(
+            run_id="run_1",
+            resource=SimpleNamespace(
+                id="res_123",
+                name="research-job",
+                type="research",
+                connector="arxiv-research",
+                data_sensitivity="low",
+                kind="runtime",
+                environment="dev",
+                config={"topic": "retrieval augmented generation evaluation"},
+                tags=[],
+                owner_id="u_analyst",
+                owner_domain="collections",
+            ),
+            payload=RunCreate(resource_id="res_123", target_environment="dev"),
+            trigger_source="api",
+        )
+
+        with patch("app.services.connector_service.get_executor") as get_exec:
+            get_exec.return_value.execute.return_value = {
                 "connector_run_id": "mcp_1",
                 "status": "succeeded",
                 "duration_ms": 5,
@@ -114,9 +138,10 @@ class MCPJobServiceTests(unittest.TestCase):
                 "error": None,
             }
 
-            result = execute_resource(execution_request)
+            result = dispatch_execution(execution_request)
 
-        execute_job.assert_called_once_with(execution_request)
+        get_exec.assert_called_once_with(execution_request)
+        get_exec.return_value.execute.assert_called_once_with(execution_request)
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(result["metadata"], {"ok": True})
 

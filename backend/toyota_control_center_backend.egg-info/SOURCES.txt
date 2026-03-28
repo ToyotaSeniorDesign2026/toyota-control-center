@@ -41,11 +41,14 @@ app/services/connector_service.py
 app/services/execution_service.py
 app/services/github_actions_service.py
 app/services/log_service.py
-app/services/mcp_job_service.py
 app/services/policy_service.py
 app/services/resource_service.py
 app/services/resource_type_service.py
 app/services/run_service.py
+app/services/executors/__init__.py
+app/services/executors/base.py
+app/services/executors/mcp_executor.py
+app/services/executors/native_executor.py
 app/workers/tasks.py
 src/control_center/__init__.py
 src/control_center/api/__init__.py

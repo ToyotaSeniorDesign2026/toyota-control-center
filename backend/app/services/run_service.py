@@ -11,7 +11,7 @@ from app.models.run import Run
 from app.schemas.run import RunCreate
 from app.services.approval_service import create_approval_request
 from app.services.audit_service import write_audit
-from app.services.connector_service import execute_resource
+from app.services.connector_service import dispatch_execution
 from app.services.execution_service import build_execution_request
 from app.services.log_service import append_run_log, sync_run_execution_status
 from app.services.policy_service import evaluate_run_request
@@ -221,7 +221,7 @@ def create_run_and_maybe_execute(db: Session, user, payload: RunCreate):
         },
     )
 
-    result = execute_resource(execution_request)
+    result = dispatch_execution(execution_request)
     run.connector_run_id = result["connector_run_id"]
 
     if result["error"]:
