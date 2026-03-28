@@ -7,7 +7,7 @@ from app.services.github_actions_service import handle_github_actions_webhook
 router = APIRouter()
 
 
-@router.post("/github/actions/webhook", response_model=GithubWebhookAck)
+@router.post("/github/actions/webhook", response_model=GithubWebhookAck, include_in_schema=False)
 def github_actions_webhook(
     payload: GithubActionsWebhookPayload,
     db=Depends(get_db),
