@@ -37,3 +37,6 @@ backend/node_modules/
 # Generated API artifacts (regenerate when needed)
 generated/openapi/openapi.json
 generated/types/api-types.ts
+
+# MCP-generated directories
+backend/mcp_servers/papers/

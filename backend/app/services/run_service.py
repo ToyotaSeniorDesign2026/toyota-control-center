@@ -19,8 +19,9 @@ from app.services.policy_service import evaluate_run_request
 
 _RUNTIME_TRANSITIONS = {
     "queued": {"executing", "failed", "stopped"},
-    "executing": {"running", "failed", "stopped"},
-    "running": {"failed", "stopped"},
+    "executing": {"running", "succeeded", "failed", "stopped"},
+    "running": {"succeeded", "failed", "stopped"},
+    "succeeded": set(),
     "failed": set(),
     "stopped": set(),
 }
@@ -46,6 +47,14 @@ def _assert_run_access(user, run: Run):
 def _run_kind(db: Session, run: Run) -> str:
     resource = db.get(Resource, run.resource_id)
     return resource.kind if resource and resource.kind else "runtime"
+
+
+def _successful_completion_status(kind: str, execution_backend: str | None) -> str:
+    if kind != "runtime":
+        return "deployed"
+    if execution_backend == "mcp":
+        return "succeeded"
+    return "running"
 
 
 def _can_transition(kind: str, current: str, new_status: str) -> bool:
@@ -88,6 +97,11 @@ def _run_to_out(run: Run) -> dict:
         "commit_sha": run.commit_sha,
         "workflow_run_id": run.workflow_run_id,
         "workflow_url": run.workflow_url,
+        "trigger_source": run.trigger_source,
+        "execution_backend": run.execution_backend,
+        "execution_mode": run.execution_mode,
+        "submitted_config_json": run.submitted_config_json,
+        "resolved_job_spec_json": run.resolved_job_spec_json,
         "created_at": run.created_at,
         "updated_at": run.updated_at,
     }
@@ -123,6 +137,11 @@ def create_run_and_maybe_execute(db: Session, user, payload: RunCreate):
         commit_sha=None,
         workflow_run_id=None,
         workflow_url=None,
+        trigger_source=None,
+        execution_backend=None,
+        execution_mode=None,
+        submitted_config_json=None,
+        resolved_job_spec_json=None,
         created_at=ts,
         updated_at=ts,
     )
@@ -174,6 +193,21 @@ def create_run_and_maybe_execute(db: Session, user, payload: RunCreate):
         payload=payload,
         trigger_source="api",
     )
+    run.trigger_source = execution_request.trigger_source
+    run.execution_backend = execution_request.execution_backend
+    run.execution_mode = execution_request.execution_mode
+    run.submitted_config_json = {
+        "action": payload.action,
+        "target_environment": payload.target_environment,
+        "params": payload.params,
+        "job_config": execution_request.job_config.model_dump(),
+        "mcp_config": execution_request.mcp_config.model_dump(),
+    }
+    run.resolved_job_spec_json = execution_request.job_spec
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    sync_run_execution_status(db, run)
     append_run_log(
         db,
         run_id,
@@ -194,7 +228,7 @@ def create_run_and_maybe_execute(db: Session, user, payload: RunCreate):
         _transition_run_or_409(db, run, "failed")
         run.error = result["error"]
     else:
-        next_status = "running" if kind == "runtime" else "deployed"
+        next_status = _successful_completion_status(kind, run.execution_backend)
         _transition_run_or_409(db, run, next_status)
         run.error = None
     db.add(run)
@@ -205,7 +239,7 @@ def create_run_and_maybe_execute(db: Session, user, payload: RunCreate):
     append_run_log(
         db,
         run_id,
-        "INFO" if run.status in {"running", "deployed"} else "ERROR",
+        "INFO" if run.status in {"running", "succeeded", "deployed"} else "ERROR",
         "Connector execution finished",
         result,
     )
@@ -266,7 +300,7 @@ def stop_run(db: Session, user, run_id: str):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     _assert_run_access(user, run)
 
-    if run.status in {"failed", "stopped", "deployed"}:
+    if run.status in {"failed", "stopped", "succeeded", "deployed"}:
         return _run_to_out(run)
 
     kind = _run_kind(db, run)
@@ -289,13 +323,14 @@ def retry_run(db: Session, user, run_id: str):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
     _assert_run_access(user, run)
 
+    submitted = run.submitted_config_json or {}
     payload = RunCreate(
         resource_id=run.resource_id,
-        action=run.action,
-        target_environment=run.target_environment,
-        params={},
-        job_config=None,
-        mcp_config=None,
+        action=submitted.get("action", run.action),
+        target_environment=submitted.get("target_environment", run.target_environment),
+        params=submitted.get("params", {}),
+        job_config=submitted.get("job_config"),
+        mcp_config=submitted.get("mcp_config"),
     )
     append_run_log(db, run_id, "INFO", "Retry requested", {"new_run": True})
     write_audit(db, user, "RUN_RETRY_REQUESTED", {"run_id": run_id})

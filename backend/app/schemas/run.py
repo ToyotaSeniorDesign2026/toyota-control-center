@@ -60,6 +60,11 @@ class RunOut(BaseModel):
     commit_sha: str | None = None
     workflow_run_id: str | None = None
     workflow_url: str | None = None
+    trigger_source: str | None = None
+    execution_backend: str | None = None
+    execution_mode: str | None = None
+    submitted_config_json: dict | None = None
+    resolved_job_spec_json: dict | None = None
     created_at: str
     updated_at: str
 

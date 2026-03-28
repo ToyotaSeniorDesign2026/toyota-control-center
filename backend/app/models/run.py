@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import Boolean, String
+from sqlalchemy import JSON, Boolean, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -29,6 +29,11 @@ class Run(Base):
     commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     workflow_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     workflow_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    trigger_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    execution_backend: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    execution_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    submitted_config_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    resolved_job_spec_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[str] = mapped_column(String(64), nullable=False)
     updated_at: Mapped[str] = mapped_column(String(64), nullable=False)
