@@ -29,4 +29,6 @@ dev-dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["app"]
+[tool.setuptools.packages.find]
+where = [".", "src"]
+include = ["app*", "control_center*"]
