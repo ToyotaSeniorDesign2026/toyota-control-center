@@ -1,0 +1,75 @@
+{
+
+  "config_types": {
+    "standard": {
+      "description": "Configuration file for standard MCP servers. Used as the default when no config type is specified.",
+      "parser": "standard_config_loader.py"
+    },
+    "multiserver": {
+      "description": "Configuration file that defines multiple MCP servers and their parameters under `mcpServers` field.",
+      "parser": "multiserver_config_loader.py"
+    },
+    "fastmcp": {
+      "description": "Configuration file for specialized FastMCP servers, adding source, environment, and deployment settings.",
+      "parser": "fastmcp_config_loader.py"
+    },
+    "sandbox": {
+      "description": "Configuration file for , adding execution isolation, environment constraints, and related runtime settings.",
+      "parser": "sandbox_config_loader.py"
+    }
+  },
+
+  "environments": {
+    "dev": {"description": "Local development environment with relaxed isolation and enabled debugging."},
+    "staging": {"description": "Pre-production environment used for integration testing and validation."},
+    "prod": {"description": "Production environment with full security, isolation, and deployment constraints."}
+  },
+
+  "approved_servers": {
+    "filesystem": {
+      "description": "Local filesystem MCP server used for reading and interacting with files in the current working directory.",
+      "allowed_environments": ["dev", "staging"],
+      "config_path": "configs/filesystem.json",
+      "config_type": "standard",
+      "version": "1.0",
+      "tags": ["filesystem", "local", "development"],
+      "active": true,
+      "notes": "Uses the official @modelcontextprotocol/server-filesystem package via npx. Only approved for non-production environments due to data sensitivity.",
+      "environment_overrides": {
+        "dev": {
+          "timeout": 60
+        },
+        "staging": {
+          "timeout": 30
+        }
+      }
+    },
+    "arxiv-research": {
+      "description": "Custom arXiv research MCP server to grab topical papers in research-oriented workflows.",
+      "allowed_environments": ["dev", "staging", "prod"],
+      "config_path": "configs/arxiv-research.json",
+      "active": true
+    },
+    "fetch": {
+      "description": "Fetch MCP server used for retrieving and processing remote web content or other fetchable resources.",
+      "allowed_environments": ["dev", "staging"],
+      "config_path": "configs/fetch.json",
+      "active": true
+    },
+    "fastmcp-docs": {
+      "description": "Custom FastMCP documentation server used for querying and navigating FastMCP documentation and examples.",
+      "allowed_environments": ["*"],
+      "config_path": "configs/fastmcp-docs.json",
+      "active": true
+    },
+    "wordsmith-mcp": {
+      "description": "Query and inspect English words using tools tailored to writers.",
+      "allowed_environments": ["dev", "staging", "prod"],
+      "config_path": "configs/wordsmith-mcp.json",
+      "active": true
+    }
+
+
+  }
+
+}
