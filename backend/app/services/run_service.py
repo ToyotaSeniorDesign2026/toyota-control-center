@@ -12,6 +12,7 @@ from app.schemas.run import RunCreate
 from app.services.approval_service import create_approval_request
 from app.services.audit_service import write_audit
 from app.services.connector_service import execute_resource
+from app.services.execution_service import build_execution_request
 from app.services.log_service import append_run_log, sync_run_execution_status
 from app.services.policy_service import evaluate_run_request
 
@@ -167,7 +168,26 @@ def create_run_and_maybe_execute(db: Session, user, payload: RunCreate):
     sync_run_execution_status(db, run)
     append_run_log(db, run_id, "INFO", f"{initial_exec_status.title()} started")
 
-    result = execute_resource(db, user, _run_to_out(run))
+    execution_request = build_execution_request(
+        run_id=run.id,
+        resource=resource,
+        payload=payload,
+        trigger_source="api",
+    )
+    append_run_log(
+        db,
+        run_id,
+        "INFO",
+        "Execution request prepared",
+        {
+            "execution_backend": execution_request.execution_backend,
+            "execution_mode": execution_request.execution_mode,
+            "trigger_source": execution_request.trigger_source,
+            "job_spec": execution_request.job_spec,
+        },
+    )
+
+    result = execute_resource(execution_request)
     run.connector_run_id = result["connector_run_id"]
 
     if result["error"]:
@@ -274,6 +294,8 @@ def retry_run(db: Session, user, run_id: str):
         action=run.action,
         target_environment=run.target_environment,
         params={},
+        job_config=None,
+        mcp_config=None,
     )
     append_run_log(db, run_id, "INFO", "Retry requested", {"new_run": True})
     write_audit(db, user, "RUN_RETRY_REQUESTED", {"run_id": run_id})

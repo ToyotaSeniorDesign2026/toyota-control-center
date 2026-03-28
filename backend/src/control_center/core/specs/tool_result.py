@@ -46,6 +46,7 @@ __all__ = ["ExecutionError", "ExecutionResult", "MCPToolResult"]
 
 T = TypeVar("T")
 U = TypeVar("U")
+ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
 # ── Serialization Helpers ─────────────────────────────────────────────────────
@@ -295,7 +296,7 @@ class MCPToolResult(ExecutionResult[T]):
     # --- Specialized Factories ---
 
     @classmethod
-    def from_model[ModelT: BaseModel](cls, model: ModelT, *, meta: dict[str, Any] | None = None) -> Self:
+    def from_model(cls, model: ModelT, *, meta: dict[str, Any] | None = None) -> Self:
         return cls(data=model, structured_content=model.model_dump(mode="json"), meta=meta or {})
 
     # --- Item Conversion ---
