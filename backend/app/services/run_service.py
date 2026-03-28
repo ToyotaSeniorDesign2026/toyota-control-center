@@ -49,10 +49,10 @@ def _run_kind(db: Session, run: Run) -> str:
     return resource.kind if resource and resource.kind else "runtime"
 
 
-def _successful_completion_status(kind: str, execution_backend: str | None) -> str:
+def _successful_completion_status(kind: str, execution_backend: str | None, resource_type: str | None) -> str:
     if kind != "runtime":
         return "deployed"
-    if execution_backend == "mcp":
+    if execution_backend == "mcp" or (resource_type or "").lower() == "sql":
         return "succeeded"
     return "running"
 
@@ -228,7 +228,7 @@ def create_run_and_maybe_execute(db: Session, user, payload: RunCreate):
         _transition_run_or_409(db, run, "failed")
         run.error = result["error"]
     else:
-        next_status = _successful_completion_status(kind, run.execution_backend)
+        next_status = _successful_completion_status(kind, run.execution_backend, resource.type)
         _transition_run_or_409(db, run, next_status)
         run.error = None
     db.add(run)

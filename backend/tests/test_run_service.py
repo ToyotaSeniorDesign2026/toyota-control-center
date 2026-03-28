@@ -9,9 +9,10 @@ from app.services.run_service import _successful_completion_status, retry_run
 
 class RetryRunTests(unittest.TestCase):
     def test_successful_completion_status_uses_succeeded_for_mcp_runtime_jobs(self) -> None:
-        self.assertEqual(_successful_completion_status("runtime", "mcp"), "succeeded")
-        self.assertEqual(_successful_completion_status("runtime", "native"), "running")
-        self.assertEqual(_successful_completion_status("artifact", "mcp"), "deployed")
+        self.assertEqual(_successful_completion_status("runtime", "mcp", "research"), "succeeded")
+        self.assertEqual(_successful_completion_status("runtime", "native", "sql"), "succeeded")
+        self.assertEqual(_successful_completion_status("runtime", "native", "agent"), "running")
+        self.assertEqual(_successful_completion_status("artifact", "mcp", "report"), "deployed")
 
     def test_retry_run_reuses_stored_execution_config(self) -> None:
         run = SimpleNamespace(

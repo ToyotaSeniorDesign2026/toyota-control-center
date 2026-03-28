@@ -5,16 +5,19 @@ from __future__ import annotations
 import time
 
 from app.services.execution_service import ExecutionRequest
-from app.services.executors import BaseJobExecutor, MCPJobExecutor, NativeJobExecutor
+from app.services.executors import BaseJobExecutor, MCPJobExecutor, NativeJobExecutor, SQLJobExecutor
 
 
 _EXECUTORS: dict[str, BaseJobExecutor] = {
     "mcp": MCPJobExecutor(),
     "native": NativeJobExecutor(),
 }
+_SQL_EXECUTOR = SQLJobExecutor()
 
 
 def get_executor(execution_request: ExecutionRequest) -> BaseJobExecutor:
+    if execution_request.execution_backend == "native" and execution_request.resource.type.lower() == "sql":
+        return _SQL_EXECUTOR
     try:
         return _EXECUTORS[execution_request.execution_backend]
     except KeyError as exc:

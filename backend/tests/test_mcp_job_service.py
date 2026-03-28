@@ -7,6 +7,7 @@ from unittest.mock import patch
 from app.schemas.run import MCPExecutionConfig, MCPJobConfig, RunCreate
 from app.services.connector_service import dispatch_execution, get_executor
 from app.services.execution_service import build_execution_request, build_job_spec, resolve_effective_mcp_config
+from app.services.executors.sql_executor import SQLJobExecutor
 
 
 class MCPJobServiceTests(unittest.TestCase):
@@ -108,6 +109,30 @@ class MCPJobServiceTests(unittest.TestCase):
         executor = get_executor(execution_request)
 
         self.assertEqual(executor.backend_name, "mcp")
+
+    def test_get_executor_returns_sql_executor_for_sql_resources(self) -> None:
+        execution_request = build_execution_request(
+            run_id="run_sql",
+            resource=SimpleNamespace(
+                id="res_sql",
+                name="sql-job",
+                type="sql",
+                connector="internal",
+                data_sensitivity="low",
+                kind="runtime",
+                environment="dev",
+                config={"query": "select 1 as value"},
+                tags=[],
+                owner_id="u_analyst",
+                owner_domain="collections",
+            ),
+            payload=RunCreate(resource_id="res_sql", target_environment="dev"),
+            trigger_source="api",
+        )
+
+        executor = get_executor(execution_request)
+
+        self.assertIsInstance(executor, SQLJobExecutor)
 
     def test_dispatch_execution_uses_registered_executor(self) -> None:
         execution_request = build_execution_request(
