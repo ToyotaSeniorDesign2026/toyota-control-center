@@ -605,7 +605,7 @@ interface AIMessage {
 
 interface WorkspaceTab {
   id: string;
-  type: "dashboard" | "job" | "required-action" | "template" | "promotion" | "revision" | "create-job";
+  type: "dashboard" | "job" | "required-action" | "template" | "promotion" | "revision" | "create-job" | "active-jobs" | "pending-approvals" | "failed-runs" | "saved-jobs";
   title: string;
   closable: boolean;
   jobName?: string;
@@ -1203,6 +1203,70 @@ export default function UserHome() {
             id: tabId,
             type: "create-job",
             title: item.name,
+            closable: true,
+          };
+          targetPane.tabs = [...targetPane.tabs, newTab];
+        }
+        targetPane.activeTabId = tabId;
+      } else if (item.type === "active-jobs") {
+        // Generate consistent tab ID for deduplication
+        tabId = "active-jobs";
+        // Check if tab already exists in this pane by ID
+        existingTab = targetPane.tabs.find((tab) => tab.id === tabId);
+        
+        if (!existingTab) {
+          newTab = {
+            id: tabId,
+            type: "active-jobs",
+            title: "My Active Jobs",
+            closable: true,
+          };
+          targetPane.tabs = [...targetPane.tabs, newTab];
+        }
+        targetPane.activeTabId = tabId;
+      } else if (item.type === "pending-approvals") {
+        // Generate consistent tab ID for deduplication
+        tabId = "pending-approvals";
+        // Check if tab already exists in this pane by ID
+        existingTab = targetPane.tabs.find((tab) => tab.id === tabId);
+        
+        if (!existingTab) {
+          newTab = {
+            id: tabId,
+            type: "pending-approvals",
+            title: "Pending Approvals",
+            closable: true,
+          };
+          targetPane.tabs = [...targetPane.tabs, newTab];
+        }
+        targetPane.activeTabId = tabId;
+      } else if (item.type === "failed-runs") {
+        // Generate consistent tab ID for deduplication
+        tabId = "failed-runs";
+        // Check if tab already exists in this pane by ID
+        existingTab = targetPane.tabs.find((tab) => tab.id === tabId);
+        
+        if (!existingTab) {
+          newTab = {
+            id: tabId,
+            type: "failed-runs",
+            title: "Failed Runs (24h)",
+            closable: true,
+          };
+          targetPane.tabs = [...targetPane.tabs, newTab];
+        }
+        targetPane.activeTabId = tabId;
+      } else if (item.type === "saved-jobs") {
+        // Generate consistent tab ID for deduplication
+        tabId = "saved-jobs";
+        // Check if tab already exists in this pane by ID
+        existingTab = targetPane.tabs.find((tab) => tab.id === tabId);
+        
+        if (!existingTab) {
+          newTab = {
+            id: tabId,
+            type: "saved-jobs",
+            title: "Saved Jobs",
             closable: true,
           };
           targetPane.tabs = [...targetPane.tabs, newTab];
@@ -2646,6 +2710,208 @@ export default function UserHome() {
               </div>
             </div>
           </div>
+        ) : tab.type === "active-jobs" ? (
+          /* Active Jobs View */
+          <div className="mx-auto max-w-[1600px] px-6 py-8">
+            <div className="space-y-6">
+              <div>
+                <h1 className="text-3xl font-bold text-gray-900">My Active Jobs</h1>
+                <p className="mt-2 text-sm text-gray-600">Jobs currently running or scheduled</p>
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-white p-6">
+                <div className="space-y-4">
+                  {dashboardJobs
+                    .filter((job) => job.status === "Running" || job.status === "Healthy")
+                    .map((job) => (
+                      <div key={job.id} className="flex items-start justify-between p-4 border border-gray-100 rounded-lg hover:bg-gray-50 transition">
+                        <div className="flex-1">
+                          <p className="font-medium text-gray-900">{job.name}</p>
+                          <div className="flex items-center gap-2 mt-2">
+                            <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded">{job.type}</span>
+                            <span className="text-xs text-gray-500">Schedule: {job.schedule}</span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
+                              job.status === "Healthy"
+                                ? "bg-green-100 text-green-700"
+                                : "bg-blue-100 text-blue-700"
+                            }`}
+                          >
+                            {job.status}
+                          </span>
+                          <button
+                            onClick={() =>
+                              handleOpenTabInPane(
+                                { type: "job", name: job.name, id: job.id, payload: job.payload },
+                                "primary"
+                              )
+                            }
+                            className="px-3 py-1 text-xs text-[#ed0923] hover:bg-red-50 rounded transition"
+                          >
+                            View
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  {dashboardJobs.filter((job) => job.status === "Running" || job.status === "Healthy").length === 0 && (
+                    <div className="text-center py-8 text-gray-500">No active jobs at the moment</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : tab.type === "pending-approvals" ? (
+          /* Pending Approvals View */
+          <div className="mx-auto max-w-[1600px] px-6 py-8">
+            <div className="space-y-6">
+              <div>
+                <h1 className="text-3xl font-bold text-gray-900">Pending Approvals</h1>
+                <p className="mt-2 text-sm text-gray-600">Jobs waiting for approval or promotion</p>
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-white p-6">
+                <div className="space-y-4">
+                  {pendingPromotionsState.map((promotion) => (
+                    <div key={promotion.id} className="flex items-start justify-between p-4 border border-amber-200 bg-amber-50 rounded-lg">
+                      <div className="flex-1">
+                        <p className="font-medium text-gray-900">{promotion.name}</p>
+                        <div className="flex items-center gap-2 mt-2">
+                          <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded">{promotion.type}</span>
+                          <span className="text-xs text-gray-500">
+                            {promotion.currentEnvironment} → {promotion.targetEnvironment || "Production"}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex rounded-full px-3 py-1 text-xs font-semibold bg-yellow-100 text-yellow-700">
+                          Pending
+                        </span>
+                        <button
+                          onClick={() =>
+                            handleOpenTabInPane(
+                              { type: "promotion", name: promotion.name, id: promotion.id },
+                              "primary"
+                            )
+                          }
+                          className="px-3 py-1 text-xs text-[#ed0923] hover:bg-red-50 rounded transition"
+                        >
+                          Review
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {pendingPromotionsState.length === 0 && (
+                    <div className="text-center py-8 text-gray-500">No pending approvals</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : tab.type === "failed-runs" ? (
+          /* Failed Runs View */
+          <div className="mx-auto max-w-[1600px] px-6 py-8">
+            <div className="space-y-6">
+              <div>
+                <h1 className="text-3xl font-bold text-gray-900">Failed Runs (24h)</h1>
+                <p className="mt-2 text-sm text-gray-600">Jobs that failed in the last 24 hours</p>
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-white p-6">
+                <div className="space-y-4">
+                  {dashboardRuns.recentRuns
+                    .filter((run) => run.status === "failed")
+                    .map((run) => (
+                      <div key={run.id} className="flex items-start justify-between p-4 border border-red-200 bg-red-50 rounded-lg">
+                        <div className="flex-1">
+                          <p className="font-medium text-gray-900">{run.jobName}</p>
+                          <div className="flex items-center gap-2 mt-2">
+                            <span className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded">{run.jobType}</span>
+                            <span className="text-xs text-gray-500">
+                              Failed {formatRunTime(run.scheduledTime)}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="inline-flex rounded-full px-3 py-1 text-xs font-semibold bg-red-100 text-red-700">
+                            Failed
+                          </span>
+                          <button
+                            onClick={() =>
+                              handleOpenTabInPane(
+                                { type: "job", name: run.jobName, id: run.jobName },
+                                "primary"
+                              )
+                            }
+                            className="px-3 py-1 text-xs text-[#ed0923] hover:bg-red-100 rounded transition"
+                          >
+                            Details
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  {dashboardRuns.recentRuns.filter((run) => run.status === "failed").length === 0 && (
+                    <div className="text-center py-8 text-gray-500">No failed runs in the last 24 hours</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : tab.type === "saved-jobs" ? (
+          /* Saved Jobs View */
+          <div className="mx-auto max-w-[1600px] px-6 py-8">
+            <div className="space-y-6">
+              <div>
+                <h1 className="text-3xl font-bold text-gray-900">Saved Jobs</h1>
+                <p className="mt-2 text-sm text-gray-600">All your saved and drafted jobs</p>
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-white p-6">
+                <div className="space-y-4">
+                  {dashboardJobs.map((job) => (
+                    <div key={job.id} className="flex items-start justify-between p-4 border border-gray-100 rounded-lg hover:bg-gray-50 transition">
+                      <div className="flex-1">
+                        <p className="font-medium text-gray-900">{job.name}</p>
+                        <div className="flex items-center gap-2 mt-2">
+                          <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded">{job.type}</span>
+                          <span className="text-xs text-gray-500">Schedule: {job.schedule}</span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
+                            job.status === "Healthy"
+                              ? "bg-green-100 text-green-700"
+                              : job.status === "Running"
+                                ? "bg-blue-100 text-blue-700"
+                                : "bg-red-100 text-red-700"
+                          }`}
+                        >
+                          {job.status}
+                        </span>
+                        <button
+                          onClick={() =>
+                            handleOpenTabInPane(
+                              { type: "job", name: job.name, id: job.id, payload: job.payload },
+                              "primary"
+                            )
+                          }
+                          className="px-3 py-1 text-xs text-[#ed0923] hover:bg-red-50 rounded transition"
+                        >
+                          Open
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {dashboardJobs.length === 0 && (
+                    <div className="text-center py-8 text-gray-500">No saved jobs yet</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
         ) : (
           /* Dashboard View */
           <div className="mx-auto max-w-[1600px] px-6 py-8">
@@ -2661,15 +2927,36 @@ export default function UserHome() {
 
               {/* KPIs */}
               <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-                {kpis.map((kpi, idx) => (
-                  <div key={idx} className="rounded-xl border border-gray-200 bg-white p-6">
-                    <p className="text-sm font-medium text-gray-600">{kpi.label}</p>
-                    <div className="mt-3">
-                      <p className="text-3xl font-bold text-gray-900">{kpi.value}</p>
-                      <p className={`mt-1 text-xs ${kpi.tone}`}>{kpi.hint}</p>
-                    </div>
-                  </div>
-                ))}
+                {kpis.map((kpi, idx) => {
+                  // Map KPI label to dashboard tab type
+                  const getTabType = () => {
+                    if (kpi.label === "My Active Jobs") return "active-jobs";
+                    if (kpi.label === "Pending Approvals") return "pending-approvals";
+                    if (kpi.label === "Failed Runs (24h)") return "failed-runs";
+                    if (kpi.label === "Saved Jobs") return "saved-jobs";
+                    return null;
+                  };
+                  
+                  const tabType = getTabType();
+                  
+                  return (
+                    <button
+                      key={idx}
+                      onClick={() => {
+                        if (tabType) {
+                          handleOpenTabInPane({ type: tabType, name: kpi.label, id: tabType }, "primary");
+                        }
+                      }}
+                      className="rounded-xl border border-gray-200 bg-white p-6 hover:border-[#ed0923] hover:shadow-lg transition cursor-pointer"
+                    >
+                      <p className="text-sm font-medium text-gray-600">{kpi.label}</p>
+                      <div className="mt-3">
+                        <p className="text-3xl font-bold text-gray-900">{kpi.value}</p>
+                        <p className={`mt-1 text-xs ${kpi.tone}`}>{kpi.hint}</p>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
 
               {/* Today's Focus Summary */}

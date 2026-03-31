@@ -67,10 +67,9 @@ interface CreateJobFormProps {
   onCancel?: () => void;
   draftData?: Record<string, any>;
   onDraftDataChange?: (data: Record<string, any>) => void;
-  hideFooter?: boolean;
 }
 
-export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange, hideFooter = false }: CreateJobFormProps) {
+export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange }: CreateJobFormProps) {
   const [jobType, setJobType] = useState<JobType>("Airflow");
   const [currentTag, setCurrentTag] = useState("");
 
@@ -1115,24 +1114,22 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
         </div>
       </div>
 
-      {/* Action Buttons - Sticky Footer - Only shown if hideFooter is false */}
-      {!hideFooter && (
-        <div className="flex-shrink-0 border-t border-gray-200 bg-white px-4 py-4 sm:px-6 lg:px-8 flex gap-3">
-          <Button
-            variant="outline"
-            onClick={handleClose}
-            className="flex-1"
-          >
-            Cancel
-          </Button>
-          <Button
-            onClick={handleSubmit}
-            className="flex-1 bg-[#ed0923] hover:bg-[#d10820] text-white"
-          >
-            Create Job
-          </Button>
-        </div>
-      )}
+      {/* Action Buttons - Sticky Footer */}
+      <div className="flex-shrink-0 border-t border-gray-200 bg-white px-4 py-4 sm:px-6 lg:px-8 flex gap-3">
+        <Button
+          variant="outline"
+          onClick={handleClose}
+          className="flex-1"
+        >
+          Cancel
+        </Button>
+        <Button
+          onClick={handleSubmit}
+          className="flex-1 bg-[#ed0923] hover:bg-[#d10820] text-white"
+        >
+          Create Job
+        </Button>
+      </div>
     </div>
   );
 }
