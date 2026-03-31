@@ -4,7 +4,7 @@ import { useState } from "react";
 
 export interface Approval {
   id: string;
-  resourceName: string;
+  jobName: string;
   changeType: "Create" | "Update" | "Delete" | "Promote";
   fromEnvironment: string;
   toEnvironment: string;
@@ -23,7 +23,7 @@ interface ApprovalsTableProps {
 const mockApprovals: Approval[] = [
   {
     id: "APR-2024-1847",
-    resourceName: "customer_segmentation_model",
+    jobName: "customer_segmentation_model",
     changeType: "Promote",
     fromEnvironment: "Semi-Prod",
     toEnvironment: "Production",
@@ -35,7 +35,7 @@ const mockApprovals: Approval[] = [
   },
   {
     id: "APR-2024-1846",
-    resourceName: "etl_customer_data_pipeline",
+    jobName: "etl_customer_data_pipeline",
     changeType: "Update",
     fromEnvironment: "Dev",
     toEnvironment: "Dev",
@@ -47,7 +47,7 @@ const mockApprovals: Approval[] = [
   },
   {
     id: "APR-2024-1845",
-    resourceName: "sales_forecast_dbt",
+    jobName: "sales_forecast_dbt",
     changeType: "Create",
     fromEnvironment: "Dev",
     toEnvironment: "Semi-Prod",
@@ -59,7 +59,7 @@ const mockApprovals: Approval[] = [
   },
   {
     id: "APR-2024-1844",
-    resourceName: "user_retention_agent",
+    jobName: "user_retention_agent",
     changeType: "Promote",
     fromEnvironment: "Dev",
     toEnvironment: "Production",
@@ -71,7 +71,7 @@ const mockApprovals: Approval[] = [
   },
   {
     id: "APR-2024-1843",
-    resourceName: "legacy_reporting_sql",
+    jobName: "legacy_reporting_sql",
     changeType: "Delete",
     fromEnvironment: "Production",
     toEnvironment: "Production",
@@ -83,7 +83,7 @@ const mockApprovals: Approval[] = [
   },
   {
     id: "APR-2024-1842",
-    resourceName: "inventory_sync_airflow",
+    jobName: "inventory_sync_airflow",
     changeType: "Update",
     fromEnvironment: "Semi-Prod",
     toEnvironment: "Semi-Prod",
@@ -233,7 +233,7 @@ export function ApprovalsTable({ approvals, onViewApproval }: ApprovalsTableProp
                   Approval ID
                 </th>
                 <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
-                  Resource Name
+                  Job Name
                 </th>
                 <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
                   Environment Flow
@@ -271,7 +271,7 @@ export function ApprovalsTable({ approvals, onViewApproval }: ApprovalsTableProp
                     </td>
                     <td className="px-4 py-2.5">
                       <div className="text-sm font-medium text-gray-900">
-                        {approval.resourceName}
+                        {approval.jobName}
                       </div>
                     </td>
                     <td className="px-4 py-2.5">

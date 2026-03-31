@@ -10,7 +10,7 @@ const metrics = [
     icon: "⚠️",
   },
   {
-    label: "High Risk Resources",
+    label: "High Risk Jobs",
     value: "18",
     trend: "+3 from last week",
     trendUp: true,

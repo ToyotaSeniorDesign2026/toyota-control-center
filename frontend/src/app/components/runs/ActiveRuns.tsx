@@ -6,21 +6,21 @@ export function ActiveRuns() {
   const activeRuns = [
     {
       id: "run-7f3a8b",
-      resourceName: "customer_churn_predictor",
+      jobName: "customer_churn_predictor",
       environment: "Prod",
       duration: "2m 34s",
       progress: 65,
     },
     {
       id: "run-9c2e1d",
-      resourceName: "dbt_daily_model",
+      jobName: "dbt_daily_model",
       environment: "Semi-Prod",
       duration: "5m 12s",
       progress: 45,
     },
     {
       id: "run-4b8f3a",
-      resourceName: "airflow_etl_pipeline",
+      jobName: "airflow_etl_pipeline",
       environment: "Prod",
       duration: "1m 08s",
       progress: 85,
@@ -80,9 +80,9 @@ export function ActiveRuns() {
                 key={run.id}
                 className="flex items-center gap-3 rounded bg-white px-3 py-2 border border-blue-200"
               >
-                {/* Resource Name */}
+                {/* Job Name */}
                 <div className="min-w-[220px]">
-                  <p className="text-sm font-medium text-gray-900">{run.resourceName}</p>
+                  <p className="text-sm font-medium text-gray-900">{run.jobName}</p>
                 </div>
 
                 {/* Environment */}

@@ -44,7 +44,7 @@ function MetricCard({ label, value, subtext, status, icon }: MetricCardProps) {
 export function MetricsBar() {
   const metrics = [
     {
-      label: "Active Resources",
+      label: "Active Jobs",
       value: 148,
       subtext: "+12 this month",
       status: "success" as const,

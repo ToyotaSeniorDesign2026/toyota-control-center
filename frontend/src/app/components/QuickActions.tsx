@@ -11,13 +11,13 @@ interface QuickAction {
 const quickActions: QuickAction[] = [
   {
     id: "1",
-    label: "Create Resource",
+    label: "Create Job",
     icon: <Plus className="h-4 w-4" />,
     primary: true,
   },
   {
     id: "2",
-    label: "Run Resource",
+    label: "Run Job",
     icon: <Play className="h-4 w-4" />,
   },
   {

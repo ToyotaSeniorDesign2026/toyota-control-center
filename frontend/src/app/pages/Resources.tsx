@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { Plus, Upload, Search, Filter, LayoutGrid, Table as TableIcon } from "lucide-react";
 import { Button } from "../components/ui/button";
-import { ResourcesTable } from "../components/resources/ResourcesTable";
-import { ResourcesCards } from "../components/resources/ResourcesCards";
-import { ResourcesSidebar } from "../components/resources/ResourcesSidebar";
+import { JobsTable } from "../components/jobs/JobsTable";
+import { JobsCards } from "../components/jobs/JobsCards";
+import { JobsSidebar } from "../components/jobs/JobsSidebar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,7 +15,7 @@ import { ChevronDown } from "lucide-react";
 export type ViewType = "table" | "card";
 export type FilterType = "all" | "my" | "high-risk" | "failed" | "needs-approval" | "recent";
 
-export default function Resources() {
+export default function Jobs() {
   const [viewType, setViewType] = useState<ViewType>("table");
   const [activeFilter, setActiveFilter] = useState<FilterType>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -26,7 +26,7 @@ export default function Resources() {
   return (
     <div className="flex gap-6">
       {/* Sidebar */}
-      <ResourcesSidebar
+      <JobsSidebar
         activeFilter={activeFilter}
         onFilterChange={setActiveFilter}
       />
@@ -36,7 +36,7 @@ export default function Resources() {
         {/* Page Header */}
         <div className="mb-6 flex items-start justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">Resources</h1>
+            <h1 className="text-3xl font-bold text-gray-900">Jobs</h1>
             <p className="mt-2 text-sm text-gray-600">
               Manage AI agents, data jobs, pipelines, and automation workflows
               in one place.
@@ -193,9 +193,9 @@ export default function Resources() {
           </div>
         </div>
 
-        {/* Resource Display */}
+        {/* Job Display */}
         {viewType === "table" ? (
-          <ResourcesTable
+          <JobsTable
             searchQuery={searchQuery}
             typeFilter={typeFilter}
             statusFilter={statusFilter}
@@ -203,7 +203,7 @@ export default function Resources() {
             activeFilter={activeFilter}
           />
         ) : (
-          <ResourcesCards
+          <JobsCards
             searchQuery={searchQuery}
             typeFilter={typeFilter}
             statusFilter={statusFilter}

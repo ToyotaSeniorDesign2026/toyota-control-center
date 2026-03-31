@@ -10,7 +10,7 @@ import {
   TableRow,
 } from "./ui/table";
 
-interface Resource {
+interface Job {
   id: string;
   name: string;
   type: string;
@@ -21,7 +21,7 @@ interface Resource {
   owner: string;
 }
 
-const mockResources: Resource[] = [
+const mockJobs: Job[] = [
   {
     id: "1",
     name: "customer_churn_predictor",
@@ -104,7 +104,7 @@ const mockResources: Resource[] = [
   },
 ];
 
-function StatusBadge({ status }: { status: Resource["status"] }) {
+function StatusBadge({ status }: { status: Job["status"] }) {
   const variants = {
     healthy: "bg-green-50 text-green-700 border-green-200",
     warning: "bg-yellow-50 text-yellow-700 border-yellow-200",
@@ -136,19 +136,19 @@ function RiskScore({ score }: { score: number }) {
   );
 }
 
-export function ResourcesTable() {
+export function JobsTable() {
   return (
     <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-gray-200 p-5">
-        <h2 className="text-lg font-semibold text-gray-900">My Resources</h2>
+        <h2 className="text-lg font-semibold text-gray-900">My Jobs</h2>
         <div className="flex items-center gap-3">
           {/* Search */}
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
             <input
               type="text"
-              placeholder="Search resources..."
+              placeholder="Search jobs..."
               className="h-9 w-64 rounded-md border border-gray-200 bg-white pl-10 pr-4 text-sm placeholder:text-gray-400 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
             />
           </div>
@@ -166,7 +166,7 @@ export function ResourcesTable() {
           <TableHeader>
             <TableRow className="border-gray-200 hover:bg-transparent">
               <TableHead className="text-xs font-medium uppercase tracking-wide text-gray-500">
-                Resource Name
+                Job Name
               </TableHead>
               <TableHead className="text-xs font-medium uppercase tracking-wide text-gray-500">
                 Type
@@ -189,28 +189,28 @@ export function ResourcesTable() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {mockResources.map((resource) => (
+            {mockJobs.map((job) => (
               <TableRow
-                key={resource.id}
+                key={job.id}
                 className="border-gray-200 hover:bg-gray-50"
               >
                 <TableCell className="font-medium text-gray-900">
-                  {resource.name}
+                  {job.name}
                 </TableCell>
-                <TableCell className="text-gray-600">{resource.type}</TableCell>
+                <TableCell className="text-gray-600">{job.type}</TableCell>
                 <TableCell className="text-gray-600">
-                  {resource.environment}
+                  {job.environment}
                 </TableCell>
                 <TableCell className="text-gray-600">
-                  {resource.lastRun}
+                  {job.lastRun}
                 </TableCell>
                 <TableCell>
-                  <StatusBadge status={resource.status} />
+                  <StatusBadge status={job.status} />
                 </TableCell>
                 <TableCell>
-                  <RiskScore score={resource.riskScore} />
+                  <RiskScore score={job.riskScore} />
                 </TableCell>
-                <TableCell className="text-gray-600">{resource.owner}</TableCell>
+                <TableCell className="text-gray-600">{job.owner}</TableCell>
               </TableRow>
             ))}
           </TableBody>

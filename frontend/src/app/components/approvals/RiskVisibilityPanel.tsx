@@ -13,7 +13,7 @@ const riskFactors: RiskFactor[] = [
     id: "data-sensitivity",
     icon: <Database className="h-4 w-4" />,
     label: "Data Sensitivity Increase",
-    description: "Resource now accesses PII data",
+    description: "Job now accesses PII data",
     severity: "high",
   },
   {

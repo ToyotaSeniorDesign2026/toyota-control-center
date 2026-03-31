@@ -1,7 +1,7 @@
 import { X, Calendar, Server, Activity, FileText, Shield, Clock } from "lucide-react";
 import { Button } from "./ui/button";
 
-interface Resource {
+interface Job {
   id: string;
   name: string;
   type: "AI Agent" | "SQL Query" | "dbt Model" | "API Connection";
@@ -13,14 +13,14 @@ interface Resource {
   policyChecks?: Array<{ name: string; status: "passed" | "failed" | "warning"; message: string }>;
 }
 
-interface ResourceDetailModalProps {
-  resource: Resource | null;
+interface JobDetailModalProps {
+  job: Job | null;
   isOpen: boolean;
   onClose: () => void;
 }
 
-export function ResourceDetailModal({ resource, isOpen, onClose }: ResourceDetailModalProps) {
-  if (!isOpen || !resource) return null;
+export function JobDetailModal({ job, isOpen, onClose }: JobDetailModalProps) {
+  if (!isOpen || !job) return null;
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -106,15 +106,15 @@ export function ResourceDetailModal({ resource, isOpen, onClose }: ResourceDetai
           <div className="flex items-start justify-between">
             <div className="flex-1">
               <div className="flex items-center gap-3">
-                <h2 className="text-xl font-semibold text-gray-900">{resource.name}</h2>
-                <span className={`rounded-full px-3 py-1 text-xs font-medium ${getTypeColor(resource.type)}`}>
-                  {resource.type}
+                <h2 className="text-xl font-semibold text-gray-900">{job.name}</h2>
+                <span className={`rounded-full px-3 py-1 text-xs font-medium ${getTypeColor(job.type)}`}>
+                  {job.type}
                 </span>
-                <span className={`rounded border px-3 py-1 text-xs font-medium ${getStatusColor(resource.status)}`}>
-                  {resource.status.charAt(0).toUpperCase() + resource.status.slice(1)}
+                <span className={`rounded border px-3 py-1 text-xs font-medium ${getStatusColor(job.status)}`}>
+                  {job.status.charAt(0).toUpperCase() + job.status.slice(1)}
                 </span>
               </div>
-              <p className="mt-1 text-sm text-gray-600">Resource ID: {resource.id}</p>
+              <p className="mt-1 text-sm text-gray-600">Job ID: {job.id}</p>
             </div>
             <button
               onClick={onClose}
@@ -134,27 +134,27 @@ export function ResourceDetailModal({ resource, isOpen, onClose }: ResourceDetai
               <h3 className="font-semibold text-gray-900">Description</h3>
             </div>
             <p className="text-sm text-gray-700 leading-relaxed">
-              {resource.description || "No description provided."}
+              {job.description || "No description provided."}
             </p>
           </div>
 
-          {/* Resource Details Grid */}
+          {/* Job Details Grid */}
           <div className="grid grid-cols-2 gap-4">
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
               <div className="flex items-center gap-2 mb-2">
                 <Calendar className="h-4 w-4 text-gray-400" />
                 <span className="text-xs font-medium text-gray-600">Created</span>
               </div>
-              <p className="text-sm font-semibold text-gray-900">{formatDate(resource.createdAt)}</p>
+              <p className="text-sm font-semibold text-gray-900">{formatDate(job.createdAt)}</p>
             </div>
 
-            {resource.environment && (
+            {job.environment && (
               <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
                 <div className="flex items-center gap-2 mb-2">
                   <Server className="h-4 w-4 text-gray-400" />
                   <span className="text-xs font-medium text-gray-600">Environment</span>
                 </div>
-                <p className="text-sm font-semibold text-gray-900">{resource.environment}</p>
+                <p className="text-sm font-semibold text-gray-900">{job.environment}</p>
               </div>
             )}
 
@@ -164,7 +164,7 @@ export function ResourceDetailModal({ resource, isOpen, onClose }: ResourceDetai
                 <span className="text-xs font-medium text-gray-600">Status</span>
               </div>
               <p className="text-sm font-semibold text-gray-900">
-                {resource.status.charAt(0).toUpperCase() + resource.status.slice(1)}
+                {job.status.charAt(0).toUpperCase() + job.status.slice(1)}
               </p>
             </div>
 
@@ -173,19 +173,19 @@ export function ResourceDetailModal({ resource, isOpen, onClose }: ResourceDetai
                 <FileText className="h-4 w-4 text-gray-400" />
                 <span className="text-xs font-medium text-gray-600">Type</span>
               </div>
-              <p className="text-sm font-semibold text-gray-900">{resource.type}</p>
+              <p className="text-sm font-semibold text-gray-900">{job.type}</p>
             </div>
           </div>
 
           {/* Policy Checks */}
-          {resource.policyChecks && resource.policyChecks.length > 0 && (
+          {job.policyChecks && job.policyChecks.length > 0 && (
             <div>
               <div className="flex items-center gap-2 mb-3">
                 <Shield className="h-5 w-5 text-gray-400" />
                 <h3 className="font-semibold text-gray-900">Policy Checks</h3>
               </div>
               <div className="space-y-2">
-                {resource.policyChecks.map((check, index) => (
+                {job.policyChecks.map((check, index) => (
                   <div
                     key={index}
                     className={`rounded-lg border p-3 ${getPolicyStatusColor(check.status)}`}
@@ -204,14 +204,14 @@ export function ResourceDetailModal({ resource, isOpen, onClose }: ResourceDetai
           )}
 
           {/* Logs/History */}
-          {resource.logs && resource.logs.length > 0 && (
+          {job.logs && job.logs.length > 0 && (
             <div>
               <div className="flex items-center gap-2 mb-3">
                 <Clock className="h-5 w-5 text-gray-400" />
                 <h3 className="font-semibold text-gray-900">Recent Activity</h3>
               </div>
               <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 max-h-60 overflow-y-auto space-y-2">
-                {resource.logs.map((log, index) => (
+                {job.logs.map((log, index) => (
                   <div key={index} className="flex items-start gap-3 text-sm">
                     <span className="text-xs text-gray-500 font-mono min-w-[80px]">
                       {formatLogTime(log.timestamp)}

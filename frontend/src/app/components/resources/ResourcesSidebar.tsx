@@ -1,4 +1,4 @@
-import { FilterType } from "../../pages/Resources";
+import { FilterType } from "../../pages/Jobs";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -7,17 +7,17 @@ import {
   XCircle,
 } from "lucide-react";
 
-interface ResourcesSidebarProps {
+interface JobsSidebarProps {
   activeFilter: FilterType;
   onFilterChange: (filter: FilterType) => void;
 }
 
-export function ResourcesSidebar({
+export function JobsSidebar({
   activeFilter,
   onFilterChange,
-}: ResourcesSidebarProps) {
+}: JobsSidebarProps) {
   const filters = [
-    { id: "all" as FilterType, label: "All Resources", icon: FileText, count: 148 },
+    { id: "all" as FilterType, label: "All Jobs", icon: FileText, count: 148 },
     { id: "high-risk" as FilterType, label: "High Risk", icon: AlertTriangle, count: 12 },
     { id: "failed" as FilterType, label: "Failed", icon: XCircle, count: 3 },
     { id: "needs-approval" as FilterType, label: "Needs Approval", icon: Clock, count: 7 },
