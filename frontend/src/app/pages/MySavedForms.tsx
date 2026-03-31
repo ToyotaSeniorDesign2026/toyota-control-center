@@ -1,94 +1,22 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
-import { Clock3, Database, FileSpreadsheet, Presentation } from "lucide-react";
+import { Clock3, Database, FileSpreadsheet, FileText, Presentation } from "lucide-react";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
 import { Button } from "../components/ui/button";
+import { getSavedTemplates, type SavedTemplateRecord } from "../lib/userDashboardStore";
 
-type SavedForm = {
-  id: string;
-  name: string;
-  type: "Excel" | "SQL" | "PowerPoint";
-  lastEdited: string;
-  progress: string;
-  route: string;
-  draft: Record<string, unknown>;
-};
-
-const savedForms: SavedForm[] = [
-  {
-    id: "sf-001",
-    name: "q2_dealer_scorecard",
-    type: "SQL",
-    lastEdited: "Mar 3, 2026 11:20 AM",
-    progress: "60%",
-    route: "/sql-job",
-    draft: {
-      jobName: "q2_dealer_scorecard",
-      description: "Quarterly dealer scorecard and KPI ranking output.",
-      owner: "dealer.analytics@toyota.com",
-      reportTemplate: "dealer_performance",
-      dateRange: "90",
-      regionFilter: "all",
-      departmentFilter: "all",
-      minAmount: "5000",
-      outputDestination: "email",
-      emailRecipients: "dealer.analytics@toyota.com",
-      dataSensitivity: "internal",
-    },
-  },
-  {
-    id: "sf-002",
-    name: "monthly_exec_finance_deck",
-    type: "PowerPoint",
-    lastEdited: "Mar 2, 2026 04:05 PM",
-    progress: "45%",
-    route: "/powerpoint",
-    draft: {
-      jobName: "monthly_exec_finance_deck",
-      description: "Executive finance summary with revenue and margin charts.",
-      owner: "finance.ops@toyota.com",
-      presentationType: "executive_dashboard",
-      dataSource: "financial_database",
-      includeTables: true,
-      includeCharts: true,
-      includeImages: false,
-      outputFormat: "pptx",
-      emailRecipients: "finance.ops@toyota.com",
-      dataSensitivity: "internal",
-    },
-  },
-  {
-    id: "sf-003",
-    name: "warranty_claims_monthly_export",
-    type: "Excel",
-    lastEdited: "Mar 1, 2026 09:42 AM",
-    progress: "80%",
-    route: "/excel-report",
-    draft: {
-      jobName: "warranty_claims_monthly_export",
-      description: "Monthly warranty claims export with trend charts.",
-      owner: "quality.ops@toyota.com",
-      scheduleType: "monthly",
-      scheduleDay: "1",
-      scheduleTime: "09:00",
-      outputFormat: "xlsx",
-      emailRecipients: "quality.ops@toyota.com",
-      includeCharts: true,
-      dataSensitivity: "internal",
-    },
-  },
-];
-
-function typeIcon(type: SavedForm["type"]) {
+function typeIcon(type: SavedTemplateRecord["type"]) {
   if (type === "Excel") return <FileSpreadsheet className="h-5 w-5 text-white" />;
   if (type === "SQL") return <Database className="h-5 w-5 text-white" />;
+  if (type === "Custom") return <FileText className="h-5 w-5 text-white" />;
   return <Presentation className="h-5 w-5 text-white" />;
 }
 
 export default function MySavedForms() {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const navigate = useNavigate();
+  const savedForms = getSavedTemplates();
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -139,6 +67,11 @@ export default function MySavedForms() {
                 </div>
               </div>
             ))}
+            {savedForms.length === 0 && (
+              <div className="rounded-lg border border-dashed border-gray-300 bg-white p-10 text-center text-sm text-gray-600 shadow-sm">
+                No saved templates yet. Save a form as a template from any form page and it will appear here.
+              </div>
+            )}
           </div>
         </div>
       </main>

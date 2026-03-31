@@ -1,11 +1,19 @@
 export interface Job {
   id: string;
   name: string;
-  type: "AI Agent" | "SQL Query" | "dbt Model" | "API Connection";
+  type: "AI Agent" | "SQL Query" | "dbt Model" | "API Connection" | "Excel Report" | "PowerPoint Deck" | "Custom Job";
   status: "pending" | "approved" | "running" | "completed";
   createdAt: string;
   environment?: string;
   description?: string;
+  scheduleType?: "daily" | "weekly" | "monthly" | "on-demand";
+  scheduleDay?: string;
+  scheduleTime?: string;
+  scheduleDays?: string[];
+  scheduleStartDate?: string;
+  scheduleStopCondition?: "never" | "on-date" | "after-runs";
+  scheduleEndDate?: string;
+  scheduleMaxRuns?: string;
   logs?: Array<{ timestamp: string; message: string; level: "info" | "warning" | "error" }>;
   policyChecks?: Array<{ name: string; status: "passed" | "failed" | "warning"; message: string }>;
 }
@@ -188,6 +196,12 @@ export function getJobTypeColor(type: string) {
       return "text-purple-600";
     case "SQL Query":
       return "text-green-600";
+    case "Excel Report":
+      return "text-emerald-600";
+    case "PowerPoint Deck":
+      return "text-red-600";
+    case "Custom Job":
+      return "text-indigo-600";
     case "dbt Model":
       return "text-orange-600";
     case "API Connection":

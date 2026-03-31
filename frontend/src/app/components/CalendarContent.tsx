@@ -1,16 +1,19 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Clock3, History } from "lucide-react";
 import { Button } from "../components/ui/button";
+import { getCalendarEvents, subscribeToUserDashboardStore, type UserCalendarEvent } from "../lib/userDashboardStore";
 
 type CalendarEvent = {
   id: string;
+  jobId?: string;
   title: string;
   date: string; // yyyy-mm-dd
   time: string;
   kind: "past" | "scheduled";
+  jobType?: string;
 };
 
-const calendarEvents: CalendarEvent[] = [
+const baseCalendarEvents: CalendarEvent[] = [
   { id: "run-1", title: "Warranty Claims Rollup", date: "2026-03-01", time: "08:00", kind: "past" },
   { id: "run-2", title: "Customer Churn Analysis", date: "2026-03-02", time: "06:00", kind: "past" },
   { id: "run-3", title: "Dealer KPI Deck", date: "2026-03-03", time: "09:00", kind: "past" },
@@ -26,6 +29,20 @@ function getMonthStart(date: Date) {
   return new Date(date.getFullYear(), date.getMonth(), 1);
 }
 
+function getInitialCalendarMonth(events: CalendarEvent[]) {
+  const now = new Date();
+  const upcomingEvent = events
+    .filter((event) => event.kind === "scheduled")
+    .map((event) => new Date(`${event.date}T${event.time}:00`))
+    .filter((eventDate) => !Number.isNaN(eventDate.getTime()))
+    .sort((a, b) => a.getTime() - b.getTime())
+    .find((eventDate) => eventDate >= now);
+
+  return upcomingEvent
+    ? new Date(upcomingEvent.getFullYear(), upcomingEvent.getMonth(), 1)
+    : new Date(now.getFullYear(), now.getMonth(), 1);
+}
+
 function getMonthLabel(date: Date) {
   return date.toLocaleDateString("en-US", { month: "long", year: "numeric" });
 }
@@ -38,8 +55,29 @@ function toDateKey(date: Date) {
 }
 
 export function CalendarContent() {
-  const [currentMonth, setCurrentMonth] = useState(new Date(2026, 2, 1));
+  const [currentMonth, setCurrentMonth] = useState(() => getInitialCalendarMonth(baseCalendarEvents));
   const [eventFilter, setEventFilter] = useState<"all" | "past" | "scheduled">("all");
+  const [createdJobEvents, setCreatedJobEvents] = useState<UserCalendarEvent[]>(() => getCalendarEvents());
+  const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
+
+  const calendarEvents = useMemo(
+    () =>
+      [...baseCalendarEvents, ...createdJobEvents].sort((a, b) =>
+        `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`)
+      ),
+    [createdJobEvents]
+  );
+
+  useEffect(() => {
+    const nextEvents = getCalendarEvents();
+    setCreatedJobEvents(nextEvents);
+    setCurrentMonth(getInitialCalendarMonth([...baseCalendarEvents, ...nextEvents]));
+    return subscribeToUserDashboardStore(() => {
+      const updatedEvents = getCalendarEvents();
+      setCreatedJobEvents(updatedEvents);
+      setCurrentMonth(getInitialCalendarMonth([...baseCalendarEvents, ...updatedEvents]));
+    });
+  }, []);
 
   const monthStart = useMemo(() => getMonthStart(currentMonth), [currentMonth]);
 
@@ -140,8 +178,9 @@ export function CalendarContent() {
                       <div className="mb-2 text-xs font-semibold text-gray-700">{cell.getDate()}</div>
                       <div className="space-y-1">
                         {dayEvents.map((event) => (
-                          <div
+                          <button
                             key={event.id}
+                            onClick={() => setSelectedEvent(event)}
                             className={`rounded px-2 py-1 text-[11px] leading-tight ${
                               event.kind === "past"
                                 ? "bg-blue-100 text-blue-800"
@@ -150,7 +189,7 @@ export function CalendarContent() {
                           >
                             <div className="font-medium">{event.time}</div>
                             <div>{event.title}</div>
-                          </div>
+                          </button>
                         ))}
                       </div>
                     </>
@@ -200,7 +239,11 @@ export function CalendarContent() {
           </div>
           <div className="max-h-[620px] space-y-2 overflow-y-auto p-4">
             {monthEvents.map((event) => (
-              <div key={event.id} className="rounded-lg border border-gray-200 p-3">
+              <button
+                key={event.id}
+                onClick={() => setSelectedEvent(event)}
+                className="w-full rounded-lg border border-gray-200 p-3 text-left"
+              >
                 <div className="flex items-center justify-between">
                   <p className="text-xs font-semibold text-gray-900">{event.title}</p>
                   <span
@@ -214,7 +257,7 @@ export function CalendarContent() {
                   </span>
                 </div>
                 <p className="mt-1 text-xs text-gray-600">{event.date} at {event.time}</p>
-              </div>
+              </button>
             ))}
             {monthEvents.length === 0 && (
               <div className="rounded-lg border border-dashed border-gray-300 p-4 text-xs text-gray-600">
@@ -224,6 +267,30 @@ export function CalendarContent() {
           </div>
         </div>
       </div>
+
+      {selectedEvent && (
+        <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">{selectedEvent.title}</h3>
+              <p className="mt-1 text-xs text-gray-600">
+                {selectedEvent.kind === "past" ? "Past run" : "Scheduled run"} on {selectedEvent.date} at {selectedEvent.time}
+              </p>
+            </div>
+            <button
+              onClick={() => setSelectedEvent(null)}
+              className="rounded-md border border-gray-300 px-2 py-1 text-[11px] font-semibold text-gray-700 hover:bg-gray-50"
+            >
+              Clear
+            </button>
+          </div>
+          {selectedEvent.jobType && (
+            <div className="mt-3 inline-flex rounded-full bg-gray-100 px-2 py-1 text-[11px] font-semibold text-gray-700">
+              {selectedEvent.jobType}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
