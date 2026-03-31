@@ -10,8 +10,8 @@ from pydantic import BaseModel, Field
 
 from app.schemas.run import MCPExecutionConfig, MCPJobConfig, RunCreate
 
-ExecutionBackend = Literal["mcp", "native"]
-ExecutionMode = Literal["direct_tool", "agent", "native"]
+ExecutionBackend = Literal["mcp"]
+ExecutionMode = Literal["direct_tool", "agent"]
 TriggerSource = Literal["api", "ui", "cli", "schedule", "github_pr", "github_actions"]
 
 
@@ -152,29 +152,16 @@ def build_execution_request(
     payload: RunCreate,
     trigger_source: TriggerSource = "api",
 ) -> ExecutionRequest:
-    resource_type = (resource.type or "").strip().lower()
-    connector = (resource.connector or "").strip().lower()
+    resolved_mcp_config = resolve_effective_mcp_config(resource, payload)
+    if not resolved_mcp_config.server_names:
+        raise RuntimeError(
+            f"Resource '{resource.id}' is not associated with an approved MCP server. "
+            "Set resource.connector or mcp_config.server_names."
+        )
 
-    is_mcp = bool(payload.mcp_config) or connector in {
-        "arxiv-research",
-        "fastmcp-docs",
-        "fetch",
-        "filesystem",
-        "wordsmith-mcp",
-    } or resource_type in {"research", "mcp"}
-
-    resolved_mcp_config = resolve_effective_mcp_config(resource, payload) if is_mcp else MCPExecutionConfig()
-    if not is_mcp:
-        backend: ExecutionBackend = "native"
-        mode: ExecutionMode = "native"
-    elif resolved_mcp_config.tool_name:
-        backend = "mcp"
-        mode = "direct_tool"
-    else:
-        backend = "mcp"
-        mode = "agent"
-
-    job_spec = build_job_spec(resource, payload, resolved_mcp_config) if is_mcp else {}
+    backend: ExecutionBackend = "mcp"
+    mode: ExecutionMode = "direct_tool" if resolved_mcp_config.tool_name else "agent"
+    job_spec = build_job_spec(resource, payload, resolved_mcp_config)
 
     return ExecutionRequest(
         run_id=run_id,

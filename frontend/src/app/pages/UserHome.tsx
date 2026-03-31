@@ -26,6 +26,7 @@ import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
 import { ChatPanel } from "../components/ChatPanel";
 import { useCalendarOverlay } from "../contexts/CalendarContext";
+import { useJobRuns } from "../contexts/JobRunContext";
 import {
   mockReadyForPromotion,
   mockPendingPromotions,
@@ -55,6 +56,13 @@ const recentJobs = [
   { name: "Customer Churn Analysis", type: "SQL", schedule: "Daily, 06:00", status: "Needs Attention" },
   { name: "Quarterly Revenue Report", type: "PowerPoint", schedule: "Quarterly, day 1", status: "Healthy" },
 ];
+
+interface UserPanelJob {
+  name: string;
+  type: string;
+  schedule: string;
+  status: "Healthy" | "Running" | "Needs Attention";
+}
 
 const draftJobs = [
   { id: "draft-001", name: "Customer Retention Workflow", type: "Workflow", lastEdited: "1 hour ago" },
@@ -196,6 +204,122 @@ const getRunStatusColor = (status: string): string => {
   }
 };
 
+const formatResourceTypeTag = (type: string): string => {
+  switch (type.toLowerCase()) {
+    case "sql":
+      return "SQL";
+    case "research":
+      return "Research";
+    case "excel":
+      return "Excel";
+    case "powerpoint":
+      return "PowerPoint";
+    case "mcp":
+      return "MCP";
+    case "agent":
+      return "Agent";
+    case "dbt_job":
+      return "dbt";
+    case "airflow_dag":
+      return "Airflow";
+    case "pipeline":
+      return "Pipeline";
+    case "bi_task":
+      return "BI";
+    default:
+      return type
+        .split(/[_\s-]+/)
+        .filter(Boolean)
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ");
+  }
+};
+
+const mapResourceStatusToPanelStatus = (status?: string | null): UserPanelJob["status"] => {
+  const normalized = (status ?? "").toLowerCase();
+  if (["failed", "stopped"].includes(normalized)) {
+    return "Needs Attention";
+  }
+  if (["queued", "executing", "running"].includes(normalized)) {
+    return "Running";
+  }
+  return "Healthy";
+};
+
+const humanizeConfigKey = (key: string): string =>
+  key
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+
+const buildLiveJobSpec = (resource: any, resourceRuns: any[]): JobSpec | null => {
+  if (!resource) {
+    return null;
+  }
+
+  const latestRun = resourceRuns
+    .slice()
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
+
+  const status = mapResourceStatusToPanelStatus(latestRun?.status ?? resource.last_run_status ?? resource.status);
+  const config = resource.config ?? {};
+  const configEntries = Object.entries(config).filter(([_, value]) => value !== null && value !== "");
+
+  const inputs =
+    configEntries.length > 0
+      ? configEntries.map(([key, value]) => `${humanizeConfigKey(key)}: ${String(value)}`)
+      : ["No stored inputs"];
+
+  const outputsFromSpec = Array.isArray(latestRun?.resolved_job_spec_json?.tasks)
+    ? latestRun.resolved_job_spec_json.tasks.map((task: string) => `Task: ${task}`)
+    : [];
+
+  const outputs = [
+    ...(resource.connector ? [`MCP server: ${resource.connector}`] : []),
+    ...(latestRun?.connector_run_id ? [`Connector run ID: ${latestRun.connector_run_id}`] : []),
+    ...(latestRun?.workflow_url ? [`Workflow URL: ${latestRun.workflow_url}`] : []),
+    ...(outputsFromSpec.length > 0 ? outputsFromSpec : ["Run results available in the Runs/Calendar panel"]),
+  ];
+
+  const steps: JobStep[] = [
+    {
+      id: "step-1",
+      name: "Load resource configuration",
+      action: `Read ${formatResourceTypeTag(resource.type)} resource settings from the registry`,
+    },
+    {
+      id: "step-2",
+      name: "Prepare execution request",
+      action: latestRun
+        ? `Run action "${latestRun.action}" in ${latestRun.target_environment}`
+        : `Prepare execution for ${resource.environment}`,
+    },
+    {
+      id: "step-3",
+      name: "Dispatch through MCP",
+      action: resource.connector ? `Route through MCP server ${resource.connector}` : "Route through the approved MCP server",
+    },
+    {
+      id: "step-4",
+      name: "Track runtime status",
+      action: latestRun ? `Latest recorded status: ${latestRun.status}` : "Await the first recorded run",
+    },
+  ];
+
+  return {
+    job_id: resource.id,
+    name: resource.name,
+    type: formatResourceTypeTag(resource.type),
+    schedule:
+      typeof config.schedule === "string" && config.schedule.trim().length > 0 ? config.schedule.trim() : "Manual",
+    status,
+    inputs,
+    outputs,
+    steps,
+  };
+};
+
 const mockTemplates = [
   { 
     id: "template-001", 
@@ -264,7 +388,7 @@ interface JobStep {
 interface JobSpec {
   job_id: string;
   name: string;
-  type: "PowerPoint" | "Excel" | "SQL" | "Script" | "API";
+  type: string;
   schedule: string;
   status: "Healthy" | "Running" | "Needs Attention" | "Failed";
   inputs: string[];
@@ -372,6 +496,7 @@ interface WorkspaceState {
 
 export default function UserHome() {
   const navigate = useNavigate();
+  const { resources, runs } = useJobRuns();
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [activePanelId, setActivePanelId] = useState<string | null>(null);
   
@@ -401,7 +526,7 @@ export default function UserHome() {
   const [templateSearch, setTemplateSearch] = useState("");
   const [jobSearch, setJobSearch] = useState("");
   const [jobSort, setJobSort] = useState<"name" | "status" | "type" | "recently-updated">("name");
-  const [jobFilter, setJobFilter] = useState<"all" | "PowerPoint" | "Excel" | "SQL" | "Healthy" | "Running" | "Needs Attention">("all");
+  const [jobFilter, setJobFilter] = useState<string>("all");
   const [isDraftsExpanded, setIsDraftsExpanded] = useState(true);
   const [isRetiredJobsExpanded, setIsRetiredJobsExpanded] = useState(false);
   const [templateSort, setTemplateSort] = useState<"name" | "category" | "recently-used" | "recommended">("name");
@@ -439,6 +564,74 @@ export default function UserHome() {
     },
   ]);
   const [aiInput, setAiInput] = useState("");
+
+  const liveUpcomingRuns = resources
+    .filter((resource) => Boolean(resource.config?.schedule))
+    .slice(0, 3)
+    .map((resource) => ({
+      id: resource.id,
+      jobName: resource.name,
+      jobType:
+        resource.type === "sql"
+          ? "SQL"
+          : resource.type === "excel"
+            ? "Excel"
+            : resource.type === "powerpoint"
+              ? "PowerPoint"
+              : "SQL",
+      status: "scheduled" as const,
+      scheduledTime: new Date(Date.now() + 60 * 60 * 1000),
+    }));
+
+  const liveRecentRuns = runs
+    .slice()
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+    .slice(0, 3)
+    .map((run) => {
+      const resource = resources.find((item) => item.id === run.resource_id);
+      return {
+        id: run.id,
+        jobName: resource?.name ?? run.resource_id,
+        jobType:
+          resource?.type === "sql"
+            ? "SQL"
+            : resource?.type === "excel"
+              ? "Excel"
+              : "PowerPoint",
+        status:
+          run.status === "succeeded"
+            ? ("completed" as const)
+            : run.status === "failed" || run.status === "stopped"
+              ? ("failed" as const)
+              : ("running" as const),
+        scheduledTime: new Date(run.created_at),
+        completedTime: new Date(run.updated_at),
+      };
+    });
+
+  const upcomingRuns = liveUpcomingRuns.length > 0 ? liveUpcomingRuns : mockUpcomingRuns;
+  const recentRuns = liveRecentRuns.length > 0 ? liveRecentRuns : mockRecentRuns;
+  const panelJobs: UserPanelJob[] =
+    resources.length > 0
+      ? resources
+          .map((resource) => {
+            const latestRun = runs
+              .filter((run) => run.resource_id === resource.id)
+              .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
+
+            return {
+              name: resource.name,
+              type: formatResourceTypeTag(resource.type),
+              schedule:
+                typeof resource.config?.schedule === "string" && resource.config.schedule.trim().length > 0
+                  ? resource.config.schedule.trim()
+                  : "Manual",
+              status: mapResourceStatusToPanelStatus(latestRun?.status ?? resource.last_run_status ?? resource.status),
+            };
+          })
+          .sort((a, b) => a.name.localeCompare(b.name))
+      : recentJobs;
+  const jobTypeOptions = Array.from(new Set(panelJobs.map((job) => job.type))).sort((a, b) => a.localeCompare(b));
 
   // Console helper functions
   const getConsoleJSON = () => {
@@ -544,7 +737,7 @@ export default function UserHome() {
 
   // Filter and sort helper functions
   const getFilteredAndSortedJobs = () => {
-    let filtered = recentJobs.filter((job) => {
+    let filtered = panelJobs.filter((job) => {
       const matchesSearch =
         job.name.toLowerCase().includes(jobSearch.toLowerCase()) ||
         job.type.toLowerCase().includes(jobSearch.toLowerCase()) ||
@@ -617,7 +810,17 @@ export default function UserHome() {
   // Get active tab and related data from primary pane
   const activeTab = workspace.primary.tabs.find((tab) => tab.id === workspace.primary.activeTabId);
   const activeJobName = activeTab?.type === "job" ? activeTab.jobName : null;
-  const jobSpec = activeJobName ? mockJobSpecs[activeJobName] : null;
+  const activeResource = activeJobName ? resources.find((resource) => resource.name === activeJobName) : null;
+  const activeResourceRuns = activeResource
+    ? runs
+        .filter((run) => run.resource_id === activeResource.id)
+        .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+    : [];
+  const jobSpec = activeResource
+    ? buildLiveJobSpec(activeResource, activeResourceRuns)
+    : activeJobName
+      ? mockJobSpecs[activeJobName]
+      : null;
 
   // Get current promotion
   const promotionId = activeTab?.type === "promotion" ? activeTab.id : null;
@@ -998,7 +1201,17 @@ export default function UserHome() {
 
     // Get job spec if needed
     const currentJobName = tab.type === "job" ? tab.jobName : null;
-    const currentJobSpec = currentJobName ? mockJobSpecs[currentJobName] : null;
+    const currentResource = currentJobName ? resources.find((resource) => resource.name === currentJobName) : null;
+    const currentResourceRuns = currentResource
+      ? runs
+          .filter((run) => run.resource_id === currentResource.id)
+          .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+      : [];
+    const currentJobSpec = currentResource
+      ? buildLiveJobSpec(currentResource, currentResourceRuns)
+      : currentJobName
+        ? mockJobSpecs[currentJobName]
+        : null;
     
     // Get template if needed
     const currentTemplate = tab.type === "template" ? mockTemplates.find((t) => t.id === tab.templateId) : null;
@@ -1065,6 +1278,29 @@ export default function UserHome() {
                       <p className="text-sm text-gray-900 mt-1">{currentJobSpec.status}</p>
                     </div>
                   </div>
+
+                  {currentResource && (
+                    <div className="grid grid-cols-2 gap-4 border-t border-gray-200 pt-6">
+                      <div>
+                        <p className="text-xs font-semibold text-gray-500 uppercase">Resource ID</p>
+                        <p className="mt-1 font-mono text-sm text-gray-900">{currentResource.id}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-gray-500 uppercase">Environment</p>
+                        <p className="mt-1 text-sm text-gray-900">{currentResource.environment}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-gray-500 uppercase">Connector</p>
+                        <p className="mt-1 text-sm text-gray-900">{currentResource.connector}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-gray-500 uppercase">Last Recorded Run</p>
+                        <p className="mt-1 text-sm text-gray-900">
+                          {currentResourceRuns[0]?.id ?? "No runs recorded yet"}
+                        </p>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="border-t border-gray-200 pt-6">
                     <p className="text-sm font-semibold text-gray-900 mb-3">Inputs</p>
@@ -1583,7 +1819,7 @@ export default function UserHome() {
                 <div className="rounded-lg border border-gray-200 bg-white p-4">
                   <h3 className="text-sm font-semibold text-gray-900 mb-3">📅 Next Runs</h3>
                   <div className="space-y-2">
-                    {mockUpcomingRuns.slice(0, 2).map((run) => (
+                    {upcomingRuns.slice(0, 2).map((run) => (
                       <div key={run.id} className="p-2 bg-blue-50 rounded text-left text-xs">
                         <p className="font-medium text-gray-900 truncate">{run.jobName}</p>
                         <p className="text-gray-500 text-[9px]">{formatScheduledTime(run.scheduledTime)}</p>
@@ -1641,15 +1877,20 @@ export default function UserHome() {
     switch (activePanelId) {
       case "jobs":
         const filteredAndSortedJobs = getFilteredAndSortedJobs();
+        const failedJobs = filteredAndSortedJobs.filter((job) => job.status === "Needs Attention");
+        const succeededJobs = filteredAndSortedJobs.filter((job) => job.status === "Healthy");
+        const currentJobs = filteredAndSortedJobs.filter(
+          (job) => job.status !== "Needs Attention" && job.status !== "Healthy",
+        );
         const jobTypeLists = {
-          PowerPoint: recentJobs.filter(j => j.type === "PowerPoint").length,
-          Excel: recentJobs.filter(j => j.type === "Excel").length,
-          SQL: recentJobs.filter(j => j.type === "SQL").length,
+          PowerPoint: panelJobs.filter(j => j.type === "PowerPoint").length,
+          Excel: panelJobs.filter(j => j.type === "Excel").length,
+          SQL: panelJobs.filter(j => j.type === "SQL").length,
         };
         const jobStatusLists = {
-          Healthy: recentJobs.filter(j => j.status === "Healthy").length,
-          Running: recentJobs.filter(j => j.status === "Running").length,
-          "Needs Attention": recentJobs.filter(j => j.status === "Needs Attention").length,
+          Healthy: panelJobs.filter(j => j.status === "Healthy").length,
+          Running: panelJobs.filter(j => j.status === "Running").length,
+          "Needs Attention": panelJobs.filter(j => j.status === "Needs Attention").length,
         };
         return (
           <div className="p-4 space-y-3 flex flex-col h-full">
@@ -1683,10 +1924,10 @@ export default function UserHome() {
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-gray-600">Filter:</label>
               <div className="flex flex-wrap gap-1.5">
-                {["all", "PowerPoint", "Excel", "SQL"].map((filterOption) => (
+                {["all", ...jobTypeOptions].map((filterOption) => (
                   <button
                     key={filterOption}
-                    onClick={() => setJobFilter(filterOption as any)}
+                    onClick={() => setJobFilter(filterOption)}
                     className={`px-2.5 py-1 rounded text-xs font-medium transition ${
                       jobFilter === filterOption
                         ? "bg-[#ed0923] text-white"
@@ -1714,14 +1955,48 @@ export default function UserHome() {
               </div>
             </div>
 
+            {/* Failed Jobs Section */}
+            <div className="border-t border-gray-200 pt-3 mt-2">
+              <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-red-700">
+                Failed Jobs ({failedJobs.length})
+              </h3>
+              {failedJobs.length > 0 ? (
+                <div className="space-y-1.5">
+                  {failedJobs.map((job) => (
+                    <button
+                      key={`failed-${job.name}`}
+                      draggable
+                      onDragStart={(e) => handleJobDragStart(e, job.name)}
+                      onClick={() => handleOpenTabInPane({ type: "job", name: job.name, id: job.name }, "primary")}
+                      className={`w-full rounded-lg border p-3 text-left transition cursor-move ${
+                        activeJobName === job.name
+                          ? "border-red-500 bg-red-50"
+                          : "border-red-200 bg-red-50 hover:bg-red-100"
+                      }`}
+                    >
+                      <p className="text-sm font-medium text-gray-900">{job.name}</p>
+                      <div className="mt-1 flex items-center gap-2">
+                        <span className="text-xs text-gray-500">{job.type}</span>
+                        <span className="inline-flex rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-700">
+                          Failed
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-gray-500">No failed jobs right now.</p>
+              )}
+            </div>
+
             {/* Current Jobs Section - Always visible and prioritized */}
             <div className="border-t border-gray-200 pt-3 mt-2">
               <h3 className="text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">
-                My Current Jobs ({filteredAndSortedJobs.length})
+                My Current Jobs ({currentJobs.length})
               </h3>
               <div className="flex-1 overflow-y-auto space-y-1.5">
-                {filteredAndSortedJobs.length > 0 ? (
-                  filteredAndSortedJobs.map((job) => (
+                {currentJobs.length > 0 ? (
+                  currentJobs.map((job) => (
                     <button
                       key={job.name}
                       draggable
@@ -1752,10 +2027,44 @@ export default function UserHome() {
                   ))
                 ) : (
                   <div className="text-center py-8">
-                    <p className="text-sm text-gray-500">No jobs match your search</p>
+                    <p className="text-sm text-gray-500">No current jobs match your search</p>
                   </div>
                 )}
               </div>
+            </div>
+
+            {/* Succeeded Jobs Section */}
+            <div className="border-t border-gray-200 pt-3 mt-2">
+              <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-green-700">
+                Succeeded Jobs ({succeededJobs.length})
+              </h3>
+              {succeededJobs.length > 0 ? (
+                <div className="space-y-1.5">
+                  {succeededJobs.map((job) => (
+                    <button
+                      key={`succeeded-${job.name}`}
+                      draggable
+                      onDragStart={(e) => handleJobDragStart(e, job.name)}
+                      onClick={() => handleOpenTabInPane({ type: "job", name: job.name, id: job.name }, "primary")}
+                      className={`w-full rounded-lg border p-3 text-left transition cursor-move ${
+                        activeJobName === job.name
+                          ? "border-green-500 bg-green-50"
+                          : "border-green-200 bg-green-50 hover:bg-green-100"
+                      }`}
+                    >
+                      <p className="text-sm font-medium text-gray-900">{job.name}</p>
+                      <div className="mt-1 flex items-center gap-2">
+                        <span className="text-xs text-gray-500">{job.type}</span>
+                        <span className="inline-flex rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700">
+                          Succeeded
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-gray-500">No succeeded jobs match your search.</p>
+              )}
             </div>
 
             {/* Drafts Section - Collapsible, expanded by default */}
@@ -1846,7 +2155,7 @@ export default function UserHome() {
             <div className="space-y-2">
               <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">Upcoming Runs</h3>
               <div className="space-y-1.5">
-                {mockUpcomingRuns.map((run) => (
+                {upcomingRuns.map((run) => (
                   <div key={run.id} className="p-2 rounded-lg bg-gray-50 border border-gray-200 text-left hover:bg-gray-100 transition cursor-pointer">
                     <p className="text-sm font-medium text-gray-900 truncate">{run.jobName}</p>
                     <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
@@ -1867,7 +2176,7 @@ export default function UserHome() {
             <div className="space-y-2">
               <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">Recent Runs</h3>
               <div className="space-y-1.5">
-                {mockRecentRuns.map((run) => (
+                {recentRuns.map((run) => (
                   <button
                     key={run.id}
                     onClick={() => handleOpenTabInPane({ type: "job", name: run.jobName, id: run.jobName }, "primary")}

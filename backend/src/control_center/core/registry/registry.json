@@ -67,6 +67,24 @@
       "allowed_environments": ["dev", "staging", "prod"],
       "config_path": "configs/wordsmith-mcp.json",
       "active": true
+    },
+    "sql-dab": {
+      "description": "Remote SQL MCP server exposed by Azure Data API Builder for approved database access through typed MCP tools.",
+      "display_name": "Control Center Dev Database",
+      "allowed_environments": ["dev", "staging", "prod"],
+      "config_path": "configs/sql-dab.json",
+      "version": "1.7",
+      "tags": ["sql", "database", "mcp", "remote"],
+      "active": true
+    },
+    "sql-dab-analytics": {
+      "description": "Remote SQL MCP server for the Analytics database, exposed through Azure Data API Builder.",
+      "display_name": "Analytics Reporting Database",
+      "allowed_environments": ["dev", "staging", "prod"],
+      "config_path": "configs/sql-dab-analytics.json",
+      "version": "1.7",
+      "tags": ["sql", "database", "analytics", "mcp", "remote"],
+      "active": true
     }
 
 

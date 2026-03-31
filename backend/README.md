@@ -33,6 +33,17 @@ Key DB vars:
 - `DB_POOL_RECYCLE`
 - `DB_POOL_PRE_PING`
 
+OpenAI chatbot vars:
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL` default: `gpt-5-mini`
+- `OPENAI_TIMEOUT_SECONDS`
+
+SQL MCP connector vars:
+- `SQL_MCP_SERVER_URL`
+- `SQL_MCP_SERVER_BEARER_TOKEN`
+- `SQL_ANALYTICS_MCP_SERVER_URL`
+- `SQL_ANALYTICS_MCP_SERVER_BEARER_TOKEN`
+
 ## Local PostgreSQL + Migrations
 ### Option A: Docker
 ```bash

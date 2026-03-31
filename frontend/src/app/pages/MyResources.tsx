@@ -3,6 +3,8 @@ import { CheckCircle } from "lucide-react";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
 import { JobDetailModal } from "../components/JobDetailModal";
+import { useJobRuns } from "../contexts/JobRunContext";
+import { buildUserJobs } from "../lib/jobRunViewModels";
 import {
   formatJobDate,
   getJobTypeColor,
@@ -14,6 +16,9 @@ export default function MyJobs() {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
+  const { resources, runs } = useJobRuns();
+  const liveJobs = buildUserJobs(resources, runs);
+  const jobs = liveJobs.length > 0 ? liveJobs : mockMyJobs;
 
   const handleJobClick = (job: Job) => {
     setSelectedJob(job);
@@ -47,10 +52,10 @@ export default function MyJobs() {
                 <CheckCircle className="h-5 w-5 text-green-600" />
                 <h3 className="font-semibold text-gray-900">My Jobs</h3>
               </div>
-              <p className="mt-1 text-xs text-gray-600">{mockMyJobs.length} total jobs</p>
+              <p className="mt-1 text-xs text-gray-600">{jobs.length} total jobs</p>
             </div>
             <div className="divide-y divide-gray-200">
-              {mockMyJobs.map((job) => (
+              {jobs.map((job) => (
                 <div
                   key={job.id}
                   className="cursor-pointer p-4 transition-colors hover:bg-gray-50"

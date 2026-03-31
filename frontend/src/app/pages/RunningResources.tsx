@@ -3,6 +3,8 @@ import { PlayCircle } from "lucide-react";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
 import { JobDetailModal } from "../components/JobDetailModal";
+import { useJobRuns } from "../contexts/JobRunContext";
+import { buildRunningJobs } from "../lib/jobRunViewModels";
 import {
   formatJobDate,
   getJobTypeColor,
@@ -14,6 +16,9 @@ export default function RunningJobs() {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
+  const { resources, runs } = useJobRuns();
+  const liveJobs = buildRunningJobs(resources, runs);
+  const jobs = liveJobs.length > 0 ? liveJobs : mockRunningJobs;
 
   const handleJobClick = (job: Job) => {
     setSelectedJob(job);
@@ -47,10 +52,10 @@ export default function RunningJobs() {
                 <PlayCircle className="h-5 w-5 text-blue-600" />
                 <h3 className="font-semibold text-gray-900">Running Jobs</h3>
               </div>
-              <p className="mt-1 text-xs text-gray-600">{mockRunningJobs.length} currently active</p>
+              <p className="mt-1 text-xs text-gray-600">{jobs.length} currently active</p>
             </div>
             <div className="divide-y divide-gray-200">
-              {mockRunningJobs.map((job) => (
+              {jobs.map((job) => (
                 <div
                   key={job.id}
                   className="cursor-pointer p-4 transition-colors hover:bg-gray-50"
