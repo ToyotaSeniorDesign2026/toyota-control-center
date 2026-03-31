@@ -1,11 +1,19 @@
-import { MessageSquare, X, Send, Clock, Plus, XCircle } from "lucide-react";
+import { MessageSquare, X, Send, Clock, Plus, XCircle, Loader } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
+
+interface AssistantActivityStep {
+  id: string;
+  label: string;
+  status: "pending" | "in-progress" | "completed" | "error";
+}
 
 interface ChatMessage {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "activity";
   content: string;
   timestamp: Date;
+  activitySteps?: AssistantActivityStep[];
+  completedUpdates?: Record<string, any>;
 }
 
 interface AttachedItem {
@@ -32,6 +40,15 @@ interface ChatThread {
 interface ChatPanelProps {
   isOpen: boolean;
   onClose: () => void;
+  onJobCreationIntent?: () => void;
+  onFieldsExtracted?: (fields: Record<string, any>) => void;
+  currentDraftData?: Record<string, any>;
+  onConsoleEvent?: (
+    type: "intent_detected" | "draft_created" | "extracted_fields" | "draft_updated" | "missing_fields_identified",
+    message: string,
+    data?: Record<string, any>,
+    previousValues?: Record<string, any>
+  ) => void;
 }
 
 const initialMessages: ChatMessage[] = [
@@ -132,7 +149,7 @@ const mockChatHistory: ChatThread[] = [
   },
 ];
 
-export function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
+export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtracted, currentDraftData, onConsoleEvent }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [inputValue, setInputValue] = useState("");
   const [showHistory, setShowHistory] = useState(false);
@@ -140,6 +157,7 @@ export function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
   const [selectedModel, setSelectedModel] = useState("GPT-4o");
   const [isDragOverInput, setIsDragOverInput] = useState(false);
   const [attachedItems, setAttachedItems] = useState<AttachedItem[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-adjust textarea height
@@ -150,7 +168,61 @@ export function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
     }
   }, [inputValue]);
 
-  const handleSendMessage = () => {
+  // Classify a message as workflow-heavy or simple chat
+  const isWorkflowMessage = (text: string): boolean => {
+    const workflowKeywords = [
+      // Job creation/management
+      "create", "new", "job", "workflow", "pipeline", "draft",
+      // Updates/modifications
+      "update", "edit", "change", "modify", "set", "add", "update",
+      // Field/form operations
+      "field", "input", "output", "source", "destination", "schedule", "timeout", "retry",
+      // Troubleshooting/analysis
+      "troubleshoot", "debug", "error", "fix", "issue", "problem", "failed", "failing",
+      "not working", "help me", "investigate",
+      // Configuration
+      "config", "configure", "settings", "parameter", "enable", "disable",
+      // Extraction/parsing intent
+      "extract", "parse", "get", "fetch", "retrieve", "what fields", "what details",
+      // Complex structure
+      "sql", "query", "dag", "airflow", "snowflake", "s3", "database", "table",
+      // Intent markers
+      "i want to", "can you", "could you", "help me create", "help me set",
+    ];
+
+    const lowerText = text.toLowerCase().trim();
+    
+    // Check for workflow keywords
+    const hasWorkflowKeyword = workflowKeywords.some((keyword) =>
+      lowerText.includes(keyword)
+    );
+
+    // Simple/casual chat patterns - these are NOT workflow messages
+    const casualPatterns = [
+      /^(hi|hey|hello|thanks|thank you|great|good|ok|okay|yes|no|what|why|how)[\s?!.]*$/i,
+      /^(bye|goodbye|see you|later)[\s?!.]*$/i,
+      /^(can you help|what can you do|what features|capabilities)[\s?!.]*$/i,
+      /^(tell me about|explain|remind me)[\s?!.]*$/i,
+    ];
+
+    const isCasualChat = casualPatterns.some((pattern) =>
+      pattern.test(lowerText)
+    );
+
+    // If it matches casual patterns, it's definitely simple chat
+    if (isCasualChat) return false;
+
+    // If it has workflow keywords, it's workflow-heavy
+    if (hasWorkflowKeyword) return true;
+
+    // Multi-sentence messages are likely workflow-related
+    if (lowerText.length > 100) return true;
+
+    // Default to simple chat for short, neutral messages
+    return false;
+  };
+
+  const handleSendMessage = async () => {
     if (!inputValue.trim() && attachedItems.length === 0) return;
 
     const messageContent = attachedItems.length > 0
@@ -164,21 +236,205 @@ export function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
       timestamp: new Date(),
     };
 
-    setMessages((prev) => [...prev, newUserMessage]);
+    // Detect if this is a workflow-heavy message or simple chat
+    const isWorkflow = isWorkflowMessage(inputValue.trim());
+    
+    // Create activity message based on message type
+    const activityMessageId = (Date.now() + 0.5).toString();
+    
+    let activityMessage: ChatMessage;
+    
+    if (isWorkflow) {
+      // Rich activity card for workflow messages
+      const initialActivitySteps: AssistantActivityStep[] = [
+        { id: "understand", label: "Understanding request", status: "in-progress" },
+        { id: "detect", label: "Detecting intent", status: "pending" },
+        { id: "extract", label: "Extracting details", status: "pending" },
+        { id: "prepare", label: "Preparing response", status: "pending" },
+      ];
+
+      activityMessage = {
+        id: activityMessageId,
+        role: "activity",
+        content: "CC Assistant is working...",
+        timestamp: new Date(),
+        activitySteps: initialActivitySteps,
+        completedUpdates: {},
+      };
+    } else {
+      // Simple loading state for casual chat
+      activityMessage = {
+        id: activityMessageId,
+        role: "activity",
+        content: "CC Assistant is responding...",
+        timestamp: new Date(),
+        // No activitySteps indicates simple loading mode
+        completedUpdates: {},
+      };
+    }
+
+    setMessages((prev) => [...prev, newUserMessage, activityMessage]);
     setInputValue("");
     setAttachedItems([]);
+    setIsLoading(true);
 
-    // Simulate assistant response
-    setTimeout(() => {
+    // Simulate progress through steps
+    const updateActivityStep = (stepIndex: number, newStatus: "in-progress" | "completed" | "error") => {
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === activityMessageId && msg.role === "activity" && msg.activitySteps
+            ? {
+                ...msg,
+                activitySteps: msg.activitySteps.map((step, idx) => {
+                  if (idx === stepIndex) {
+                    return { ...step, status: newStatus };
+                  } else if (idx < stepIndex && newStatus === "in-progress") {
+                    return { ...step, status: "completed" };
+                  }
+                  return step;
+                }),
+              }
+            : msg
+        )
+      );
+    };
+
+    try {
+      // Simulate step progression
+      updateActivityStep(0, "in-progress");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      updateActivityStep(0, "completed");
+      updateActivityStep(1, "in-progress");
+
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      // Convert messages to the format expected by the API
+      const conversationHistory = messages
+        .filter(msg => (msg.role === "user" || msg.role === "assistant") && msg.role !== "activity")
+        .map(msg => ({
+          role: msg.role,
+          content: msg.content,
+        }));
+
+      updateActivityStep(1, "completed");
+      updateActivityStep(2, "in-progress");
+
+      const response = await fetch("/api/chat/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: inputValue.trim() || "Please help with the attached item",
+          conversation_history: conversationHistory,
+          model: selectedModel === "GPT-4o" ? "gpt-4o" : "gpt-4",
+          current_draft_data: currentDraftData,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`API error: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      
+      updateActivityStep(2, "completed");
+      updateActivityStep(3, "in-progress");
+      
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      updateActivityStep(3, "completed");
+
+      // Small delay to show completion state
+      await new Promise((resolve) => setTimeout(resolve, 400));
+
+      // Replace activity message with final response
       const assistantResponse: ChatMessage = {
-        id: (Date.now() + 1).toString(),
+        id: (Date.now() + 2).toString(),
         role: "assistant",
-        content:
-          "I understand. In a production environment, I would process your request using AI models to help you with job creation, troubleshooting, and workflow optimization.",
+        content: data.response,
         timestamp: new Date(),
       };
-      setMessages((prev) => [...prev, assistantResponse]);
-    }, 1000);
+      
+      // If there are extracted fields, add them to the activity summary
+      if (data.extracted_fields && Object.keys(data.extracted_fields).length > 0) {
+        assistantResponse.completedUpdates = data.extracted_fields;
+      }
+
+      setMessages((prev) => {
+        // Replace the activity message with the final response
+        const filtered = prev.filter((msg) => msg.id !== activityMessageId);
+        return [...filtered, assistantResponse];
+      });
+      
+      // Emit console events for job creation workflow
+      if (data.job_creation_intent) {
+        onConsoleEvent?.("intent_detected", "Job creation intent detected", {
+          intent: "create_job",
+          message: inputValue.trim(),
+        });
+      }
+      
+      // Detect job creation intent and trigger callback
+      if (data.job_creation_intent && onJobCreationIntent) {
+        setTimeout(() => {
+          onJobCreationIntent();
+          onConsoleEvent?.("draft_created", "Draft opened for job creation", {
+            draft_type: "job",
+            timestamp: new Date().toISOString(),
+          });
+        }, 200);
+      }
+      
+      // Handle extracted fields from the message
+      if (data.extracted_fields && onFieldsExtracted) {
+        // Emit extracted fields event
+        onConsoleEvent?.("extracted_fields", "Fields extracted from user message", data.extracted_fields);
+        
+        setTimeout(() => {
+          onFieldsExtracted(data.extracted_fields);
+          
+          // Emit draft updated event
+          onConsoleEvent?.("draft_updated", `Draft updated with ${Object.keys(data.extracted_fields).length} field(s)`, {
+            updated_fields: Object.keys(data.extracted_fields),
+            values: data.extracted_fields,
+          });
+        }, 300);
+      }
+    } catch (error) {
+      console.error("Error sending message:", error);
+      
+      // Mark the failed step as error and show error message
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === activityMessageId && msg.role === "activity"
+            ? {
+                ...msg,
+                activitySteps: msg.activitySteps?.map((step) => ({
+                  ...step,
+                  status: step.status === "completed" ? "completed" : "error",
+                })),
+              }
+            : msg
+        )
+      );
+
+      // Add error response after a short delay
+      await new Promise((resolve) => setTimeout(resolve, 800));
+
+      const errorResponse: ChatMessage = {
+        id: (Date.now() + 2).toString(),
+        role: "assistant",
+        content: `I encountered an error: ${error instanceof Error ? error.message : "Unknown error"}. Please check that the OpenAI API is configured and available.`,
+        timestamp: new Date(),
+      };
+      
+      setMessages((prev) => {
+        const filtered = prev.filter((msg) => msg.id !== activityMessageId);
+        return [...filtered, errorResponse];
+      });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleNewChat = () => {
@@ -330,15 +586,90 @@ export function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
         <div className="flex-1 overflow-y-auto px-5 py-5 space-y-4 flex flex-col">
           {messages.map((message) => (
             <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div
-                className={`rounded-lg px-4 py-3 text-sm flex-shrink-0 max-w-[90%] shadow-sm ${
-                  message.role === "user"
-                    ? "bg-[#ed0923] text-white rounded-br-none"
-                    : "bg-gray-100 text-gray-900 rounded-bl-none"
-                }`}
-              >
-                <p className="whitespace-pre-wrap break-words leading-relaxed">{message.content}</p>
-              </div>
+              {message.role === "activity" ? (
+                // Activity message with conditional rendering based on message type
+                message.activitySteps ? (
+                  // Rich activity card for workflow-heavy messages
+                  <div className="rounded-lg px-4 py-3 text-sm flex-shrink-0 max-w-[85%] bg-blue-50 border border-blue-200 rounded-bl-none">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Loader className="h-4 w-4 text-blue-600 animate-spin" />
+                      <span className="font-medium text-blue-900">{message.content}</span>
+                    </div>
+                    <div className="space-y-2">
+                      {message.activitySteps.map((step) => (
+                        <div key={step.id} className="flex items-center gap-2 text-xs">
+                          {step.status === "completed" && (
+                            <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-green-500 text-white flex-shrink-0">
+                              ✓
+                            </span>
+                          )}
+                          {step.status === "in-progress" && (
+                            <span className="inline-flex h-5 w-5 items-center justify-center text-blue-600 flex-shrink-0 animate-pulse">
+                              ⏳
+                            </span>
+                          )}
+                          {step.status === "pending" && (
+                            <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-gray-200 text-gray-500 flex-shrink-0 text-[10px]">
+                              ○
+                            </span>
+                          )}
+                          {step.status === "error" && (
+                            <span className="inline-flex h-5 w-5 items-center justify-center text-red-600 flex-shrink-0">
+                              ✕
+                            </span>
+                          )}
+                          <span
+                            className={`${
+                              step.status === "completed"
+                                ? "text-green-700 line-through"
+                                : step.status === "in-progress"
+                                ? "text-blue-900 font-medium"
+                                : step.status === "error"
+                                ? "text-red-700"
+                                : "text-gray-600"
+                            }`}
+                          >
+                            {step.label}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  // Simple loading indicator for casual chat
+                  <div className="rounded-lg px-4 py-3 text-sm flex-shrink-0 max-w-[85%] bg-gray-100 border border-gray-200 rounded-bl-none flex items-center gap-2">
+                    <span className="inline-flex gap-1">
+                      <span className="inline-block h-2 w-2 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: "0ms" }} />
+                      <span className="inline-block h-2 w-2 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: "150ms" }} />
+                      <span className="inline-block h-2 w-2 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: "300ms" }} />
+                    </span>
+                    <span className="text-gray-600">{message.content}</span>
+                  </div>
+                )
+              ) : (
+                // Regular user or assistant message
+                <div
+                  className={`rounded-lg px-4 py-3 text-sm flex-shrink-0 max-w-[90%] shadow-sm ${
+                    message.role === "user"
+                      ? "bg-[#ed0923] text-white rounded-br-none"
+                      : "bg-gray-100 text-gray-900 rounded-bl-none"
+                  }`}
+                >
+                  <p className="whitespace-pre-wrap break-words leading-relaxed">{message.content}</p>
+                  {message.role === "assistant" && message.completedUpdates && Object.keys(message.completedUpdates).length > 0 && (
+                    <div className="mt-3 pt-3 border-t border-gray-300 text-xs opacity-75">
+                      <p className="font-medium text-gray-600 mb-1">Updated fields:</p>
+                      <ul className="space-y-1">
+                        {Object.entries(message.completedUpdates).map(([key, value]) => (
+                          <li key={key} className="text-gray-600">
+                            • {key}: <span className="font-semibold">{typeof value === "object" ? JSON.stringify(value) : String(value)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -405,11 +736,15 @@ export function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
           <div className="flex justify-end">
             <button
               onClick={handleSendMessage}
-              disabled={!inputValue.trim() && attachedItems.length === 0}
+              disabled={(!inputValue.trim() && attachedItems.length === 0) || isLoading}
               className="rounded-lg bg-[#ed0923] px-3 py-2 text-white hover:bg-[#d10820] disabled:bg-gray-300 disabled:cursor-not-allowed transition flex-shrink-0 font-medium text-xs"
               title="Send message (Shift+Enter for new line)"
             >
-              <Send className="h-4 w-4" />
+              {isLoading ? (
+                <span className="inline-block animate-spin h-4 w-4">⏳</span>
+              ) : (
+                <Send className="h-4 w-4" />
+              )}
             </button>
           </div>
         </div>

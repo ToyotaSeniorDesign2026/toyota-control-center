@@ -19,12 +19,14 @@ import {
   ChevronUp,
   ChevronDown,
   GitMerge,
+  Plus,
 } from "lucide-react";
 import { useNavigate } from "react-router";
 import { Button } from "../components/ui/button";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
 import { ChatPanel } from "../components/ChatPanel";
+import { CreateJobForm } from "../components/CreateJobForm";
 import { useCalendarOverlay } from "../contexts/CalendarContext";
 import {
   mockReadyForPromotion,
@@ -344,7 +346,7 @@ interface AIMessage {
 
 interface WorkspaceTab {
   id: string;
-  type: "dashboard" | "job" | "required-action" | "template" | "promotion" | "revision";
+  type: "dashboard" | "job" | "required-action" | "template" | "promotion" | "revision" | "create-job";
   title: string;
   closable: boolean;
   jobName?: string;
@@ -396,6 +398,20 @@ export default function UserHome() {
     secondaryPosition: "right",
   });
   
+  // Job draft state - holds data being created via chat
+  const [jobDraft, setJobDraft] = useState<Record<string, any>>({});
+  
+  // Console events for live job creation workflow tracking
+  interface ConsoleEvent {
+    id: string;
+    timestamp: Date;
+    type: "intent_detected" | "draft_created" | "extracted_fields" | "draft_updated" | "missing_fields_identified";
+    message: string;
+    data?: Record<string, any>;
+    previousValues?: Record<string, any>;
+  }
+  const [consoleEvents, setConsoleEvents] = useState<ConsoleEvent[]>([]);
+  
   const [isAIPanelOpen, setIsAIPanelOpen] = useState(false);
   const [isChatPanelOpen, setIsChatPanelOpen] = useState(true);
   const [templateSearch, setTemplateSearch] = useState("");
@@ -442,6 +458,19 @@ export default function UserHome() {
 
   // Console helper functions
   const getConsoleJSON = () => {
+    // If there are active console events (job creation workflow), show the latest event
+    if (consoleEvents.length > 0) {
+      const latestEvent = consoleEvents[consoleEvents.length - 1];
+      return {
+        event: latestEvent.type,
+        message: latestEvent.message,
+        timestamp: latestEvent.timestamp.toISOString(),
+        ...latestEvent.data,
+        ...(latestEvent.previousValues && { previous_values: latestEvent.previousValues }),
+      };
+    }
+
+    // Otherwise show the current job spec or template
     if (activeTab?.type === "job" && jobSpec) {
       return {
         job_id: jobSpec.job_id,
@@ -468,32 +497,68 @@ export default function UserHome() {
         };
       }
     }
+
+    // Show current draft if one is active
+    if (Object.keys(jobDraft).length > 0) {
+      return {
+        draft_status: "active",
+        fields: jobDraft,
+        event_count: consoleEvents.length,
+      };
+    }
+
     return { message: "No item selected. Open a job or template to inspect its structure." };
   };
 
-  const getConsoleLogs = () => [
-    { time: "09:04:02", message: "Job execution started" },
-    { time: "09:04:05", message: "Extracting data from source systems" },
-    { time: "09:04:12", message: "Processing records: 15,240 rows" },
-    { time: "09:04:18", message: "Validation: 99.8% data quality" },
-    { time: "09:04:25", message: "Generating outputs: 3 files" },
-    { time: "09:04:28", message: "Distribution: sent to 5 recipients" },
-    { time: "09:04:30", message: "Job execution completed successfully" },
-  ];
+  const getConsoleLogs = () => {
+    // If there are console events, show them as logs
+    if (consoleEvents.length > 0) {
+      return consoleEvents.map((event) => ({
+        time: formatConsoleTime(event.timestamp),
+        message: event.message,
+        type: event.type,
+      }));
+    }
 
-  const getConsoleEvents = () => [
-    { action: "User opened job", timestamp: "2 minutes ago" },
-    { action: "System triggered scheduled run", timestamp: "5 minutes ago" },
-    { action: "User modified job schedule", timestamp: "15 minutes ago" },
-    { action: "Job validation passed", timestamp: "1 hour ago" },
-    { action: "User added new input source", timestamp: "2 hours ago" },
-    { action: "System backed up job configuration", timestamp: "3 hours ago" },
-  ];
+    // Otherwise show default execution logs
+    return [
+      { time: "09:04:02", message: "Job execution started" },
+      { time: "09:04:05", message: "Extracting data from source systems" },
+      { time: "09:04:12", message: "Processing records: 15,240 rows" },
+      { time: "09:04:18", message: "Validation: 99.8% data quality" },
+      { time: "09:04:25", message: "Generating outputs: 3 files" },
+      { time: "09:04:28", message: "Distribution: sent to 5 recipients" },
+      { time: "09:04:30", message: "Job execution completed successfully" },
+    ];
+  };
+
+  const getConsoleEvents = () => {
+    // If there are workflow events, show them as structured events
+    if (consoleEvents.length > 0) {
+      return consoleEvents.map((event) => ({
+        action: event.message,
+        timestamp: formatConsoleTime(event.timestamp),
+        type: event.type,
+        details: event.data ? JSON.stringify(event.data, null, 2) : undefined,
+      }));
+    }
+
+    // Otherwise show default system events
+    return [
+      { action: "User opened job", timestamp: "2 minutes ago" },
+      { action: "System triggered scheduled run", timestamp: "5 minutes ago" },
+      { action: "User modified job schedule", timestamp: "15 minutes ago" },
+      { action: "Job validation passed", timestamp: "1 hour ago" },
+      { action: "User added new input source", timestamp: "2 hours ago" },
+      { action: "System backed up job configuration", timestamp: "3 hours ago" },
+    ];
+  };
 
   const CONSOLE_COLLAPSED_HEIGHT = 50;
   const CONSOLE_EXPANDED_HEIGHT = 300;
   const CONSOLE_MIN_HEIGHT = 40;
-  const CONSOLE_MAX_HEIGHT = 800;  // Increased from 650 to allow larger expansion
+  // Console max height is capped to 60% of viewport to ensure workspace remains usable
+  const CONSOLE_MAX_HEIGHT = Math.min(800, Math.max(300, window.innerHeight * 0.6));
 
   const toggleConsole = () => {
     if (consoleHeight <= 80) {
@@ -541,6 +606,29 @@ export default function UserHome() {
       document.body.style.cursor = "auto";
     };
   }, [isResizingConsole, consoleHeight]);
+
+  // Emit a console event for live job creation workflow tracking
+  const emitConsoleEvent = (
+    type: "intent_detected" | "draft_created" | "extracted_fields" | "draft_updated" | "missing_fields_identified",
+    message: string,
+    data?: Record<string, any>,
+    previousValues?: Record<string, any>
+  ) => {
+    const event: ConsoleEvent = {
+      id: Date.now().toString(),
+      timestamp: new Date(),
+      type,
+      message,
+      data,
+      previousValues,
+    };
+    setConsoleEvents((prev) => [...prev, event]);
+  };
+
+  // Helper function to format time for console logs
+  const formatConsoleTime = (date: Date): string => {
+    return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  };
 
   // Filter and sort helper functions
   const getFilteredAndSortedJobs = () => {
@@ -709,6 +797,22 @@ export default function UserHome() {
             revisionJobName: item.name,
             revisionJobType: item.revisionJobType || "",
             revisionRejectionReason: item.revisionRejectionReason || "",
+          };
+          targetPane.tabs = [...targetPane.tabs, newTab];
+        }
+        targetPane.activeTabId = tabId;
+      } else if (item.type === "create-job") {
+        // Generate consistent tab ID for deduplication
+        tabId = item.id;
+        // Check if tab already exists in this pane by ID
+        existingTab = targetPane.tabs.find((tab) => tab.id === tabId);
+        
+        if (!existingTab) {
+          newTab = {
+            id: tabId,
+            type: "create-job",
+            title: item.name,
+            closable: true,
           };
           targetPane.tabs = [...targetPane.tabs, newTab];
         }
@@ -1005,7 +1109,27 @@ export default function UserHome() {
 
     return (
       <>
-        {tab.type === "job" && currentJobSpec ? (
+        {tab.type === "create-job" ? (
+          /* Create Job Form */
+          <CreateJobForm
+            draftData={jobDraft}
+            onDraftDataChange={setJobDraft}
+            onSubmit={(jobData) => {
+              // Log the job data to console for now
+              console.log("New job created:", jobData);
+              
+              // In a real app, you would send this to the backend API here
+              // Example: 
+              // await api.createJob(jobData)
+              
+              // Show a success toast/notification
+              // You can add a toast notification here using a toast library
+              
+              // Reset the form state is handled by CreateJobForm
+            }}
+            onCancel={() => handleCloseTabInPane(tab.id, "primary")}
+          />
+        ) : tab.type === "job" && currentJobSpec ? (
           /* Job Workspace View */
           <div className="mx-auto max-w-[1600px] px-6 py-8">
             <div className="space-y-6">
@@ -1716,9 +1840,19 @@ export default function UserHome() {
 
             {/* Current Jobs Section - Always visible and prioritized */}
             <div className="border-t border-gray-200 pt-3 mt-2">
-              <h3 className="text-xs font-bold text-gray-900 uppercase tracking-wide mb-2">
-                My Current Jobs ({filteredAndSortedJobs.length})
-              </h3>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-bold text-gray-900 uppercase tracking-wide">
+                  My Current Jobs ({filteredAndSortedJobs.length})
+                </h3>
+                <button
+                  onClick={() => handleOpenTabInPane({ type: "create-job", id: "create-job", name: "Create Job" }, "primary")}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#ed0923] text-white rounded-md text-xs font-medium hover:bg-[#d10820] transition"
+                  title="Create a new job"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Create
+                </button>
+              </div>
               <div className="flex-1 overflow-y-auto space-y-1.5">
                 {filteredAndSortedJobs.length > 0 ? (
                   filteredAndSortedJobs.map((job) => (
@@ -2282,12 +2416,12 @@ export default function UserHome() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
+    <div className="h-screen bg-gray-50 flex flex-col overflow-hidden">
       <UserNavigation
         activePage={activeTab?.type === "job" ? "Jobs" : "Dashboard"}
         onProfileClick={() => setIsProfileOpen(true)}
       />
-      <div className="flex-1 flex">
+      <div className="flex-1 flex overflow-hidden min-h-0">
         {/* Left Icon Rail */}
         <div className="w-16 flex-shrink-0 bg-white border-r border-gray-200 flex flex-col items-center py-4 gap-2">
           {panels.map((panel) => (
@@ -2344,7 +2478,7 @@ export default function UserHome() {
         )}
 
         {/* Main Content with Tab System - Split View Support */}
-        <main className="flex-1 flex flex-col overflow-hidden">
+        <main className="flex-1 flex flex-col overflow-hidden min-h-0">
           {workspace.mode === "single" ? (
             // SINGLE PANE MODE
             <>
@@ -2379,49 +2513,182 @@ export default function UserHome() {
                 </div>
               </div>
 
-              {/* Workspace Content with Console */}
+              {/* Workspace - Main flex container for content + console */}
               <div className="flex-1 flex flex-col overflow-hidden min-h-0">
-                {/* Content Area - Drop Target */}
-                <div 
-                  className={`flex-1 overflow-y-auto transition-all relative min-h-0 ${
-                    isDraggingOverWorkspace 
-                      ? isDraggingOverSplitZone === "left" 
-                        ? 'bg-purple-50 border-l-4 border-purple-400'
-                        : isDraggingOverSplitZone === "right"
-                        ? 'bg-purple-50 border-r-4 border-purple-400'
-                        : 'bg-blue-50 border-2 border-blue-300'
-                      : ''
-                  }`}
-                  onDragOver={handleWorkspaceDragOver}
-                  onDragLeave={handleWorkspaceDragLeave}
-                  onDrop={handleWorkspaceDrop}
-                >
-              {/* Drag and Drop Hint */}
-              {isDraggingOverWorkspace && (
-                <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                  {isDraggingOverSplitZone === "left" ? (
-                    <div className="text-center">
-                      <p className="text-lg font-semibold text-purple-900">Drop here to create left split pane</p>
-                      <p className="text-sm text-purple-700 mt-1">This item opens on the left</p>
-                    </div>
-                  ) : isDraggingOverSplitZone === "right" ? (
-                    <div className="text-center">
-                      <p className="text-lg font-semibold text-purple-900">Drop here to create right split pane</p>
-                      <p className="text-sm text-purple-700 mt-1">This item opens on the right</p>
-                    </div>
-                  ) : (
-                    <div className="text-center bg-blue-50/80">
-                      <p className="text-lg font-semibold text-blue-900">Drop job here to open in workspace</p>
-                      <p className="text-sm text-blue-700 mt-1">Center = primary pane | Edges = split pane</p>
-                    </div>
-                  )}
-                </div>
-              )}
+                {/* CONTENT PANEL - Form or other workspace content */}
+                {activeTab?.type === "create-job" ? (
+                  <div className="flex-1 min-h-0 overflow-hidden p-4">
+                    <div className="h-full flex flex-col rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+                      {/* Form Content - Scrollable area inside panel */}
+                      <div 
+                        className={`flex-1 min-h-0 overflow-y-auto transition-all relative ${
+                          isDraggingOverWorkspace 
+                            ? isDraggingOverSplitZone === "left" 
+                              ? 'bg-purple-50'
+                              : isDraggingOverSplitZone === "right"
+                              ? 'bg-purple-50'
+                              : 'bg-blue-50'
+                            : ''
+                        }`}
+                        onDragOver={handleWorkspaceDragOver}
+                        onDragLeave={handleWorkspaceDragLeave}
+                        onDrop={handleWorkspaceDrop}
+                      >
+                        {/* Drag and Drop Hint */}
+                        {isDraggingOverWorkspace && (
+                          <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                            {isDraggingOverSplitZone === "left" ? (
+                              <div className="text-center">
+                                <p className="text-lg font-semibold text-purple-900">Drop here to create left split pane</p>
+                                <p className="text-sm text-purple-700 mt-1">This item opens on the left</p>
+                              </div>
+                            ) : isDraggingOverSplitZone === "right" ? (
+                              <div className="text-center">
+                                <p className="text-lg font-semibold text-purple-900">Drop here to create right split pane</p>
+                                <p className="text-sm text-purple-700 mt-1">This item opens on the right</p>
+                              </div>
+                            ) : (
+                              <div className="text-center bg-blue-50/80">
+                                <p className="text-lg font-semibold text-blue-900">Drop job here to open in workspace</p>
+                                <p className="text-sm text-blue-700 mt-1">Center = primary pane | Edges = split pane</p>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        
+                        {/* Render form without footer */}
+                        <CreateJobForm
+                          hideFooter={true}
+                          draftData={jobDraft}
+                          onDraftDataChange={setJobDraft}
+                          onSubmit={(jobData) => {
+                            console.log("New job created:", jobData);
+                          }}
+                          onCancel={() => handleCloseTabInPane(activeTab.id, "primary")}
+                        />
+                      </div>
 
-              {renderTabContent(activeTab)}
-                </div>
+                      {/* Form Panel Footer - Inside the bordered panel */}
+                      <div className="flex-shrink-0 border-t border-gray-200 bg-gray-50 px-4 py-4 flex gap-3">
+                        <div className="w-full flex gap-3">
+                          <Button
+                            variant="outline"
+                            onClick={() => handleCloseTabInPane(activeTab.id, "primary")}
+                            className="flex-1"
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            onClick={() => {
+                              // Get current form data from jobDraft
+                              const currentTab = workspace.primary.tabs.find(t => t.id === activeTab.id);
+                              if (currentTab && jobDraft.job_type) {
+                                const payload: any = {
+                                  universal: {
+                                    job_name: jobDraft.job_name || "",
+                                    description: jobDraft.description || "",
+                                    owner: jobDraft.owner || "",
+                                    environment: jobDraft.environment || "dev",
+                                    schedule: jobDraft.schedule || "",
+                                    approval_required: jobDraft.approval_required || false,
+                                    tags: jobDraft.tags || [],
+                                    run_type: jobDraft.run_type || "manual",
+                                  },
+                                  job_type: jobDraft.job_type,
+                                  job_details: {},
+                                };
+                                
+                                // Map type-specific fields based on job type
+                                if (jobDraft.job_type === "Airflow") {
+                                  payload.job_details = {
+                                    dag_name: jobDraft.dag_name || "",
+                                    tasks: jobDraft.tasks || [],
+                                    dependencies_between_tasks: jobDraft.dependencies_between_tasks || "",
+                                    scripts_sql: jobDraft.scripts_sql || "",
+                                    data_sources: jobDraft.data_sources || "",
+                                    data_destinations: jobDraft.data_destinations || "",
+                                    retry_policy: jobDraft.retry_policy || "",
+                                    execution_timeout: jobDraft.execution_timeout || "",
+                                  };
+                                } else if (jobDraft.job_type === "Excel") {
+                                  payload.job_details = {
+                                    input_data_sources: jobDraft.input_data_sources || "",
+                                    transformations: jobDraft.transformations || "",
+                                    filters: jobDraft.filters || "",
+                                    pivot_tables: jobDraft.pivot_tables || false,
+                                    formulas: jobDraft.formulas || "",
+                                    output_file_name: jobDraft.output_file_name || "",
+                                    file_location: jobDraft.file_location || "",
+                                  };
+                                } else if (jobDraft.job_type === "PowerPoint") {
+                                  payload.job_details = {
+                                    data_source: jobDraft.data_source || "",
+                                    slide_template: jobDraft.slide_template || "",
+                                    metrics_to_include: jobDraft.metrics_to_include || "",
+                                    charts: jobDraft.charts || "",
+                                    text_summary_placeholder: jobDraft.text_summary || "[AI will generate text summary here]",
+                                    branding_theme: jobDraft.branding_theme || "",
+                                    output_location: jobDraft.output_location || "",
+                                  };
+                                }
+                                
+                                console.log("New job created:", payload);
+                                // Reset and close
+                                setJobDraft({});
+                                handleCloseTabInPane(activeTab.id, "primary");
+                              }
+                            }}
+                            className="flex-1 bg-[#ed0923] hover:bg-[#d10820] text-white"
+                          >
+                            Create Job
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  /* OTHER CONTENT PANEL */
+                  <div 
+                    className={`flex-1 overflow-y-auto transition-all relative min-h-0 ${
+                      isDraggingOverWorkspace 
+                        ? isDraggingOverSplitZone === "left" 
+                          ? 'bg-purple-50 border-l-4 border-purple-400'
+                          : isDraggingOverSplitZone === "right"
+                          ? 'bg-purple-50 border-r-4 border-purple-400'
+                          : 'bg-blue-50 border-2 border-blue-300'
+                        : ''
+                    }`}
+                    onDragOver={handleWorkspaceDragOver}
+                    onDragLeave={handleWorkspaceDragLeave}
+                    onDrop={handleWorkspaceDrop}
+                  >
+                    {/* Drag and Drop Hint */}
+                    {isDraggingOverWorkspace && (
+                      <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                        {isDraggingOverSplitZone === "left" ? (
+                          <div className="text-center">
+                            <p className="text-lg font-semibold text-purple-900">Drop here to create left split pane</p>
+                            <p className="text-sm text-purple-700 mt-1">This item opens on the left</p>
+                          </div>
+                        ) : isDraggingOverSplitZone === "right" ? (
+                          <div className="text-center">
+                            <p className="text-lg font-semibold text-purple-900">Drop here to create right split pane</p>
+                            <p className="text-sm text-purple-700 mt-1">This item opens on the right</p>
+                          </div>
+                        ) : (
+                          <div className="text-center bg-blue-50/80">
+                            <p className="text-lg font-semibold text-blue-900">Drop job here to open in workspace</p>
+                            <p className="text-sm text-blue-700 mt-1">Center = primary pane | Edges = split pane</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
 
-                {/* Console Panel - Always Visible Bottom Panel */}
+                    {renderTabContent(activeTab)}
+                  </div>
+                )}
+
+                {/* Console Panel - Always Visible Bottom Panel with constrained height */}
                 <>
                   {/* Resize Handle - Top Edge (Draggable) - Higher z-index to ensure it's always clickable */}
                   <div
@@ -2435,10 +2702,10 @@ export default function UserHome() {
                     style={{ touchAction: "none" }}
                   />
                   
-                  {/* Console Panel */}
+                  {/* Console Panel - Flex-shrink-0 prevents it from being squeezed by flex layout */}
                   <div
                     className="flex-shrink-0 bg-white border-t border-gray-200 overflow-hidden flex flex-col relative"
-                    style={{ height: `${consoleHeight}px` }}
+                    style={{ height: `${consoleHeight}px`, maxHeight: `${consoleHeight}px` }}
                   >
                     {/* Console Header - Clickable to Toggle */}
                     <div
@@ -2477,9 +2744,9 @@ export default function UserHome() {
                       )}
                     </div>
 
-                    {/* Console Content - Only visible when expanded */}
+                    {/* Console Content - Only visible when expanded - flex-1 ensures it fills available space */}
                     {consoleHeight > 80 && (
-                      <div className="flex-1 overflow-y-auto font-mono text-sm p-3 bg-white">
+                      <div className="flex-1 overflow-y-auto font-mono text-sm p-3 bg-white min-h-0">
                         {consoleActiveTab === "json" && (
                           <div className="bg-white rounded border border-gray-200 p-3">
                             <pre className="text-gray-800 whitespace-pre-wrap break-words text-xs leading-relaxed">
@@ -2517,21 +2784,13 @@ export default function UserHome() {
             <>
               {/* Workspace Content with Console */}
               <div className="flex-1 flex flex-col overflow-hidden min-h-0">
-                {/* Workspace Split Container with Drag Handlers */}
+                {/* Workspace Split Container with Drag Handlers - Flex row for left/right panes */}
                 <div 
-                  className={`flex-1 flex gap-0 overflow-hidden transition-all relative min-h-0 ${
-                  isDraggingOverWorkspace 
-                    ? isDraggingOverPane === "left"
-                      ? 'border-l-4 border-blue-400'
-                      : isDraggingOverPane === "right"
-                      ? 'border-r-4 border-blue-400'
-                      : ''
-                    : ''
-                }`}
-                onDragOver={handleWorkspaceDragOver}
-                onDragLeave={handleWorkspaceDragLeave}
-                onDrop={handleWorkspaceDrop}
-              >
+                  className={`flex-1 flex gap-0 overflow-hidden transition-all relative min-h-0 ${isDraggingOverWorkspace ? (isDraggingOverPane === "left" ? 'border-l-4 border-blue-400' : isDraggingOverPane === "right" ? 'border-r-4 border-blue-400' : '') : ''}`}
+                  onDragOver={handleWorkspaceDragOver}
+                  onDragLeave={handleWorkspaceDragLeave}
+                  onDrop={handleWorkspaceDrop}
+                >
                 {/* Drag and Drop Hint for Split Mode */}
                 {isDraggingOverWorkspace && (
                   <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-10">
@@ -2761,7 +3020,7 @@ export default function UserHome() {
                 )}
                 </div>
 
-                {/* Console Panel - Always Visible Bottom Panel */}
+                {/* Console Panel - Always Visible Bottom Panel with constrained height */}
                 <>
                   {/* Resize Handle - Top Edge (Draggable) - Higher z-index to ensure it's always clickable */}
                   <div
@@ -2775,10 +3034,10 @@ export default function UserHome() {
                     style={{ touchAction: "none" }}
                   />
                   
-                  {/* Console Panel */}
+                  {/* Console Panel - Flex-shrink-0 prevents it from being squeezed by flex layout */}
                   <div
                     className="flex-shrink-0 bg-white border-t border-gray-200 overflow-hidden flex flex-col relative"
-                    style={{ height: `${consoleHeight}px` }}
+                    style={{ height: `${consoleHeight}px`, maxHeight: `${consoleHeight}px` }}
                   >
                     {/* Console Header - Clickable to Toggle */}
                     <div
@@ -2817,9 +3076,9 @@ export default function UserHome() {
                       )}
                     </div>
 
-                    {/* Console Content - Only visible when expanded */}
+                    {/* Console Content - Only visible when expanded - flex-1 ensures it fills available space */}
                     {consoleHeight > 80 && (
-                      <div className="flex-1 overflow-y-auto font-mono text-sm p-3 bg-white">
+                      <div className="flex-1 overflow-y-auto font-mono text-sm p-3 bg-white min-h-0">
                         {consoleActiveTab === "json" && (
                           <div className="bg-white rounded border border-gray-200 p-3">
                             <pre className="text-gray-800 whitespace-pre-wrap break-words text-xs leading-relaxed">
@@ -2867,7 +3126,17 @@ export default function UserHome() {
         {/* Chat Panel - Right Side (Part of Flex Layout) */}
         {isChatPanelOpen && (
           <div style={{ width: `${chatPanelWidth}px`, flexShrink: 0 }}>
-            <ChatPanel isOpen={isChatPanelOpen} onClose={() => setIsChatPanelOpen(false)} />
+            <ChatPanel 
+              isOpen={isChatPanelOpen} 
+              onClose={() => setIsChatPanelOpen(false)} 
+              onJobCreationIntent={() => {
+                handleOpenTabInPane({ type: "create-job", id: "create-job", name: "Create Job" }, "primary");
+                setJobDraft({});
+              }}
+              onFieldsExtracted={(fields) => setJobDraft((prev) => ({ ...prev, ...fields }))}
+              currentDraftData={jobDraft}
+              onConsoleEvent={emitConsoleEvent}
+            />
           </div>
         )}
       </div>

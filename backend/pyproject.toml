@@ -20,6 +20,7 @@ dependencies = [
   "google-genai>=1.65.0",
   "python-dotenv>=1.2.2",
   "arxiv>=2.4.0",
+  "openai>=1.0.0",
 ]
 
 [tool.uv]
