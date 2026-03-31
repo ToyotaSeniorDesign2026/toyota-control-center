@@ -1,46 +1,31 @@
 # Backend README
 
 ## Scope
-This README covers backend-only setup and workflow for the FastAPI service.
+Backend setup, run, and testing guide for the FastAPI control-plane API.
 
 ## Paths
-- Backend root: `/Users/hamnatameez/toyota-control-center/backend`
-- OpenAPI output: `/Users/hamnatameez/toyota-control-center/generated/openapi/openapi.json`
-- TypeScript API types output: `/Users/hamnatameez/toyota-control-center/generated/types/api-types.ts`
+- Backend root: `/Users/hamnatameez/CS 5351/toyota-control-center/backend`
+- OpenAPI output: `/Users/hamnatameez/CS 5351/toyota-control-center/generated/openapi/openapi.json`
+- TypeScript API types output: `/Users/hamnatameez/CS 5351/toyota-control-center/generated/types/api-types.ts`
 
 ## Python Setup
+Use Python 3.10+ (3.11 recommended).
+
 ```bash
-cd /Users/hamnatameez/toyota-control-center/backend
-python3.11 -m venv .venv
+cd "/Users/hamnatameez/CS 5351/toyota-control-center/backend"
+/opt/homebrew/bin/python3.11 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -e .
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -e .
 ```
-
-If editable install is not available in your environment:
-```bash
-pip install fastapi uvicorn pydantic email-validator sqlalchemy alembic "psycopg[binary]"
-```
-
-## Run API
-```bash
-cd /Users/hamnatameez/toyota-control-center/backend
-source .venv/bin/activate
-uvicorn app.main:app --reload
-```
-
-API docs:
-- Swagger: `http://127.0.0.1:8000/docs`
-- ReDoc: `http://127.0.0.1:8000/redoc`
 
 ## Environment Config
-Copy example env file:
 ```bash
-cd /Users/hamnatameez/toyota-control-center/backend
+cd "/Users/hamnatameez/CS 5351/toyota-control-center/backend"
 cp .env.example .env
 ```
 
-Key DB variables:
+Key DB vars:
 - `DATABASE_URL`
 - `DB_SSL_MODE`
 - `DB_POOL_SIZE`
@@ -51,37 +36,96 @@ Key DB variables:
 ## Local PostgreSQL + Migrations
 ### Option A: Docker
 ```bash
-cd /Users/hamnatameez/toyota-control-center/backend
+cd "/Users/hamnatameez/CS 5351/toyota-control-center/backend"
 docker compose up -d postgres
 ```
 
-Then run migrations:
+### Option B: Local PostgreSQL
+Use your local Postgres instance and ensure database `control_center` exists.
+
+Run migrations:
 ```bash
-cd /Users/hamnatameez/toyota-control-center/backend
+cd "/Users/hamnatameez/CS 5351/toyota-control-center/backend"
 source .venv/bin/activate
 alembic upgrade head
 alembic current
 ```
 
-### Option B: Local Postgres (no Docker)
-Install PostgreSQL via Homebrew and create `control_center` database, then run the same Alembic commands.
+## Run API
+Always run Uvicorn via the active venv interpreter:
 
-## OpenAPI + TypeScript Types
-Generate OpenAPI spec and TS types:
 ```bash
-/Users/hamnatameez/toyota-control-center/backend/scripts/export_openapi_and_types.sh
+cd "/Users/hamnatameez/CS 5351/toyota-control-center/backend"
+source .venv/bin/activate
+python -m uvicorn app.main:app --reload --port 8000
 ```
 
-This writes to separate generated folders so handwritten app code stays untouched.
+Docs:
+- Swagger: `http://127.0.0.1:8000/docs`
+- ReDoc: `http://127.0.0.1:8000/redoc`
+- OpenAPI JSON: `http://127.0.0.1:8000/openapi.json`
 
-## Current Implementation Note
-DB infrastructure (SQLAlchemy + Alembic + migration) is in place.
-Most service logic is still in-memory-backed in `app/core/db.py`.
+## Swagger Test Workflow
+1. `POST /auth/login` with one of:
+```json
+{"email":"analyst@toyota.dev"}
+```
+```json
+{"email":"collections.admin@toyota.dev"}
+```
+```json
+{"email":"root@toyota.dev"}
+```
+2. Copy `access_token`.
+3. Click `Authorize` in Swagger and enter `Bearer <access_token>`.
+4. Test core endpoints:
+- `GET /resource-types`
+- `POST /resources`
+- `GET /resources`
+- `POST /resources/{id}/runs`
+- `GET /runs/{id}/status`
+- `GET /runs/{id}/logs`
+- `GET /runs/{id}/events/stream`
+- Runtime-specific: `/resources/{id}/runtime-status`, `/runtime/health`, `/runtime/schedule`, `/runtime/heartbeat`
+- Artifact-specific: `/resources/{id}/artifact/version`, `/artifact/deploy`, `/artifact/publish`
 
-So right now:
-- You can validate DB connectivity and migrations.
-- Full DB-backed API behavior still requires service-layer migration from in-memory store to SQLAlchemy session queries.
+## Database Verification Commands
+If `psql` is not installed:
+```bash
+brew install libpq
+echo 'export PATH="/opt/homebrew/opt/libpq/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
 
-## AWS Readiness Notes
-Current DB config supports local dev and AWS RDS by env vars.
-For production, set `DB_SSL_MODE=require` (or stricter policy) and use environment-specific secrets.
+Connect:
+```bash
+psql postgresql://postgres:postgres@localhost:5432/control_center
+```
+
+Useful queries:
+```sql
+SELECT id,email,role,domain,is_active FROM users ORDER BY id;
+SELECT id,name,kind,type,status,updated_at FROM resources ORDER BY updated_at DESC LIMIT 20;
+SELECT id,resource_id,status,risk_level,requires_approval,approval_id,updated_at FROM runs ORDER BY updated_at DESC LIMIT 20;
+SELECT run_id,level,message,timestamp FROM run_logs ORDER BY timestamp DESC LIMIT 50;
+SELECT run_id,overall_status,risk_score,risk_level,evaluated_at FROM policy_evaluations ORDER BY evaluated_at DESC LIMIT 20;
+SELECT id,run_id,status,requested_by,reviewer_id,reviewed_at FROM approvals ORDER BY created_at DESC LIMIT 20;
+SELECT id,action,actor_id,created_at FROM audit_events ORDER BY created_at DESC LIMIT 50;
+SELECT id,received_at FROM workflow_events ORDER BY received_at DESC LIMIT 20;
+```
+
+Exit:
+```sql
+\q
+```
+
+## OpenAPI + TypeScript Types
+Generate API spec + TS types:
+```bash
+"/Users/hamnatameez/CS 5351/toyota-control-center/backend/scripts/export_openapi_and_types.sh"
+```
+
+## Notes
+- Backend is SQL-backed via SQLAlchemy sessions.
+- Seed users are created automatically when `users` table is empty.
+- State-machine enforcement is active for runtime vs artifact run transitions.

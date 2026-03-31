@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import Boolean, String
+from sqlalchemy import JSON, Boolean, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -29,6 +29,23 @@ class Run(Base):
     commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     workflow_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     workflow_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    trigger_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    execution_backend: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    execution_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    submitted_config_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    resolved_job_spec_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[str] = mapped_column(String(64), nullable=False)
     updated_at: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class RunExecutionStatus(Base):
+    __tablename__ = "run_execution_status"
+
+    run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    risk_level: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    requires_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    last_log_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    log_count: Mapped[int] = mapped_column(nullable=False, default=0)

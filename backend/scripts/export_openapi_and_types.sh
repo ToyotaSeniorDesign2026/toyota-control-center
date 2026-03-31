@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="/Users/hamnatameez/toyota-control-center"
-BACKEND_DIR="$ROOT_DIR/backend"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT_DIR="$(cd "$BACKEND_DIR/.." && pwd)"
 OPENAPI_OUT="$ROOT_DIR/generated/openapi/openapi.json"
 TS_OUT="$ROOT_DIR/generated/types/api-types.ts"
 
@@ -20,12 +21,13 @@ fi
 source .venv/bin/activate
 
 # Export OpenAPI spec from FastAPI app object.
-PYTHONPATH="$BACKEND_DIR" python - <<'PY'
+OPENAPI_OUT_ENV="$OPENAPI_OUT" PYTHONPATH="$BACKEND_DIR" python - <<'PY'
 import json
+import os
 from pathlib import Path
 from app.main import app
 
-out = Path('/Users/hamnatameez/toyota-control-center/generated/openapi/openapi.json')
+out = Path(os.environ["OPENAPI_OUT_ENV"])
 out.parent.mkdir(parents=True, exist_ok=True)
 out.write_text(json.dumps(app.openapi(), indent=2), encoding='utf-8')
 print(f'Wrote {out}')

@@ -1,0 +1,112 @@
+{
+
+  "<SERVER-NAME>": {
+
+      // `$schema` (string)
+      // JSON schema for IDE support and validation.
+      // Default: "https://gofastmcp.com/public/schemas/fastmcp.json/latest.json"
+      "$schema": "https://gofastmcp.com/public/schemas/fastmcp.json/latest.json",
+
+      // `source` (object) [REQUIRED]
+      // Source configuration for the server. Determines where server code lives.
+      "source": {
+
+        // `path` (string) [REQUIRED]
+        // Path to the Python file containing FastMCP server.
+        "path": "src/server.py",
+
+        // `entrypoint` (string)
+        // Name of the server instance or no-arg factory function within the module.
+        // Default-Behavior: If not specified, FastMCP searches for common names: mcp | server | app
+        "entrypoint": "mcp",
+
+        // `type` (string)
+        // The source type identifier that determines which implementation to use.
+        // Default: "filesystem"
+        // Allowed: "filesystem"
+        // Planned: "git" | "cloud"
+        "type": "filesystem"
+      },
+
+      // `environment` (object)
+      // Optional Python environment setup configuration.
+      "environment": {
+
+        // `type` (string)
+        // The environment type identifier that determines which implementation to use.
+        // Default: "uv"
+        // Allowed: "uv"
+        // Planned: TBD
+        "type": "uv",
+
+        // `python` (string)
+        // Python version constraint (exact version, minimum version, or range)
+        "python": "3.12",
+
+        // `dependencies` (list[str])
+        // List of pip packages with optional version specifiers (PEP 508 format).
+        "dependencies": ["fastmcp>=3.0.0", "httpx", "pandas>=2.0"],
+
+        // `requirements` (string)
+        // Path to a requirements.txt file, resolved relative to the config file location.
+        "requirements": "requirements.txt",
+
+        // `project` (string)
+        // Path to a project directory containing pyproject.toml for uv project management.
+        "project": ".",
+
+        // `editable` (list[str])
+        // List of paths to packages to install in editable/development mode.
+        "editable": ["."]
+      },
+
+      // `deployment` (object)
+      // Optional runtime configuration for the server.
+      "deployment": {
+
+        // `transport` (string)
+        // Protocol for client communication.
+        // Default: "stdio"
+        // Allowed: "stdio" | "http" | "streamable-http" | "sse"
+        "transport": "stdio",
+
+        // `host` (string)
+        // Network interface to bind (HTTP transport only).
+        // Default: "127.0.0.1"
+        "host": "0.0.0.0",
+
+        // `port` (integer)
+        // Port number to listen on (HTTP transport only).
+        // Default: 3000
+        "port": 8000,
+
+        // `path` (string)
+        // URL path for the MCP endpoint when using HTTP transport.
+        // Default: "/mcp/"
+        "path": "/api/mcp/",
+
+        // `log_level` (string)
+        // Sets the minimum log severity emitted for this server instance.
+        // Default: "INFO"
+        // Allowed: "DEBUG" | "INFO" | "WARNING" | "ERROR" | "CRITICAL"
+        "log_level": "INFO",
+
+        // `env` (object)
+        // Environment variables set for server. Supports ${VAR_NAME} interpolation at runtime.
+        "env": {
+          "API_KEY": "your-secret-key",
+          "DATABASE_URL": "postgres://${DB_USER}@${DB_HOST}/mydb"
+        },
+
+        // `cwd` (string)
+        // Working directory for the server process. Resolved relative to the config file location.
+        "cwd": ".",
+
+        // `args` (list[str])
+        // Command-line arguments to pass to the server (after --).
+        "args": ["--config", "config.json", "--debug"]
+      }
+
+  }
+
+}

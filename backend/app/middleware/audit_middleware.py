@@ -12,8 +12,11 @@ class AuditMiddleware(BaseHTTPMiddleware):
         if request.method in _MUTATING_METHODS:
             actor = None
             auth_header = request.headers.get("authorization", "")
+            # TODO: Replace raw bearer-token logging with validated identity from auth.
+            # Verify Okta OIDC JWTs using issuer/JWKS, validate claims (`iss`, `aud`, `exp`, `sub`),
+            # and populate audit `actor_id` from a stable user identifier (given by sub) rather than the token itself.
             if auth_header.lower().startswith("bearer "):
-                actor = auth_header.split(" ", 1)[1].strip()
+                actor = auth_header.split(" ", 1)[1].strip() # placeholder for actual token parsing logic to extract user info
             emit_audit_event(
                 actor_id=actor,
                 action="HTTP_MUTATION",

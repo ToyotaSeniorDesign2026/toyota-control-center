@@ -1,6 +1,32 @@
 from __future__ import annotations
 
+"""Pydantic schemas for run creation, run state views, logs, and event payloads."""
+
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class MCPJobConfig(BaseModel):
+    intent: str | None = None
+    schedule: str | None = None
+    tasks: list[str] = Field(default_factory=list)
+    metadata: dict = Field(default_factory=dict)
+
+
+class MCPExecutionConfig(BaseModel):
+    server_names: list[str] = Field(default_factory=list)
+    tool_name: str | None = None
+    tool_arguments: dict = Field(default_factory=dict)
+    prompt: str | None = None
+    connector_selection_prompt: str | None = None
+    allow_auto_selection: bool = False
+
+
+class RunCreateRequest(BaseModel):
+    action: str = Field(default="run")
+    target_environment: str = Field(default="dev")
+    params: dict = Field(default_factory=dict)
+    job_config: MCPJobConfig | None = None
+    mcp_config: MCPExecutionConfig | None = None
 
 
 class RunCreate(BaseModel):
@@ -8,19 +34,8 @@ class RunCreate(BaseModel):
     action: str = Field(default="run")
     target_environment: str = Field(default="dev")
     params: dict = Field(default_factory=dict)
-
-
-class PromotionStatusOut(BaseModel):
-    run_id: str
-    resource_id: str
-    promotion_status: str
-    target_environment: str
-    git_ref: str | None = None
-    pr_number: int | None = None
-    commit_sha: str | None = None
-    workflow_run_id: str | None = None
-    workflow_url: str | None = None
-    updated_at: str
+    job_config: MCPJobConfig | None = None
+    mcp_config: MCPExecutionConfig | None = None
 
 
 class RunOut(BaseModel):
@@ -45,6 +60,11 @@ class RunOut(BaseModel):
     commit_sha: str | None = None
     workflow_run_id: str | None = None
     workflow_url: str | None = None
+    trigger_source: str | None = None
+    execution_backend: str | None = None
+    execution_mode: str | None = None
+    submitted_config_json: dict | None = None
+    resolved_job_spec_json: dict | None = None
     created_at: str
     updated_at: str
 
@@ -70,3 +90,18 @@ class RunStatusOut(BaseModel):
     risk_level: str
     requires_approval: bool
     updated_at: str
+
+
+class RunListOut(BaseModel):
+    items: list[RunOut]
+    next_cursor: str | None = None
+
+
+class RunEventOut(BaseModel):
+    event: str
+    data: dict = Field(default_factory=dict)
+
+
+class RunLogsPurgeOut(BaseModel):
+    run_id: str
+    deleted_logs: int

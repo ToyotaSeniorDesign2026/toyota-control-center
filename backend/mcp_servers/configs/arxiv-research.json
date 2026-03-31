@@ -1,0 +1,4 @@
+{
+  "command": "uv",
+  "args": ["run", "--with", "fastmcp", "--with", "arxiv", "internal/arxiv-research/research_server.py"]
+}

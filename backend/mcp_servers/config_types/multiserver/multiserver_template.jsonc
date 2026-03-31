@@ -1,0 +1,100 @@
+{
+
+  // `mcpServers` (object) [REQUIRED]
+  // Top-level configuration section defining multiple MCP server instances.
+  "mcpServers": {
+
+    // ==========================================================
+    // SERVER 1: LOCAL SUBPROCESS (STDIO)
+    // ==========================================================
+    "<local-assistant>": {
+
+      // `type` (string)
+      // Transport protocol. Use "stdio" for local processes.
+      "type": "stdio",
+
+      // `command` (string) [REQUIRED for stdio]
+      // The executable (binary or command) used to start the server process.
+      "command": "uv",
+
+      // `args` (lisxt[string])
+      // Command-line arguments passed to the server process for "stdio" transport.
+      "args": ["run", "--with", "fastmcp", "src/server.py"],
+
+      // `env` (object)
+      // Environment variables set for server. Supports ${VAR_NAME} interpolation at runtime.
+      "env": {
+        "API_KEY": "your-secret-key",
+        "DEBUG": "true"
+      },
+
+      // `cwd` (string)
+      // Current Working Directory where the process executes.
+      "cwd": ".",
+
+      // `oath` (object)
+      // Authentication configuration for OATH/OAuth protocols.
+      // Defines credentials and endpoints for delegated authorization flows.
+      "oath": {
+        "client_id": "your-client-id",
+        "auth_url": "https://auth.example.com/authorize",
+        "callbackPort": 8080
+      }
+    },
+
+    // ==========================================================
+    // SERVER 2: REMOTE API WITH TRANSFORMATIONS (HTTP/SSE)
+    // ==========================================================
+    "weather-curator": {
+
+      // `type` (string)
+      // Transport protocol. Use "http" | "sse" | "streamable-http" for remote endpoints.
+      "type": "http",
+
+      // `url` (string) [REQUIRED for remote]
+      // The remote URL of the MCP endpoint.
+      "url": "https://weather.example.com/mcp",
+
+      // `headers` (object)
+      // HTTP headers sent with "http", "sse", or "streamable-http" requests for authentication or configuration.
+      "headers": {
+        "Authorization": "Bearer ${WEATHER_TOKEN",
+        "X-Custom-Header": "v2.4.0-client"
+      },
+
+      // `include_tags` (list[str])
+      // Allowlist: Only tools with these tags will be visible to the client.
+      "include_tags": ["public", "forecast"],
+
+      // `exclude_tags` (list[str])
+      // Blocklist: Hide tools that have these specific tags.
+      "exclude_tags": ["admin", "internal"],
+
+      // `tools` (object)
+      // Tool transformation section: Configure how server tools are presented.
+      "tools": {
+        "get_forecast": {
+          // `name`: Rename the tool for the LLM.
+          "name": "miami_weather",
+          // `description`: Override the help text for the LLM.
+          "description": "Get the 5-day weather forecast specifically for Miami.",
+          // `enabled`: Explicitly toggle this specific tool.
+          "enabled": true,
+          // `arguments` (object)
+          // Transform specific parameters of the tool.
+          "arguments": {
+            "city": {
+              // `default`: Hardcode the value for this parameter.
+              "default": "Miami",
+              // `hide`: Remove this argument from the LLM's view (uses default).
+              "hide": true
+            }
+          }
+        }
+      }
+
+    }
+
+  }
+
+}

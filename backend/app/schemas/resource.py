@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+"""Pydantic schemas for resource CRUD and runtime/artifact-specific resource views."""
+
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
 class ResourceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+    kind: Literal["runtime", "artifact"] = "runtime"
     type: str = Field(min_length=1, max_length=80)
     connector: str = Field(min_length=1, max_length=80)
     environment: str = Field(default="dev")
@@ -15,6 +20,8 @@ class ResourceCreate(BaseModel):
 
 class ResourceUpdate(BaseModel):
     name: str | None = None
+    kind: Literal["runtime", "artifact"] | None = None
+    type: str | None = None
     connector: str | None = None
     environment: str | None = None
     config: dict | None = None
@@ -28,6 +35,7 @@ class ResourceOut(BaseModel):
 
     id: str
     name: str
+    kind: Literal["runtime", "artifact"]
     type: str
     connector: str
     owner_id: str
@@ -54,17 +62,41 @@ class ResourceListOut(BaseModel):
     has_more: bool
 
 
-class ResourcePromotionStatusOut(BaseModel):
+class RuntimeStatusOut(BaseModel):
     resource_id: str
-    promotion_status: str
-    latest_run_id: str | None = None
-    target_environment: str
-    git_ref: str | None = None
-    pr_number: int | None = None
-    commit_sha: str | None = None
-    workflow_run_id: str | None = None
-    workflow_url: str | None = None
+    status: str
+    last_run_id: str | None = None
+    last_run_status: str | None = None
+    last_heartbeat_at: str | None = None
+    schedule: str | None = None
     updated_at: str
+
+
+class RuntimeHealthOut(BaseModel):
+    resource_id: str
+    health: str
+    updated_at: str
+
+
+class RuntimeScheduleUpdate(BaseModel):
+    schedule: str = Field(min_length=1, max_length=255)
+
+
+class RuntimeScheduleOut(BaseModel):
+    resource_id: str
+    schedule: str | None = None
+    updated_at: str
+
+
+class ArtifactVersionOut(BaseModel):
+    resource_id: str
+    version: str
+    status: str
+    updated_at: str
+
+
+class ArtifactVersionUpdate(BaseModel):
+    version: str = Field(min_length=1, max_length=80)
 
 
 class ImportGithubRequest(BaseModel):

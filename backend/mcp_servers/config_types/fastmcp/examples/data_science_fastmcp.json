@@ -1,0 +1,24 @@
+{
+  "$schema": "https://gofastmcp.com/public/schemas/fastmcp.json/v1.json",
+  "source": {
+    "path": "analysis_server.py",
+    "entrypoint": "mcp"
+  },
+  "environment": {
+    "python": "3.11",
+    "dependencies": [
+      "pandas>=2.0",
+      "numpy",
+      "scikit-learn",
+      "matplotlib",
+      "jupyterlab"
+    ]
+  },
+  "deployment": {
+    "transport": "stdio",
+    "env": {
+      "MATPLOTLIB_BACKEND": "Agg",
+      "DATA_PATH": "./datasets"
+    }
+  }
+}

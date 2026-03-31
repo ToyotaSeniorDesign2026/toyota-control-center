@@ -1,0 +1,52 @@
+{
+
+  "<SERVER-NAME>": {
+
+    // `command` (string) [REQUIRED FOR "stdio" TRANSPORT]
+    // The executable (binary or command) used to start the server process.
+    "command": "uv",
+
+    // `args` (list[str])
+    // Command-line arguments passed to the server process for "stdio" transport.
+    // These follow the command and typically point to the server script and flags.
+    "args": ["run", "--with", "fastmcp", "src/mcp_server.py"],
+
+    // `type` (string)
+    // The transport protocol or source identifier for the server.
+    // Allowed: "stdio" | "http" | "sse" | "streamable-http"
+    "type": "stdio",
+
+    // `url` (string) [REQUIRED FOR "http" | "streamable-http" | "sse" | TRANSPORTS]
+    // The remote endpoint URL for the server.
+    "url": "https://gofastmcp.com/mcp",
+
+    // `env` (object)
+    // Environment variables set for server. Supports ${VAR_NAME} interpolation at runtime.
+    "env": {
+      "API_KEY": "your-secret-key",
+      "DEBUG": "true"
+    },
+
+    // `cwd` (string)
+    // Working directory for the server process. Resolved relative to the config file location.
+    "cwd": ".",
+
+    // `headers` (object)
+    // HTTP headers sent with "http", "sse", or "streamable-http" requests for authentication or configuration.
+    "headers": {
+      "Authorization": "Bearer ${API_TOKEN",
+      "X-Custom-Header": "value"
+    },
+
+    // `oath` (object)
+    // Authentication configuration for OATH/OAuth protocols.
+    // Defines credentials and endpoints for delegated authorization flows.
+    "oath": {
+      "client_id": "your-client-id",
+      "auth_url": "https://auth.example.com/authorize",
+      "callbackPort": 8080
+    }
+
+  }
+
+}
