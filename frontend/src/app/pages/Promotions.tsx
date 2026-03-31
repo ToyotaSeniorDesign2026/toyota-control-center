@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ArrowUpCircle, CheckCircle2, ChevronDown, Clock } from "lucide-react";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
 import { Button } from "../components/ui/button";
+import { getPendingPromotionResources } from "../lib/userDashboardStore";
 import {
   formatPromotionDate,
   getPromotionTypeColor,
@@ -14,6 +15,10 @@ import {
 export default function Promotions() {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [selectedJobs, setSelectedJobs] = useState<string[]>([]);
+  const pendingPromotions = useMemo(
+    () => [...getPendingPromotionResources(), ...mockPendingPromotions],
+    []
+  );
   const [openSections, setOpenSections] = useState({
     ready: false,
     pending: false,
@@ -128,11 +133,11 @@ export default function Promotions() {
                   className={`ml-auto h-4 w-4 text-gray-500 transition-transform ${openSections.pending ? "rotate-180" : ""}`}
                 />
               </div>
-              <p className="mt-1 text-xs text-gray-600">{mockPendingPromotions.length} awaiting approval</p>
+              <p className="mt-1 text-xs text-gray-600">{pendingPromotions.length} awaiting approval</p>
             </button>
             {openSections.pending && (
               <div className="divide-y divide-gray-200">
-                {mockPendingPromotions.map((job) => (
+                {pendingPromotions.map((job) => (
                   <div key={job.id} className="p-4">
                     <div className="mb-2">
                       <div className="mb-1 text-sm font-medium text-gray-900">{job.name}</div>

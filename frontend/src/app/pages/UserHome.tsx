@@ -25,7 +25,12 @@ import { Button } from "../components/ui/button";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
 import { ChatPanel } from "../components/ChatPanel";
+import ExcelReportForm from "../components/user/ExcelReportForm";
+import SQLJobForm from "../components/user/SQLJobForm";
+import PowerPointForm from "../components/user/PowerPointForm";
 import { useCalendarOverlay } from "../contexts/CalendarContext";
+import { createJobFromForm, getCalendarEvents, getDraftForms, getMyJobs, getPendingPromotionResources, getSavedTemplates, mapJobToPendingPromotionResource, saveDraft, saveTemplate, subscribeToUserDashboardStore } from "../lib/userDashboardStore";
+import type { Job as StoredJob } from "./resourcesData";
 import {
   mockReadyForPromotion,
   mockPendingPromotions,
@@ -56,6 +61,15 @@ const recentJobs = [
   { name: "Quarterly Revenue Report", type: "PowerPoint", schedule: "Quarterly, day 1", status: "Healthy" },
 ];
 
+type DashboardJobListItem = {
+  id: string;
+  name: string;
+  type: string;
+  schedule: string;
+  status: "Healthy" | "Running" | "Needs Attention";
+  payload?: WorkspaceJobPayload;
+};
+
 const draftJobs = [
   { id: "draft-001", name: "Customer Retention Workflow", type: "Workflow", lastEdited: "1 hour ago" },
   { id: "draft-002", name: "Dealer Forecast Pipeline", type: "SQL", lastEdited: "3 hours ago" },
@@ -80,7 +94,7 @@ const activityTimeline = [
 interface RunItem {
   id: string;
   jobName: string;
-  jobType: "PowerPoint" | "Excel" | "SQL";
+  jobType: "PowerPoint" | "Excel" | "SQL" | "Custom";
   status: "scheduled" | "running" | "completed" | "failed";
   scheduledTime: Date;
   completedTime?: Date;
@@ -176,6 +190,8 @@ const getJobTypeColor = (type: string): string => {
       return "bg-green-100 text-green-700";
     case "SQL":
       return "bg-blue-100 text-blue-700";
+    case "Custom":
+      return "bg-indigo-100 text-indigo-700";
     default:
       return "bg-gray-100 text-gray-700";
   }
@@ -194,6 +210,218 @@ const getRunStatusColor = (status: string): string => {
     default:
       return "bg-gray-100 text-gray-700";
   }
+};
+
+const deriveWorkspaceSchedule = (draft?: Record<string, unknown>) => {
+  if (!draft) return "Manual schedule";
+  const scheduleType = typeof draft.scheduleType === "string" ? draft.scheduleType : "manual";
+  const scheduleDay = typeof draft.scheduleDay === "string" ? draft.scheduleDay : "";
+  const scheduleTime = typeof draft.scheduleTime === "string" ? draft.scheduleTime : "";
+  const scheduleExpectation = typeof draft.scheduleExpectation === "string" ? draft.scheduleExpectation : "";
+
+  if (scheduleType === "on-demand") return "On demand";
+  if (scheduleType === "monthly") return `Monthly${scheduleDay ? `, day ${scheduleDay}` : ""}${scheduleTime ? ` at ${scheduleTime}` : ""}`;
+  if (scheduleType === "weekly") return `Weekly${scheduleDay ? `, ${scheduleDay}` : ""}${scheduleTime ? ` at ${scheduleTime}` : ""}`;
+  if (scheduleType === "daily") return `Daily${scheduleTime ? ` at ${scheduleTime}` : ""}`;
+  if (scheduleExpectation.trim()) return scheduleExpectation;
+  return "Manual schedule";
+};
+
+const weekdayOptions = [
+  { label: "Sun", value: "0" },
+  { label: "Mon", value: "1" },
+  { label: "Tue", value: "2" },
+  { label: "Wed", value: "3" },
+  { label: "Thu", value: "4" },
+  { label: "Fri", value: "5" },
+  { label: "Sat", value: "6" },
+];
+
+const formatCustomScheduleSummary = (form: CustomFormBuilderState) => {
+  if (form.scheduleCadence === "on-demand") return "Runs on demand";
+
+  const stopSummary =
+    form.stopCondition === "on-date" && form.endDate
+      ? ` until ${form.endDate}`
+      : form.stopCondition === "after-runs" && form.maxRuns
+        ? ` for ${form.maxRuns} runs`
+        : "";
+
+  if (form.scheduleCadence === "daily") {
+    return `Runs daily at ${form.scheduleTime}${stopSummary}`;
+  }
+
+  if (form.scheduleCadence === "weekly") {
+    const selectedDays = weekdayOptions
+      .filter((option) => form.weeklyDays.includes(option.value))
+      .map((option) => option.label)
+      .join(", ");
+    return `Runs weekly on ${selectedDays || "selected days"} at ${form.scheduleTime}${stopSummary}`;
+  }
+
+  return `Runs monthly on day ${form.monthlyDay || "1"} at ${form.scheduleTime}${stopSummary}`;
+};
+
+const createWorkspaceJobPayload = (job: Record<string, unknown>, formCategory: string, draft?: Record<string, unknown>): WorkspaceJobPayload => {
+  const name = typeof job.name === "string" ? job.name : "New Job";
+  const type = formCategory === "PowerPoint" ? "PowerPoint" : formCategory === "Excel" ? "Excel" : "SQL";
+  return {
+    job_id: typeof job.id === "string" ? job.id : `job-${Date.now()}`,
+    name,
+    type,
+    schedule: deriveWorkspaceSchedule(draft),
+    status: "Healthy",
+    description: typeof job.description === "string" ? job.description : `${formCategory} job created from the embedded form flow.`,
+    inputs: [
+      typeof draft?.owner === "string" ? `Owner: ${draft.owner}` : "Owner configured",
+      `Form type: ${formCategory}`,
+      "Submitted from user dashboard workspace",
+    ],
+    outputs: [
+      type === "PowerPoint" ? `${name}.pptx` : type === "Excel" ? `${name}.xlsx` : `${name}.csv`,
+      "Dashboard job record",
+    ],
+    steps: [
+      { id: "step-1", name: "Validate form inputs", action: "Check required fields and configuration" },
+      { id: "step-2", name: "Create job record", action: "Register the job in the workspace" },
+      { id: "step-3", name: "Prepare schedule", action: "Apply execution cadence and delivery settings" },
+      { id: "step-4", name: "Queue for execution", action: "Send the job to the next workflow stage" },
+    ],
+  };
+};
+
+const createCustomFormDraftPayload = (form: CustomFormBuilderState) => ({
+  scheduleType: form.scheduleCadence,
+  scheduleDay:
+    form.scheduleCadence === "weekly"
+      ? form.weeklyDays[0] ?? "1"
+      : form.scheduleCadence === "monthly"
+        ? form.monthlyDay || "1"
+        : "",
+  scheduleTime: form.scheduleCadence === "on-demand" ? "" : form.scheduleTime,
+  scheduleDays: form.weeklyDays,
+  scheduleStartDate: form.startDate,
+  scheduleStopCondition: form.stopCondition,
+  scheduleEndDate: form.stopCondition === "on-date" ? form.endDate : "",
+  scheduleMaxRuns: form.stopCondition === "after-runs" ? form.maxRuns : "",
+  scheduleExpectation: formatCustomScheduleSummary(form),
+  jobName: form.formName,
+  description: form.purpose,
+  customJobType: form.jobType,
+  targetUsers: form.targetUsers,
+  outputDestination: form.outputDestination,
+  requiredFields: form.requiredFields,
+});
+
+const mapStoredJobTypeToDashboardType = (type: StoredJob["type"]) => {
+  if (type === "PowerPoint Deck") return "PowerPoint";
+  if (type === "Excel Report") return "Excel";
+  if (type === "Custom Job") return "Custom";
+  if (type === "SQL Query") return "SQL";
+  return type;
+};
+
+const mapStoredJobStatusToDashboardStatus = (status: StoredJob["status"]): DashboardJobListItem["status"] => {
+  if (status === "running") return "Running";
+  if (status === "pending") return "Needs Attention";
+  return "Healthy";
+};
+
+const mapStoredJobToWorkspaceType = (type: StoredJob["type"]): "PowerPoint" | "Excel" | "SQL" => {
+  if (type === "PowerPoint Deck") return "PowerPoint";
+  if (type === "Excel Report") return "Excel";
+  return "SQL";
+};
+
+const createWorkspaceJobPayloadFromStoredJob = (job: StoredJob): WorkspaceJobPayload => {
+  const scheduleMessage =
+    job.logs?.find((entry) => entry.message.toLowerCase().includes("runs "))?.message ?? "Manual schedule";
+
+  return {
+    job_id: job.id,
+    name: job.name,
+    type: mapStoredJobToWorkspaceType(job.type),
+    schedule: scheduleMessage,
+    status: mapStoredJobStatusToDashboardStatus(job.status),
+    description: job.description ?? `${job.type} job created from the user workspace.`,
+    inputs: [
+      `Job type: ${job.type}`,
+      `Environment: ${job.environment ?? "Dev"}`,
+      "Submitted from user dashboard workspace",
+    ],
+    outputs: [
+      mapStoredJobToWorkspaceType(job.type) === "PowerPoint"
+        ? `${job.name}.pptx`
+        : mapStoredJobToWorkspaceType(job.type) === "Excel"
+          ? `${job.name}.xlsx`
+          : `${job.name}.csv`,
+      "Dashboard job record",
+    ],
+    steps: [
+      { id: "step-1", name: "Validate form inputs", action: "Check required fields and configuration" },
+      { id: "step-2", name: "Create job record", action: "Register the job in the workspace" },
+      { id: "step-3", name: "Prepare schedule", action: "Apply execution cadence and delivery settings" },
+      { id: "step-4", name: "Queue for execution", action: "Send the job to the next workflow stage" },
+    ],
+  };
+};
+
+const createDashboardJobs = (): DashboardJobListItem[] => {
+  const storedJobs = getMyJobs().map((job) => ({
+    id: job.id,
+    name: job.name,
+    type: mapStoredJobTypeToDashboardType(job.type),
+    schedule:
+      job.logs?.find((entry) => entry.message.toLowerCase().includes("runs "))?.message ?? "Manual schedule",
+    status: mapStoredJobStatusToDashboardStatus(job.status),
+    payload: createWorkspaceJobPayloadFromStoredJob(job),
+  }));
+
+  const fallbackJobs = recentJobs
+    .filter((job) => !storedJobs.some((storedJob) => storedJob.name === job.name))
+    .map((job, index) => ({
+      id: `fallback-job-${index + 1}`,
+      ...job,
+      payload: mockJobSpecs[job.name],
+    }));
+
+  return [...storedJobs, ...fallbackJobs];
+};
+
+const mapCalendarEventTypeToRunType = (jobType?: string): RunItem["jobType"] => {
+  if (jobType === "PowerPoint Deck") return "PowerPoint";
+  if (jobType === "Excel Report") return "Excel";
+  if (jobType === "Custom Job") return "Custom";
+  return "SQL";
+};
+
+const createDashboardRuns = () => {
+  const calendarEvents = getCalendarEvents();
+  const mappedRuns = calendarEvents.map((event) => ({
+    id: event.id,
+    jobName: event.title,
+    jobType: mapCalendarEventTypeToRunType(event.jobType),
+    status: event.kind === "past" ? "completed" : "scheduled",
+    scheduledTime: new Date(`${event.date}T${event.time}:00`),
+  }));
+
+  const upcomingRuns = [
+    ...mappedRuns.filter((run) => run.status === "scheduled"),
+    ...mockUpcomingRuns,
+  ]
+    .sort((a, b) => a.scheduledTime.getTime() - b.scheduledTime.getTime())
+    .filter((run, index, array) => array.findIndex((candidate) => candidate.jobName === run.jobName && candidate.status === run.status) === index);
+
+  const recentRuns = [
+    ...mappedRuns
+      .filter((run) => run.status === "completed")
+      .map((run) => ({ ...run, completedTime: run.scheduledTime })),
+    ...mockRecentRuns,
+  ]
+    .sort((a, b) => (b.completedTime?.getTime() ?? b.scheduledTime.getTime()) - (a.completedTime?.getTime() ?? a.scheduledTime.getTime()))
+    .filter((run, index, array) => array.findIndex((candidate) => candidate.jobName === run.jobName && candidate.status === run.status) === index);
+
+  return { upcomingRuns, recentRuns };
 };
 
 const mockTemplates = [
@@ -255,6 +483,33 @@ const mockTemplates = [
   },
 ];
 
+const preBuiltForms = [
+  {
+    id: "prebuilt-excel",
+    name: "Excel Report Form",
+    category: "Excel",
+    description: "Build scheduled Excel exports and report deliveries.",
+    route: "/excel-report",
+    useCase: "Recurring Excel-based reporting",
+  },
+  {
+    id: "prebuilt-sql",
+    name: "SQL Job Form",
+    category: "SQL",
+    description: "Create SQL-based reporting and transformation jobs.",
+    route: "/sql-job",
+    useCase: "Query and transformation workflows",
+  },
+  {
+    id: "prebuilt-powerpoint",
+    name: "PowerPoint Job Form",
+    category: "PowerPoint",
+    description: "Generate presentation jobs for executive and business reporting.",
+    route: "/powerpoint",
+    useCase: "Presentation and deck generation",
+  },
+];
+
 interface JobStep {
   id: string;
   name: string;
@@ -271,6 +526,10 @@ interface JobSpec {
   outputs: string[];
   steps: JobStep[];
 }
+
+type WorkspaceJobPayload = JobSpec & {
+  description?: string;
+};
 
 const mockJobSpecs: Record<string, JobSpec> = {
   "Monthly Dealer KPI Deck": {
@@ -358,6 +617,36 @@ interface WorkspaceTab {
   payload?: Record<string, any>;
 }
 
+type FormWorkspacePayload = {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  useCase: string;
+  route: string;
+  origin?: "saved-template" | "prebuilt-form" | "draft-form" | "blank-form";
+  progress?: string;
+  lastEdited?: string;
+  draft?: Record<string, unknown>;
+};
+
+type CustomFormBuilderState = {
+  formName: string;
+  purpose: string;
+  jobType: string;
+  targetUsers: string;
+  outputDestination: string;
+  scheduleCadence: "on-demand" | "daily" | "weekly" | "monthly";
+  scheduleTime: string;
+  weeklyDays: string[];
+  monthlyDay: string;
+  startDate: string;
+  stopCondition: "never" | "on-date" | "after-runs";
+  endDate: string;
+  maxRuns: string;
+  requiredFields: string;
+};
+
 interface WorkspacePane {
   tabs: WorkspaceTab[];
   activeTabId: string;
@@ -407,8 +696,11 @@ export default function UserHome() {
   const [templateSort, setTemplateSort] = useState<"name" | "category" | "recently-used" | "recommended">("name");
   const [templateFilter, setTemplateFilter] = useState<"all" | "PowerPoint" | "Excel" | "SQL" | "Workflow" | "Form" | "Dashboard">("all");
   const [selectedPromotions, setSelectedPromotions] = useState<string[]>([]);
+  const [highlightedPendingPromotionId, setHighlightedPendingPromotionId] = useState<string | null>(null);
+  const [promotionSubmissionMessage, setPromotionSubmissionMessage] = useState<string | null>(null);
   const [rejectedPromotionsState, setRejectedPromotionsState] = useState(mockRejectedPromotions);
   const [pendingPromotionsState, setPendingPromotionsState] = useState(mockPendingPromotions);
+  const [submittedPromotions, setSubmittedPromotions] = useState(() => getPendingPromotionResources());
   const [consoleHeight, setConsoleHeight] = useState(50);
   const [consoleActiveTab, setConsoleActiveTab] = useState<"json" | "logs" | "events">("json");
   const [expandedActionId, setExpandedActionId] = useState<string | null>(null);
@@ -439,6 +731,102 @@ export default function UserHome() {
     },
   ]);
   const [aiInput, setAiInput] = useState("");
+  const [dashboardJobs, setDashboardJobs] = useState<DashboardJobListItem[]>(() => createDashboardJobs());
+  const [dashboardRuns, setDashboardRuns] = useState(() => createDashboardRuns());
+  const [customFormBuilder, setCustomFormBuilder] = useState<CustomFormBuilderState>({
+    formName: "",
+    purpose: "",
+    jobType: "",
+    targetUsers: "",
+    outputDestination: "",
+    scheduleCadence: "weekly",
+    scheduleTime: "09:00",
+    weeklyDays: ["1"],
+    monthlyDay: "1",
+    startDate: new Date().toISOString().slice(0, 10),
+    stopCondition: "never",
+    endDate: "",
+    maxRuns: "12",
+    requiredFields: "",
+  });
+  const draftForms = getDraftForms();
+  const savedTemplates = getSavedTemplates();
+  const customFormDraftPayload = createCustomFormDraftPayload(customFormBuilder);
+
+  useEffect(() => {
+    setDashboardJobs(createDashboardJobs());
+    setDashboardRuns(createDashboardRuns());
+    setSubmittedPromotions(getPendingPromotionResources());
+    return subscribeToUserDashboardStore(() => {
+      setDashboardJobs(createDashboardJobs());
+      setDashboardRuns(createDashboardRuns());
+      setSubmittedPromotions(getPendingPromotionResources());
+    });
+  }, []);
+
+  const handleCustomFormFieldChange = (field: keyof CustomFormBuilderState, value: string) => {
+    setCustomFormBuilder((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleWeeklyDayToggle = (dayValue: string) => {
+    setCustomFormBuilder((prev) => {
+      const alreadySelected = prev.weeklyDays.includes(dayValue);
+      const nextDays = alreadySelected
+        ? prev.weeklyDays.filter((day) => day !== dayValue)
+        : [...prev.weeklyDays, dayValue].sort();
+
+      return {
+        ...prev,
+        weeklyDays: nextDays.length > 0 ? nextDays : [dayValue],
+      };
+    });
+  };
+
+  const handleCustomFormSaveDraft = () => {
+    saveDraft("Custom", customFormDraftPayload);
+    openFormTab({
+      id: "forms-hub",
+      name: "Forms Hub",
+      category: "Forms Hub",
+      description: "Browse drafts, saved templates, and pre-built job forms.",
+      useCase: "Start or resume a form workflow",
+      route: "/forms",
+    });
+  };
+
+  const handleCustomFormSaveTemplate = () => {
+    saveTemplate("Custom", customFormDraftPayload);
+    openFormTab({
+      id: "saved-templates-hub",
+      name: "Saved Templates",
+      category: "Forms Hub",
+      description: "Browse and reuse saved form templates created by users.",
+      useCase: "Reusable AI-assisted form templates",
+      route: "/forms/saved-templates",
+      origin: "saved-template",
+    });
+  };
+
+  const handleSubmittedForApproval = (job: StoredJob, fallbackName: string) => {
+    const promotionPayload = mapJobToPendingPromotionResource(job);
+    setActivePanelId("promotions-edits");
+    setHighlightedPendingPromotionId(promotionPayload.id);
+    setPromotionSubmissionMessage(`${promotionPayload.name || fallbackName} was submitted for approval.`);
+    handleOpenTabInPane(
+      {
+        type: "promotion",
+        name: promotionPayload.name || fallbackName,
+        id: promotionPayload.id,
+        payload: promotionPayload,
+      },
+      "primary"
+    );
+  };
+
+  const handleCustomFormCreateJob = () => {
+    const createdJob = createJobFromForm("Custom", customFormDraftPayload);
+    handleSubmittedForApproval(createdJob, "New Custom Job");
+  };
 
   // Console helper functions
   const getConsoleJSON = () => {
@@ -455,7 +843,7 @@ export default function UserHome() {
       };
     }
     if (activeTab?.type === "template") {
-      const template = mockTemplates.find((t) => t.id === activeTab.templateId);
+      const template = (activeTab.payload as FormWorkspacePayload | undefined) ?? mockTemplates.find((t) => t.id === activeTab.templateId);
       if (template) {
         return {
           template_id: template.id,
@@ -463,6 +851,7 @@ export default function UserHome() {
           category: template.category,
           description: template.description,
           useCase: template.useCase,
+          route: "route" in template ? template.route : undefined,
           created_at: new Date().toISOString(),
           last_modified: new Date().toISOString(),
         };
@@ -544,7 +933,7 @@ export default function UserHome() {
 
   // Filter and sort helper functions
   const getFilteredAndSortedJobs = () => {
-    let filtered = recentJobs.filter((job) => {
+    let filtered = dashboardJobs.filter((job) => {
       const matchesSearch =
         job.name.toLowerCase().includes(jobSearch.toLowerCase()) ||
         job.type.toLowerCase().includes(jobSearch.toLowerCase()) ||
@@ -578,37 +967,32 @@ export default function UserHome() {
     return sorted;
   };
 
-  const getFilteredAndSortedTemplates = () => {
-    let filtered = mockTemplates.filter((template) => {
-      const matchesSearch =
-        template.name.toLowerCase().includes(templateSearch.toLowerCase()) ||
-        template.category.toLowerCase().includes(templateSearch.toLowerCase()) ||
-        template.description.toLowerCase().includes(templateSearch.toLowerCase());
-      
-      const matchesFilter =
-        templateFilter === "all" ||
-        template.category === templateFilter;
-      
-      return matchesSearch && matchesFilter;
-    });
-
-    // Apply sorting
-    const sorted = [...filtered].sort((a, b) => {
-      switch (templateSort) {
-        case "name":
-          return a.name.localeCompare(b.name);
-        case "category":
-          return a.category.localeCompare(b.category);
-        case "recently-used":
-          return 0; // Would require usage timestamp data
-        case "recommended":
-          return 0; // Would require recommendation scoring
-        default:
-          return 0;
-      }
-    });
-
-    return sorted;
+  const normalizedTemplateSearch = templateSearch.trim().toLowerCase();
+  const filteredSavedTemplates = savedTemplates.filter((template) => {
+    if (!normalizedTemplateSearch) return true;
+    return (
+      template.name.toLowerCase().includes(normalizedTemplateSearch) ||
+      template.type.toLowerCase().includes(normalizedTemplateSearch)
+    );
+  });
+  const filteredPreBuiltForms = preBuiltForms.filter((form) => {
+    if (!normalizedTemplateSearch) return true;
+    return (
+      form.name.toLowerCase().includes(normalizedTemplateSearch) ||
+      form.category.toLowerCase().includes(normalizedTemplateSearch) ||
+      form.description.toLowerCase().includes(normalizedTemplateSearch)
+    );
+  });
+  const openFormTab = (payload: FormWorkspacePayload) => {
+    handleOpenTabInPane(
+      {
+        type: "template",
+        id: payload.id,
+        name: payload.name,
+        payload,
+      },
+      "primary"
+    );
   };
 
   const requiredActionPreview = requiredActionItems.slice(0, 3);
@@ -617,12 +1001,16 @@ export default function UserHome() {
   // Get active tab and related data from primary pane
   const activeTab = workspace.primary.tabs.find((tab) => tab.id === workspace.primary.activeTabId);
   const activeJobName = activeTab?.type === "job" ? activeTab.jobName : null;
-  const jobSpec = activeJobName ? mockJobSpecs[activeJobName] : null;
+  const jobSpec = activeTab?.type === "job"
+    ? ((activeTab.payload as WorkspaceJobPayload | undefined) ?? (activeJobName ? mockJobSpecs[activeJobName] : null))
+    : null;
 
   // Get current promotion
   const promotionId = activeTab?.type === "promotion" ? activeTab.id : null;
-  const allPromotions = [...mockReadyForPromotion, ...pendingPromotionsState, ...rejectedPromotionsState, ...mockRecentlyPromoted];
-  const currentPromotion = promotionId ? allPromotions.find((p) => p.id === promotionId) : null;
+  const allPromotions = [...mockReadyForPromotion, ...submittedPromotions, ...pendingPromotionsState, ...rejectedPromotionsState, ...mockRecentlyPromoted];
+  const currentPromotion = promotionId
+    ? allPromotions.find((p) => p.id === promotionId) ?? (activeTab?.payload as typeof allPromotions[number] | undefined) ?? null
+    : null;
 
   // Workspace pane management functions
   const handleOpenTabInPane = (item: { 
@@ -631,6 +1019,7 @@ export default function UserHome() {
     id: string;
     revisionJobType?: string;
     revisionRejectionReason?: string;
+    payload?: Record<string, any>;
   }, paneKey: "primary" | "secondary") => {
     setWorkspace((prev) => {
       const updated = { ...prev };
@@ -653,6 +1042,7 @@ export default function UserHome() {
             title: item.name,
             closable: true,
             jobName: item.name,
+            payload: item.payload,
           };
           targetPane.tabs = [...targetPane.tabs, newTab];
         }
@@ -690,6 +1080,7 @@ export default function UserHome() {
             closable: true,
             templateId: item.id,
             templateName: item.name,
+            payload: item.payload,
           };
           targetPane.tabs = [...targetPane.tabs, newTab];
         }
@@ -846,9 +1237,17 @@ export default function UserHome() {
     e.dataTransfer.setData("application/json", JSON.stringify({ type: "required-action", id: actionId, name: subject }));
   };
 
-  const handleTemplateDragStart = (e: React.DragEvent<HTMLButtonElement>, templateId: string, templateName: string) => {
+  const handleTemplateDragStart = (
+    e: React.DragEvent<HTMLElement>,
+    templateId: string,
+    templateName: string,
+    metadata?: Record<string, unknown>
+  ) => {
     e.dataTransfer.effectAllowed = "copy";
-    e.dataTransfer.setData("application/json", JSON.stringify({ type: "template", id: templateId, name: templateName }));
+    e.dataTransfer.setData(
+      "application/json",
+      JSON.stringify({ type: "template", id: templateId, name: templateName, ...metadata })
+    );
   };
 
   const handleWorkspaceDrop = (e: React.DragEvent<HTMLDivElement>) => {
@@ -952,7 +1351,7 @@ export default function UserHome() {
   const panels = [
     { id: "jobs", label: "Jobs", icon: <Briefcase className="h-5 w-5" /> },
     { id: "runs", label: "Runs/Calendar", icon: <Calendar className="h-5 w-5" /> },
-    { id: "templates", label: "Templates", icon: <FileText className="h-5 w-5" /> },
+    { id: "templates", label: "Forms", icon: <FileText className="h-5 w-5" /> },
     { id: "promotions-edits", label: "Promotions & Edits", icon: <GitMerge className="h-5 w-5" /> },
     { id: "chat", label: "Chat", icon: <MessageSquare className="h-5 w-5" /> },
     { id: "required-actions", label: "Required Actions", icon: <AlertTriangle className="h-5 w-5" /> },
@@ -998,10 +1397,572 @@ export default function UserHome() {
 
     // Get job spec if needed
     const currentJobName = tab.type === "job" ? tab.jobName : null;
-    const currentJobSpec = currentJobName ? mockJobSpecs[currentJobName] : null;
+    const currentJobSpec = tab.type === "job"
+      ? ((tab.payload as WorkspaceJobPayload | undefined) ?? (currentJobName ? mockJobSpecs[currentJobName] : null))
+      : null;
     
     // Get template if needed
-    const currentTemplate = tab.type === "template" ? mockTemplates.find((t) => t.id === tab.templateId) : null;
+    const currentTemplate = tab.type === "template"
+      ? ((tab.payload as FormWorkspacePayload | undefined) ?? mockTemplates.find((t) => t.id === tab.templateId))
+      : null;
+
+    const renderEmbeddedFormsHub = () => (
+      <div className="mx-auto max-w-[1600px] px-6 py-8">
+        <div className="space-y-6">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">Forms Hub</h1>
+            <p className="mt-2 text-sm text-gray-600">
+              Start a new form, continue a draft, or reopen a saved template without leaving the dashboard.
+            </p>
+            <div className="mt-4 flex flex-wrap gap-3">
+              <button
+                onClick={() =>
+                  openFormTab({
+                    id: "blank-form-hub",
+                    name: "Create New Form",
+                    category: "Forms Hub",
+                    description: "Choose a blank form type and start from scratch.",
+                    useCase: "Create a new form from scratch",
+                    route: "/forms/new",
+                    origin: "blank-form",
+                  })
+                }
+                className="rounded-lg bg-[#ed0923] px-4 py-2 text-sm font-semibold text-white hover:bg-[#d10820] transition"
+              >
+                Create New Form
+              </button>
+              <button
+                onClick={() =>
+                  openFormTab({
+                    id: "draft-forms-hub",
+                    name: "Continue Editing",
+                    category: "Forms Hub",
+                    description: "Review and continue all in-progress form drafts.",
+                    useCase: "Resume saved form drafts",
+                    route: "/forms/drafts",
+                    origin: "draft-form",
+                  })
+                }
+                className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 hover:bg-amber-100 transition"
+              >
+                Continue Editing
+              </button>
+              <button
+                onClick={() =>
+                  openFormTab({
+                    id: "prebuilt-forms-hub",
+                    name: "Pre-Built Forms",
+                    category: "Forms Hub",
+                    description: "Open one of the standard Toyota job forms.",
+                    useCase: "Start from a standard form",
+                    route: "/forms/pre-built-forms",
+                    origin: "prebuilt-form",
+                  })
+                }
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 transition"
+              >
+                Browse Form Types
+              </button>
+            </div>
+          </div>
+
+          <div className="grid gap-6 xl:grid-cols-2">
+            <div className="rounded-xl border border-gray-200 bg-white p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-lg font-semibold text-gray-900">Saved Templates</h2>
+                <span className="text-xs font-medium text-gray-500">{savedTemplates.length} total</span>
+              </div>
+              <div className="space-y-3">
+                {savedTemplates.slice(0, 4).map((template) => (
+                  <button
+                    key={template.id}
+                    draggable
+                    onDragStart={(e) =>
+                      handleTemplateDragStart(e, template.id, template.name, {
+                        category: template.type,
+                        description: `${template.type} saved template ready to reuse.`,
+                        origin: "saved-template",
+                        route: template.route,
+                      })
+                    }
+                    onClick={() =>
+                      openFormTab({
+                        id: template.id,
+                        name: template.name,
+                        category: template.type,
+                        description: `${template.type} saved template ready to reuse.`,
+                        useCase: "Resume and reuse a saved form template",
+                        route: template.route,
+                        origin: "saved-template",
+                        progress: template.progress,
+                        lastEdited: template.lastEdited,
+                        draft: template.draft,
+                      })
+                    }
+                    className="w-full rounded-lg border border-gray-200 bg-gray-50 p-4 text-left hover:border-[#ed0923] hover:bg-red-50 transition"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-gray-900">{template.name}</p>
+                        <p className="mt-1 text-xs text-gray-500">{template.type} saved template</p>
+                      </div>
+                      <span className="rounded-full bg-gray-100 px-2 py-1 text-[10px] font-semibold text-gray-700">
+                        {template.progress}
+                      </span>
+                    </div>
+                    <div className="mt-3">
+                      <span className="inline-flex rounded-md bg-[#ed0923] px-3 py-1.5 text-xs font-semibold text-white">
+                        Create From Template
+                      </span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-gray-200 bg-white p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-lg font-semibold text-gray-900">Pre-Built Forms</h2>
+                <span className="text-xs font-medium text-gray-500">{preBuiltForms.length} available</span>
+              </div>
+              <div className="space-y-3">
+                {preBuiltForms.map((form) => (
+                  <button
+                    key={form.id}
+                    draggable
+                    onDragStart={(e) =>
+                      handleTemplateDragStart(e, form.id, form.name, {
+                        category: form.category,
+                        description: form.description,
+                        origin: "prebuilt-form",
+                        route: form.route,
+                      })
+                    }
+                    onClick={() =>
+                      openFormTab({
+                        id: form.id,
+                        name: form.name,
+                        category: form.category,
+                        description: form.description,
+                        useCase: form.useCase,
+                        route: form.route,
+                        origin: "prebuilt-form",
+                      })
+                    }
+                    className="w-full rounded-lg border border-gray-200 bg-gray-50 p-4 text-left hover:border-[#ed0923] hover:bg-red-50 transition"
+                  >
+                    <p className="text-sm font-semibold text-gray-900">{form.name}</p>
+                    <p className="mt-1 text-xs text-gray-500">{form.description}</p>
+                    <div className="mt-3">
+                      <span className="inline-flex rounded-md bg-[#ed0923] px-3 py-1.5 text-xs font-semibold text-white">
+                        Create {form.category} Job
+                      </span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+
+    const renderEmbeddedPreBuiltForms = () => (
+      <div className="mx-auto max-w-[1600px] px-6 py-8">
+        <div className="space-y-6">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">Pre-Built Forms</h1>
+            <p className="mt-2 text-sm text-gray-600">Open one of the standard Toyota forms directly in this workspace.</p>
+          </div>
+          <div className="space-y-4">
+            {preBuiltForms.map((form) => (
+              <div key={form.id} className="rounded-xl border border-red-200 bg-red-50 p-5">
+                <div className="flex flex-wrap items-start justify-between gap-4 sm:flex-nowrap">
+                  <div className="min-w-0 flex-1">
+                    <h2 className="text-lg font-semibold text-gray-900">{form.name}</h2>
+                    <p className="mt-1 text-sm text-gray-600">{form.description}</p>
+                  </div>
+                  <button
+                    onClick={() =>
+                      openFormTab({
+                        id: form.id,
+                        name: form.name,
+                        category: form.category,
+                        description: form.description,
+                        useCase: form.useCase,
+                        route: form.route,
+                        origin: "prebuilt-form",
+                      })
+                    }
+                    className="shrink-0 rounded-lg bg-[#ed0923] px-4 py-2 text-sm font-semibold text-white hover:bg-[#d10820] transition"
+                  >
+                    Create {form.category} Job
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+
+    const renderEmbeddedDraftForms = () => (
+      <div className="mx-auto max-w-[1600px] px-6 py-8">
+        <div className="space-y-6">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">Continue Editing</h1>
+            <p className="mt-2 text-sm text-gray-600">
+              Reopen any saved in-progress form and continue working in the middle workspace.
+            </p>
+          </div>
+
+          {draftForms.length > 0 ? (
+            <div className="space-y-4">
+              {draftForms.map((draft) => (
+                <div
+                  key={draft.id}
+                  draggable
+                  onDragStart={(e) =>
+                    handleTemplateDragStart(e, draft.id, draft.jobName, {
+                      category: draft.type,
+                      description: "In-progress form draft saved from the user workflow.",
+                      origin: "draft-form",
+                      route: draft.route,
+                      progress: draft.progress,
+                    })
+                  }
+                  className="rounded-xl border border-amber-200 bg-amber-50 p-5 cursor-grab active:cursor-grabbing"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">Draft Form</p>
+                        <span className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+                          Drag into AI chat
+                        </span>
+                      </div>
+                      <h2 className="mt-1 text-lg font-semibold text-gray-900">{draft.jobName}</h2>
+                      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-600">
+                        <span className="rounded-full bg-white px-2 py-1 font-semibold text-gray-700">{draft.type}</span>
+                        <span className="rounded-full bg-white px-2 py-1 font-semibold text-gray-700">{draft.progress} complete</span>
+                        <span>Last edited {draft.lastEdited}</span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() =>
+                        openFormTab({
+                          id: draft.id,
+                          name: draft.jobName,
+                          category: draft.type,
+                          description: "In-progress form draft saved from the user workflow.",
+                          useCase: "Continue editing your in-progress form",
+                          route: draft.route,
+                          origin: "draft-form",
+                          progress: draft.progress,
+                          lastEdited: draft.lastEdited,
+                          draft: draft.draft,
+                        })
+                      }
+                      className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-amber-700 border border-amber-300 hover:bg-amber-100 transition"
+                    >
+                      Continue Form
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed border-gray-300 bg-white p-10 text-center text-sm text-gray-600">
+              No saved drafts yet. Save a form as a draft and it will appear here.
+            </div>
+          )}
+        </div>
+      </div>
+    );
+
+    const renderEmbeddedBlankFormChooser = () => (
+      <div className="mx-auto max-w-[1600px] px-6 py-8">
+        <div className="space-y-6">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">Create New Form</h1>
+            <p className="mt-2 text-sm text-gray-600">
+              Build a completely new form from scratch for whatever job you need, then drag the draft into AI chat if you want help filling it out.
+            </p>
+          </div>
+
+          <div className="grid gap-6">
+            <div
+              draggable
+              onDragStart={(e) =>
+                handleTemplateDragStart(
+                  e,
+                  "custom-form-draft",
+                  customFormBuilder.formName || "Untitled Custom Form",
+                  {
+                    category: customFormBuilder.jobType || "Custom",
+                    description: customFormBuilder.purpose || "Custom form draft created from scratch.",
+                    origin: "blank-form",
+                    route: "/forms/new",
+                  }
+                )
+              }
+              className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm cursor-grab active:cursor-grabbing"
+            >
+              <div className="grid gap-5 md:grid-cols-2">
+                <div className="md:col-span-2">
+                  <label className="mb-2 block text-sm font-medium text-gray-900">Form Name</label>
+                  <input
+                    value={customFormBuilder.formName}
+                    onChange={(e) => handleCustomFormFieldChange("formName", e.target.value)}
+                    placeholder="Example: dealer launch readiness review"
+                    className="w-full rounded-lg border border-gray-200 px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="mb-2 block text-sm font-medium text-gray-900">What Is This Form's Purpose?</label>
+                  <textarea
+                    value={customFormBuilder.purpose}
+                    onChange={(e) => handleCustomFormFieldChange("purpose", e.target.value)}
+                    rows={4}
+                    placeholder="Describe what this new form is meant to help users create or request."
+                    className="w-full rounded-lg border border-gray-200 px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                  />
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-900">Job Type or Workflow</label>
+                  <input
+                    value={customFormBuilder.jobType}
+                    onChange={(e) => handleCustomFormFieldChange("jobType", e.target.value)}
+                    placeholder="Example: dealer onboarding workflow"
+                    className="w-full rounded-lg border border-gray-200 px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                  />
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-900">Who Will Use It?</label>
+                  <input
+                    value={customFormBuilder.targetUsers}
+                    onChange={(e) => handleCustomFormFieldChange("targetUsers", e.target.value)}
+                    placeholder="Example: analysts, managers, finance ops"
+                    className="w-full rounded-lg border border-gray-200 px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                  />
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-900">Expected Output</label>
+                  <input
+                    value={customFormBuilder.outputDestination}
+                    onChange={(e) => handleCustomFormFieldChange("outputDestination", e.target.value)}
+                    placeholder="Example: dashboard, email, pdf package"
+                    className="w-full rounded-lg border border-gray-200 px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                  />
+                </div>
+                <div className="md:col-span-2 rounded-xl border border-gray-200 bg-gray-50 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-900">Schedule</label>
+                      <p className="mt-1 text-xs text-gray-500">
+                        Choose how often this job should run and when it should stop.
+                      </p>
+                    </div>
+                    <span className="max-w-full rounded-full bg-white px-3 py-1 text-[11px] font-semibold leading-5 text-gray-700 break-words sm:max-w-[360px]">
+                      {formatCustomScheduleSummary(customFormBuilder)}
+                    </span>
+                  </div>
+
+                  <div className="mt-4 grid gap-5 lg:grid-cols-2">
+                    <div>
+                      <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Run cadence</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {[
+                          { label: "On Demand", value: "on-demand" },
+                          { label: "Daily", value: "daily" },
+                          { label: "Weekly", value: "weekly" },
+                          { label: "Monthly", value: "monthly" },
+                        ].map((option) => (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => handleCustomFormFieldChange("scheduleCadence", option.value)}
+                            className={`rounded-lg border px-3 py-2 text-sm font-semibold transition ${
+                              customFormBuilder.scheduleCadence === option.value
+                                ? "border-[#ed0923] bg-[#fff5f5] text-[#ed0923]"
+                                : "border-gray-200 bg-white text-gray-700 hover:bg-gray-100"
+                            }`}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Start date</label>
+                      <input
+                        type="date"
+                        value={customFormBuilder.startDate}
+                        onChange={(e) => handleCustomFormFieldChange("startDate", e.target.value)}
+                        className="w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                      />
+                    </div>
+
+                    {customFormBuilder.scheduleCadence !== "on-demand" && (
+                      <div>
+                        <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Run time</label>
+                        <input
+                          type="time"
+                          value={customFormBuilder.scheduleTime}
+                          onChange={(e) => handleCustomFormFieldChange("scheduleTime", e.target.value)}
+                          className="w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                        />
+                      </div>
+                    )}
+
+                    {customFormBuilder.scheduleCadence === "monthly" && (
+                      <div>
+                        <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Day of month</label>
+                        <select
+                          value={customFormBuilder.monthlyDay}
+                          onChange={(e) => handleCustomFormFieldChange("monthlyDay", e.target.value)}
+                          className="w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                        >
+                          {Array.from({ length: 31 }, (_, index) => `${index + 1}`).map((day) => (
+                            <option key={day} value={day}>
+                              Day {day}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+
+                  {customFormBuilder.scheduleCadence === "weekly" && (
+                    <div className="mt-5">
+                      <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Days of week</label>
+                      <div className="flex flex-wrap gap-2">
+                        {weekdayOptions.map((day) => (
+                          <button
+                            key={day.value}
+                            type="button"
+                            onClick={() => handleWeeklyDayToggle(day.value)}
+                            className={`rounded-full border px-3 py-2 text-sm font-semibold transition ${
+                              customFormBuilder.weeklyDays.includes(day.value)
+                                ? "border-[#ed0923] bg-[#ed0923] text-white"
+                                : "border-gray-200 bg-white text-gray-700 hover:bg-gray-100"
+                            }`}
+                          >
+                            {day.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="mt-5">
+                    <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Stop running</label>
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <button
+                        type="button"
+                        onClick={() => handleCustomFormFieldChange("stopCondition", "never")}
+                        className={`rounded-lg border px-3 py-3 text-left text-sm transition ${
+                          customFormBuilder.stopCondition === "never"
+                            ? "border-[#ed0923] bg-[#fff5f5]"
+                            : "border-gray-200 bg-white hover:bg-gray-100"
+                        }`}
+                      >
+                        <p className="font-semibold text-gray-900">Never</p>
+                        <p className="mt-1 text-xs text-gray-500">Keep the job active until someone stops it.</p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCustomFormFieldChange("stopCondition", "on-date")}
+                        className={`rounded-lg border px-3 py-3 text-left text-sm transition ${
+                          customFormBuilder.stopCondition === "on-date"
+                            ? "border-[#ed0923] bg-[#fff5f5]"
+                            : "border-gray-200 bg-white hover:bg-gray-100"
+                        }`}
+                      >
+                        <p className="font-semibold text-gray-900">On Date</p>
+                        <p className="mt-1 text-xs text-gray-500">Choose the day this job should stop.</p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCustomFormFieldChange("stopCondition", "after-runs")}
+                        className={`rounded-lg border px-3 py-3 text-left text-sm transition ${
+                          customFormBuilder.stopCondition === "after-runs"
+                            ? "border-[#ed0923] bg-[#fff5f5]"
+                            : "border-gray-200 bg-white hover:bg-gray-100"
+                        }`}
+                      >
+                        <p className="font-semibold text-gray-900">After N Runs</p>
+                        <p className="mt-1 text-xs text-gray-500">Stop automatically after a fixed number of runs.</p>
+                      </button>
+                    </div>
+                  </div>
+
+                  {customFormBuilder.stopCondition === "on-date" && (
+                    <div className="mt-5">
+                      <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">End date</label>
+                      <input
+                        type="date"
+                        value={customFormBuilder.endDate}
+                        onChange={(e) => handleCustomFormFieldChange("endDate", e.target.value)}
+                        className="w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                      />
+                    </div>
+                  )}
+
+                  {customFormBuilder.stopCondition === "after-runs" && (
+                    <div className="mt-5">
+                      <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Maximum runs</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={customFormBuilder.maxRuns}
+                        onChange={(e) => handleCustomFormFieldChange("maxRuns", e.target.value)}
+                        className="w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                      />
+                    </div>
+                  )}
+                </div>
+                <div className="md:col-span-2">
+                  <label className="mb-2 block text-sm font-medium text-gray-900">Required Fields</label>
+                  <textarea
+                    value={customFormBuilder.requiredFields}
+                    onChange={(e) => handleCustomFormFieldChange("requiredFields", e.target.value)}
+                    rows={3}
+                    placeholder="List the inputs this new form should collect."
+                    className="w-full rounded-lg border border-gray-200 px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-6 flex flex-wrap gap-3 border-t border-gray-200 pt-5">
+                <button
+                  onClick={handleCustomFormSaveDraft}
+                  className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 transition"
+                >
+                  Save Draft
+                </button>
+                <button
+                  onClick={handleCustomFormSaveTemplate}
+                  className="rounded-lg border border-[#f6b5bc] bg-[#fff5f5] px-4 py-2 text-sm font-semibold text-[#ed0923] hover:bg-red-50 transition"
+                >
+                  Save as Template
+                </button>
+                <button
+                  onClick={handleCustomFormCreateJob}
+                  className="rounded-lg bg-[#ed0923] px-4 py-2 text-sm font-semibold text-white hover:bg-[#d10820] transition"
+                >
+                  Submit for Approval
+                </button>
+              </div>
+              <div className="mt-4 rounded-lg border border-dashed border-[#ed0923] bg-red-50 px-4 py-3 text-sm text-gray-700">
+                Drag this form into the AI chat if you want help refining the structure or filling it out.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
 
     return (
       <>
@@ -1202,22 +2163,77 @@ export default function UserHome() {
               </div>
             </div>
           </div>
+        ) : tab.type === "template" && currentTemplate && currentTemplate.route === "/forms" ? (
+          renderEmbeddedFormsHub()
+        ) : tab.type === "template" && currentTemplate && currentTemplate.route === "/forms/drafts" ? (
+          renderEmbeddedDraftForms()
+        ) : tab.type === "template" && currentTemplate && currentTemplate.route === "/forms/pre-built-forms" ? (
+          renderEmbeddedPreBuiltForms()
+        ) : tab.type === "template" && currentTemplate && currentTemplate.route === "/forms/new" ? (
+          renderEmbeddedBlankFormChooser()
+        ) : tab.type === "template" && currentTemplate && currentTemplate.route === "/excel-report" ? (
+          <div className="mx-auto max-w-[1600px] px-6 py-8">
+            <ExcelReportForm
+              embedded
+              initialData={"draft" in currentTemplate ? currentTemplate.draft : undefined}
+              aiPrompt={"origin" in currentTemplate && currentTemplate.origin === "draft-form" ? "Resume saved draft form" : "Resume saved form"}
+              onCancel={() => openFormTab({ id: "forms-hub", name: "Forms Hub", category: "Forms Hub", description: "Browse drafts, saved templates, and pre-built job forms.", useCase: "Start or resume a form workflow", route: "/forms" })}
+              onDraftSaved={() => openFormTab({ id: "forms-hub", name: "Forms Hub", category: "Forms Hub", description: "Browse drafts, saved templates, and pre-built job forms.", useCase: "Start or resume a form workflow", route: "/forms" })}
+              onTemplateSaved={() => openFormTab({ id: "saved-templates-hub", name: "Saved Templates", category: "Forms Hub", description: "Browse and reuse saved form templates created by users.", useCase: "Reusable AI-assisted form templates", route: "/forms/saved-templates", origin: "saved-template" })}
+              onJobCreated={(job) => handleSubmittedForApproval(job as unknown as StoredJob, "New Excel Job")}
+            />
+          </div>
+        ) : tab.type === "template" && currentTemplate && currentTemplate.route === "/sql-job" ? (
+          <div className="mx-auto max-w-[1600px] px-6 py-8">
+            <SQLJobForm
+              embedded
+              initialData={"draft" in currentTemplate ? currentTemplate.draft : undefined}
+              aiPrompt={"origin" in currentTemplate && currentTemplate.origin === "draft-form" ? "Resume saved draft form" : "Resume saved form"}
+              onCancel={() => openFormTab({ id: "forms-hub", name: "Forms Hub", category: "Forms Hub", description: "Browse drafts, saved templates, and pre-built job forms.", useCase: "Start or resume a form workflow", route: "/forms" })}
+              onDraftSaved={() => openFormTab({ id: "forms-hub", name: "Forms Hub", category: "Forms Hub", description: "Browse drafts, saved templates, and pre-built job forms.", useCase: "Start or resume a form workflow", route: "/forms" })}
+              onTemplateSaved={() => openFormTab({ id: "saved-templates-hub", name: "Saved Templates", category: "Forms Hub", description: "Browse and reuse saved form templates created by users.", useCase: "Reusable AI-assisted form templates", route: "/forms/saved-templates", origin: "saved-template" })}
+              onJobCreated={(job) => handleSubmittedForApproval(job as unknown as StoredJob, "New SQL Job")}
+            />
+          </div>
+        ) : tab.type === "template" && currentTemplate && currentTemplate.route === "/powerpoint" ? (
+          <div className="mx-auto max-w-[1600px] px-6 py-8">
+            <PowerPointForm
+              embedded
+              initialData={"draft" in currentTemplate ? currentTemplate.draft : undefined}
+              aiPrompt={"origin" in currentTemplate && currentTemplate.origin === "draft-form" ? "Resume saved draft form" : "Resume saved form"}
+              onCancel={() => openFormTab({ id: "forms-hub", name: "Forms Hub", category: "Forms Hub", description: "Browse drafts, saved templates, and pre-built job forms.", useCase: "Start or resume a form workflow", route: "/forms" })}
+              onDraftSaved={() => openFormTab({ id: "forms-hub", name: "Forms Hub", category: "Forms Hub", description: "Browse drafts, saved templates, and pre-built job forms.", useCase: "Start or resume a form workflow", route: "/forms" })}
+              onTemplateSaved={() => openFormTab({ id: "saved-templates-hub", name: "Saved Templates", category: "Forms Hub", description: "Browse and reuse saved form templates created by users.", useCase: "Reusable AI-assisted form templates", route: "/forms/saved-templates", origin: "saved-template" })}
+              onJobCreated={(job) => handleSubmittedForApproval(job as unknown as StoredJob, "New PowerPoint Job")}
+            />
+          </div>
         ) : tab.type === "template" && currentTemplate ? (
-          /* Template Detail View */
+          /* Form Detail View */
           <div className="mx-auto max-w-[1600px] px-6 py-8">
             <div className="space-y-6">
-              {/* Template Header */}
+              {/* Form Header */}
               <div>
                 <h1 className="text-3xl font-bold text-gray-900">{currentTemplate.name}</h1>
                 <div className="flex items-center gap-3 mt-3">
                   <span className="rounded-lg bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700">{currentTemplate.category}</span>
                   <span className="text-sm text-gray-600">{currentTemplate.useCase}</span>
+                  {"origin" in currentTemplate && currentTemplate.origin && (
+                    <span className="rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-[#ed0923]">
+                      {currentTemplate.origin === "draft-form"
+                        ? "Draft"
+                        : currentTemplate.origin === "saved-template"
+                          ? "Saved Template"
+                          : currentTemplate.origin === "blank-form"
+                            ? "Blank Form"
+                          : "Pre-Built Form"}
+                    </span>
+                  )}
                 </div>
               </div>
 
-              {/* Template Description */}
+              {/* Form Description */}
               <div className="rounded-xl border border-gray-200 bg-white p-6">
-                <h2 className="text-lg font-semibold text-gray-900 mb-4">Template Details</h2>
+                <h2 className="text-lg font-semibold text-gray-900 mb-4">Form Details</h2>
                 <div className="space-y-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-900 mb-2">Description</label>
@@ -1236,18 +2252,34 @@ export default function UserHome() {
                     </span>
                   </div>
 
+                  {"progress" in currentTemplate && currentTemplate.progress && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-900 mb-2">Progress</label>
+                      <span className="inline-flex rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-700">
+                        {currentTemplate.progress}
+                      </span>
+                    </div>
+                  )}
+
+                  {"lastEdited" in currentTemplate && currentTemplate.lastEdited && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-900 mb-2">Last Edited</label>
+                      <p className="text-sm text-gray-700">{currentTemplate.lastEdited}</p>
+                    </div>
+                  )}
+
                   <div className="border-t border-gray-200 pt-4 mt-6">
                     <label className="block text-sm font-medium text-gray-900 mb-3">Preview</label>
                     <div className="bg-gray-50 rounded-lg p-6">
                       <div className="space-y-3">
                         <p className="text-sm text-gray-700">
-                          📋 This template provides a structured approach to {currentTemplate.useCase.toLowerCase()}.
+                          📋 This form provides a structured approach to {currentTemplate.useCase.toLowerCase()}.
                         </p>
                         <p className="text-sm text-gray-700">
                           ✓ Ready to customize with your own data and parameters
                         </p>
                         <p className="text-sm text-gray-700">
-                          🚀 Load this template to start creating your {currentTemplate.category.toLowerCase()}
+                          🚀 Load this form to start creating your {currentTemplate.category.toLowerCase()}
                         </p>
                       </div>
                     </div>
@@ -1257,11 +2289,33 @@ export default function UserHome() {
 
               {/* Actions */}
               <div className="flex gap-3">
-                <button className="px-6 py-3 bg-[#ed0923] text-white rounded-lg font-medium hover:bg-[#d10820] transition">
-                  Use This Template
+                <button
+                  onClick={() =>
+                    "route" in currentTemplate &&
+                    openFormTab({
+                      id: currentTemplate.id,
+                      name: currentTemplate.name,
+                      category: currentTemplate.category,
+                      description: currentTemplate.description,
+                      useCase: currentTemplate.useCase,
+                      route: currentTemplate.route,
+                      origin: currentTemplate.origin,
+                      progress: "progress" in currentTemplate ? currentTemplate.progress : undefined,
+                      lastEdited: "lastEdited" in currentTemplate ? currentTemplate.lastEdited : undefined,
+                      draft: "draft" in currentTemplate ? currentTemplate.draft : undefined,
+                    })
+                  }
+                  className="px-6 py-3 bg-[#ed0923] text-white rounded-lg font-medium hover:bg-[#d10820] transition"
+                >
+                  {"origin" in currentTemplate && currentTemplate.origin === "draft-form"
+                    ? "Continue Form"
+                    : "Start This Form"}
                 </button>
-                <button className="px-6 py-3 border border-gray-300 text-gray-900 rounded-lg font-medium hover:bg-gray-50 transition">
-                  Duplicate Template
+                <button
+                  onClick={() => setActivePanelId("templates")}
+                  className="px-6 py-3 border border-gray-300 text-gray-900 rounded-lg font-medium hover:bg-gray-50 transition"
+                >
+                  Back to Forms
                 </button>
               </div>
             </div>
@@ -1583,7 +2637,7 @@ export default function UserHome() {
                 <div className="rounded-lg border border-gray-200 bg-white p-4">
                   <h3 className="text-sm font-semibold text-gray-900 mb-3">📅 Next Runs</h3>
                   <div className="space-y-2">
-                    {mockUpcomingRuns.slice(0, 2).map((run) => (
+                    {dashboardRuns.upcomingRuns.slice(0, 2).map((run) => (
                       <div key={run.id} className="p-2 bg-blue-50 rounded text-left text-xs">
                         <p className="font-medium text-gray-900 truncate">{run.jobName}</p>
                         <p className="text-gray-500 text-[9px]">{formatScheduledTime(run.scheduledTime)}</p>
@@ -1642,14 +2696,14 @@ export default function UserHome() {
       case "jobs":
         const filteredAndSortedJobs = getFilteredAndSortedJobs();
         const jobTypeLists = {
-          PowerPoint: recentJobs.filter(j => j.type === "PowerPoint").length,
-          Excel: recentJobs.filter(j => j.type === "Excel").length,
-          SQL: recentJobs.filter(j => j.type === "SQL").length,
+          PowerPoint: dashboardJobs.filter(j => j.type === "PowerPoint").length,
+          Excel: dashboardJobs.filter(j => j.type === "Excel").length,
+          SQL: dashboardJobs.filter(j => j.type === "SQL").length,
         };
         const jobStatusLists = {
-          Healthy: recentJobs.filter(j => j.status === "Healthy").length,
-          Running: recentJobs.filter(j => j.status === "Running").length,
-          "Needs Attention": recentJobs.filter(j => j.status === "Needs Attention").length,
+          Healthy: dashboardJobs.filter(j => j.status === "Healthy").length,
+          Running: dashboardJobs.filter(j => j.status === "Running").length,
+          "Needs Attention": dashboardJobs.filter(j => j.status === "Needs Attention").length,
         };
         return (
           <div className="p-4 space-y-3 flex flex-col h-full">
@@ -1723,10 +2777,15 @@ export default function UserHome() {
                 {filteredAndSortedJobs.length > 0 ? (
                   filteredAndSortedJobs.map((job) => (
                     <button
-                      key={job.name}
+                      key={job.id}
                       draggable
                       onDragStart={(e) => handleJobDragStart(e, job.name)}
-                      onClick={() => handleOpenTabInPane({ type: "job", name: job.name, id: job.name }, "primary")}
+                      onClick={() =>
+                        handleOpenTabInPane(
+                          { type: "job", name: job.name, id: job.id, payload: job.payload },
+                          "primary"
+                        )
+                      }
                       className={`w-full p-3 rounded-lg transition text-left cursor-move ${
                         activeJobName === job.name
                           ? "bg-[#ed0923]/10 border border-[#ed0923]"
@@ -1846,7 +2905,7 @@ export default function UserHome() {
             <div className="space-y-2">
               <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">Upcoming Runs</h3>
               <div className="space-y-1.5">
-                {mockUpcomingRuns.map((run) => (
+                {dashboardRuns.upcomingRuns.map((run) => (
                   <div key={run.id} className="p-2 rounded-lg bg-gray-50 border border-gray-200 text-left hover:bg-gray-100 transition cursor-pointer">
                     <p className="text-sm font-medium text-gray-900 truncate">{run.jobName}</p>
                     <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
@@ -1867,7 +2926,7 @@ export default function UserHome() {
             <div className="space-y-2">
               <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">Recent Runs</h3>
               <div className="space-y-1.5">
-                {mockRecentRuns.map((run) => (
+                {dashboardRuns.recentRuns.map((run) => (
                   <button
                     key={run.id}
                     onClick={() => handleOpenTabInPane({ type: "job", name: run.jobName, id: run.jobName }, "primary")}
@@ -2046,107 +3105,170 @@ export default function UserHome() {
           </div>
         );
       case "templates": {
-        const filteredAndSortedTemplates = getFilteredAndSortedTemplates();
         return (
-          <div className="p-4 space-y-3 flex flex-col h-full">
-            {/* Search Input */}
+          <div className="p-4 space-y-4 flex flex-col h-full overflow-y-auto">
+            <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+              <h3 className="text-sm font-semibold text-gray-900">Create and reuse forms</h3>
+              <p className="mt-1 text-xs text-gray-600">
+                Start a new form, continue a saved draft, or open a reusable template.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  onClick={() =>
+                    openFormTab({
+                      id: "forms-hub",
+                      name: "Forms Hub",
+                      category: "Forms Hub",
+                      description: "Browse drafts, saved templates, and pre-built job forms.",
+                      useCase: "Start or resume a form workflow",
+                      route: "/forms",
+                    })
+                  }
+                  className="rounded-lg bg-[#ed0923] px-3 py-2 text-xs font-semibold text-white hover:bg-[#d10820] transition"
+                >
+                  Open Forms Hub
+                </button>
+              </div>
+            </div>
+
             <div>
               <input
                 type="text"
-                placeholder="Search templates..."
+                placeholder="Search forms, templates, or types..."
                 value={templateSearch}
                 onChange={(e) => setTemplateSearch(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm placeholder-gray-500 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
               />
             </div>
 
-            {/* Sort Control */}
-            <div className="flex items-center gap-2">
-              <label className="text-xs font-medium text-gray-600">Sort:</label>
-              <select
-                value={templateSort}
-                onChange={(e) => setTemplateSort(e.target.value as any)}
-                className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-xs text-gray-700 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
-              >
-                <option value="name">Name (A–Z)</option>
-                <option value="category">Category</option>
-                <option value="recently-used">Recently Used</option>
-                <option value="recommended">Recommended</option>
-              </select>
-            </div>
-
-            {/* Filter Controls */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-gray-600">Type:</label>
-              <div className="flex flex-wrap gap-1.5">
-                {["all", "PowerPoint", "Excel", "SQL"].map((filterOption) => (
+            <div className="space-y-4">
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <h3 className="text-xs font-bold uppercase tracking-wide text-gray-600">Saved Templates</h3>
                   <button
-                    key={filterOption}
-                    onClick={() => setTemplateFilter(filterOption as any)}
-                    className={`px-2.5 py-1 rounded text-xs font-medium transition ${
-                      templateFilter === filterOption
-                        ? "bg-[#ed0923] text-white"
-                        : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                    }`}
+                    onClick={() =>
+                      openFormTab({
+                        id: "saved-templates-hub",
+                        name: "Saved Templates",
+                        category: "Forms Hub",
+                        description: "Browse and reuse saved form templates created by users.",
+                        useCase: "Reusable AI-assisted form templates",
+                        route: "/forms/saved-templates",
+                        origin: "saved-template",
+                      })
+                    }
+                    className="text-xs font-medium text-[#ed0923] hover:text-[#d10820]"
                   >
-                    {filterOption === "all" ? "All" : filterOption}
+                    View all
                   </button>
-                ))}
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {["Workflow", "Form", "Dashboard"].map((filterOption) => (
-                  <button
-                    key={filterOption}
-                    onClick={() => setTemplateFilter(filterOption as any)}
-                    className={`px-2.5 py-1 rounded text-xs font-medium transition ${
-                      templateFilter === filterOption
-                        ? "bg-[#ed0923] text-white"
-                        : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                    }`}
-                  >
-                    {filterOption}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Templates List */}
-            <div className="flex-1 overflow-y-auto space-y-2">
-              {filteredAndSortedTemplates.length > 0 ? (
-                filteredAndSortedTemplates.map((template) => (
-                  <button
-                    key={template.id}
-                    draggable
-                    onDragStart={(e) => handleTemplateDragStart(e, template.id, template.name)}
-                    onClick={() => handleOpenTabInPane({ type: "template", name: template.name, id: template.id }, "primary")}
-                    className="w-full p-3 rounded-lg transition text-left cursor-move bg-gray-50 hover:bg-gray-100 border border-transparent hover:border-gray-200"
-                  >
-                    <p className="text-sm font-medium text-gray-900">{template.name}</p>
-                    <div className="flex items-center gap-2 mt-2">
-                      <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold bg-blue-100 text-blue-700">
-                        {template.category}
-                      </span>
-                      <span className="text-xs text-gray-500">{template.useCase}</span>
-                    </div>
-                  </button>
-                ))
-              ) : (
-                <div className="text-center py-8">
-                  <p className="text-sm text-gray-500">No templates match your search</p>
                 </div>
-              )}
-            </div>
+                <div className="space-y-2">
+                  {filteredSavedTemplates.length > 0 ? (
+                    filteredSavedTemplates.slice(0, 4).map((template) => (
+                      <button
+                        key={template.id}
+                        onClick={() =>
+                          openFormTab({
+                            id: template.id,
+                            name: template.name,
+                            category: template.type,
+                            description: `${template.type} saved template ready to reuse.`,
+                            useCase: "Resume and reuse a saved form template",
+                            route: template.route,
+                            origin: "saved-template",
+                            progress: template.progress,
+                            lastEdited: template.lastEdited,
+                            draft: template.draft,
+                          })
+                        }
+                        className="w-full rounded-lg border border-gray-200 bg-white p-3 text-left hover:border-[#ed0923] hover:bg-red-50 transition"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-medium text-gray-900">{template.name}</p>
+                            <p className="mt-1 text-xs text-gray-500">{template.type} saved template</p>
+                          </div>
+                          <span className="rounded-full bg-gray-100 px-2 py-1 text-[10px] font-semibold text-gray-700">
+                            {template.progress}
+                          </span>
+                        </div>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="rounded-lg border border-dashed border-gray-300 bg-white p-4 text-xs text-gray-500">
+                      No saved templates match your search.
+                    </div>
+                  )}
+                </div>
+              </div>
 
-            {/* Template Count */}
-            <div className="text-xs text-gray-500 text-center border-t border-gray-200 pt-2">
-              {filteredAndSortedTemplates.length} of {mockTemplates.length} templates
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <h3 className="text-xs font-bold uppercase tracking-wide text-gray-600">Pre-Built Forms</h3>
+                  <button
+                    onClick={() =>
+                      openFormTab({
+                        id: "prebuilt-forms-hub",
+                        name: "Pre-Built Forms",
+                        category: "Forms Hub",
+                        description: "Open one of the standard Toyota job forms.",
+                        useCase: "Start from a standard form",
+                        route: "/forms/pre-built-forms",
+                        origin: "prebuilt-form",
+                      })
+                    }
+                    className="text-xs font-medium text-[#ed0923] hover:text-[#d10820]"
+                  >
+                    View all
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  {filteredPreBuiltForms.length > 0 ? (
+                    filteredPreBuiltForms.map((form) => (
+                      <button
+                        key={form.id}
+                        onClick={() =>
+                          openFormTab({
+                            id: form.id,
+                            name: form.name,
+                            category: form.category,
+                            description: form.description,
+                            useCase: form.useCase,
+                            route: form.route,
+                            origin: "prebuilt-form",
+                          })
+                        }
+                        className="w-full rounded-lg border border-gray-200 bg-gray-50 p-3 text-left hover:border-[#ed0923] hover:bg-red-50 transition"
+                      >
+                        <p className="text-sm font-medium text-gray-900">{form.name}</p>
+                        <div className="mt-2 flex items-center gap-2">
+                          <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold bg-blue-100 text-blue-700">
+                            {form.category}
+                          </span>
+                          <span className="text-xs text-gray-500">{form.description}</span>
+                        </div>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="rounded-lg border border-dashed border-gray-300 bg-white p-4 text-xs text-gray-500">
+                      No pre-built forms match your search.
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         );
       }
       case "promotions-edits": {
+        const allPendingPromotions = [...submittedPromotions, ...pendingPromotionsState];
         return (
           <div className="p-4 space-y-3 flex flex-col h-full overflow-y-auto">
+            {promotionSubmissionMessage && (
+              <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">
+                {promotionSubmissionMessage}
+              </div>
+            )}
             {/* Ready for Promotion */}
             <div className="space-y-2">
               <div className="flex items-center justify-between sticky top-0 bg-white/95 z-10 py-1">
@@ -2193,15 +3315,22 @@ export default function UserHome() {
             </div>
 
             {/* Pending Promotions */}
-            {pendingPromotionsState.length > 0 && (
+            {allPendingPromotions.length > 0 && (
               <div className="space-y-2 border-t border-gray-200 pt-3">
                 <div className="flex items-center justify-between sticky top-12 bg-white/95 z-10 py-1">
                   <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">Pending Promotions</h3>
-                  <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded font-medium">{pendingPromotionsState.length}</span>
+                  <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded font-medium">{allPendingPromotions.length}</span>
                 </div>
                 <div className="space-y-1.5">
-                  {pendingPromotionsState.map((item) => (
-                    <div key={item.id} className="p-2 rounded-lg bg-gray-50 border border-gray-200">
+                  {allPendingPromotions.map((item) => (
+                    <div
+                      key={item.id}
+                      className={`p-2 rounded-lg border transition ${
+                        highlightedPendingPromotionId === item.id
+                          ? "bg-yellow-50 border-yellow-300 shadow-sm"
+                          : "bg-gray-50 border-gray-200"
+                      }`}
+                    >
                       <p className="text-sm font-medium text-gray-900 truncate">{item.name}</p>
                       <div className="flex items-center gap-1 mt-0.5">
                         <span className={`text-xs font-medium ${getPromotionTypeColor(item.type)}`}>{item.type}</span>
@@ -2209,6 +3338,9 @@ export default function UserHome() {
                         <span className="text-xs text-gray-400">→</span>
                         <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded">{item.targetEnvironment}</span>
                       </div>
+                      {highlightedPendingPromotionId === item.id && (
+                        <div className="mt-2 text-xs font-semibold text-yellow-800">Newly submitted</div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -2282,12 +3414,12 @@ export default function UserHome() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
+    <div className="h-screen bg-gray-50 flex flex-col overflow-hidden">
       <UserNavigation
         activePage={activeTab?.type === "job" ? "Jobs" : "Dashboard"}
         onProfileClick={() => setIsProfileOpen(true)}
       />
-      <div className="flex-1 flex">
+      <div className="flex-1 flex min-h-0">
         {/* Left Icon Rail */}
         <div className="w-16 flex-shrink-0 bg-white border-r border-gray-200 flex flex-col items-center py-4 gap-2">
           {panels.map((panel) => (

@@ -1,7 +1,7 @@
 export interface PromotionResource {
   id: string;
   name: string;
-  type: "AI Agent" | "SQL Query" | "dbt Model" | "API Connection";
+  type: "AI Agent" | "SQL Query" | "dbt Model" | "API Connection" | "Excel Report" | "PowerPoint Deck" | "Custom Job";
   status: "approved" | "pending_promotion" | "rejected" | "promoted";
   currentEnvironment: string;
   targetEnvironment?: string;
@@ -127,6 +127,12 @@ export function getPromotionTypeColor(type: string) {
       return "text-orange-600";
     case "API Connection":
       return "text-blue-600";
+    case "Excel Report":
+      return "text-emerald-600";
+    case "PowerPoint Deck":
+      return "text-red-600";
+    case "Custom Job":
+      return "text-indigo-600";
     default:
       return "text-gray-600";
   }

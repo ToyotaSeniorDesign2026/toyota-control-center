@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { CheckCircle } from "lucide-react";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
@@ -6,14 +6,23 @@ import { JobDetailModal } from "../components/JobDetailModal";
 import {
   formatJobDate,
   getJobTypeColor,
-  mockMyJobs,
+  getJobStatusColor,
   type Job,
 } from "./jobsData";
+import { getMyJobs, subscribeToUserDashboardStore } from "../lib/userDashboardStore";
 
 export default function MyJobs() {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
+  const [jobs, setJobs] = useState<Job[]>(() => getMyJobs());
+
+  useEffect(() => {
+    setJobs(getMyJobs());
+    return subscribeToUserDashboardStore(() => {
+      setJobs(getMyJobs());
+    });
+  }, []);
 
   const handleJobClick = (job: Job) => {
     setSelectedJob(job);
@@ -47,10 +56,10 @@ export default function MyJobs() {
                 <CheckCircle className="h-5 w-5 text-green-600" />
                 <h3 className="font-semibold text-gray-900">My Jobs</h3>
               </div>
-              <p className="mt-1 text-xs text-gray-600">{mockMyJobs.length} total jobs</p>
+              <p className="mt-1 text-xs text-gray-600">{jobs.length} total jobs</p>
             </div>
             <div className="divide-y divide-gray-200">
-              {mockMyJobs.map((job) => (
+              {jobs.map((job) => (
                 <div
                   key={job.id}
                   className="cursor-pointer p-4 transition-colors hover:bg-gray-50"
@@ -63,6 +72,9 @@ export default function MyJobs() {
                         {job.type}
                       </div>
                     </div>
+                    <span className={`rounded-full border px-2 py-1 text-[11px] font-semibold ${getJobStatusColor(job.status)}`}>
+                      {job.status}
+                    </span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-xs text-gray-500">{formatJobDate(job.createdAt)}</span>
