@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.deps import get_db, require_any_user, require_domain_admin
 from app.schemas.integrations import (
@@ -38,7 +38,10 @@ def list_mcp_servers(user=Depends(require_any_user)):
     from app.services.execution_service import ensure_control_center_importable
 
     ensure_control_center_importable()
-    from control_center.core.registry import RegistryManager
+    try:
+        from control_center.core.registry import RegistryManager
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to load MCP registry: {exc}") from exc
 
     manager = RegistryManager()
     items = [
