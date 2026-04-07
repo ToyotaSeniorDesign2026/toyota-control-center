@@ -6,6 +6,8 @@ import { ImageWithFallback } from "../components/figma/ImageWithFallback";
 import { useUser } from "../contexts/UserContext";
 import logoImg from "figma:asset/78cbd1f20e12e98c3e07fe4c9b0e4faacfef3d82.png";
 
+const AUTH_TOKEN_KEY = "control-center-auth-token";
+
 export function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -51,6 +53,7 @@ export function LoginPage() {
       setIsLoading(false);
       // Set the user role in context
       setUserRole(userRole);
+      window.localStorage.setItem(AUTH_TOKEN_KEY, userRole === "user" ? "u_analyst" : "u_root");
       // Navigate to appropriate dashboard based on role
       if (userRole === "user") {
         navigate("/user-home");

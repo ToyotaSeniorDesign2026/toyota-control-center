@@ -5,9 +5,8 @@ import unittest
 from unittest.mock import patch
 
 from app.schemas.run import MCPExecutionConfig, MCPJobConfig, RunCreate
-from app.services.connector_service import dispatch_execution, get_executor
+from app.services.connector_service import dispatch_execution
 from app.services.execution_service import build_execution_request, build_job_spec, resolve_effective_mcp_config
-from app.services.executors.sql_executor import SQLJobExecutor
 
 
 class MCPJobServiceTests(unittest.TestCase):
@@ -86,7 +85,7 @@ class MCPJobServiceTests(unittest.TestCase):
         self.assertEqual(execution_request.mcp_config.tool_name, "search_papers")
         self.assertEqual(execution_request.job_spec["metadata"]["resource_id"], "res_123")
 
-    def test_get_executor_returns_mcp_executor_for_mcp_requests(self) -> None:
+    def test_every_execution_request_routes_through_mcp(self) -> None:
         execution_request = build_execution_request(
             run_id="run_1",
             resource=SimpleNamespace(
@@ -106,33 +105,40 @@ class MCPJobServiceTests(unittest.TestCase):
             trigger_source="api",
         )
 
-        executor = get_executor(execution_request)
+        self.assertEqual(execution_request.execution_backend, "mcp")
 
-        self.assertEqual(executor.backend_name, "mcp")
-
-    def test_get_executor_returns_sql_executor_for_sql_resources(self) -> None:
+    def test_sql_resource_can_route_through_sql_mcp_server(self) -> None:
         execution_request = build_execution_request(
-            run_id="run_sql",
+            run_id="run_sql_mcp",
             resource=SimpleNamespace(
-                id="res_sql",
-                name="sql-job",
+                id="res_sql_mcp",
+                name="sql-mcp-job",
                 type="sql",
-                connector="internal",
+                connector="sql-dab",
                 data_sensitivity="low",
                 kind="runtime",
                 environment="dev",
-                config={"query": "select 1 as value"},
+                config={"connection_id": "sql-dab"},
                 tags=[],
                 owner_id="u_analyst",
                 owner_domain="collections",
             ),
-            payload=RunCreate(resource_id="res_sql", target_environment="dev"),
+            payload=RunCreate(
+                resource_id="res_sql_mcp",
+                target_environment="dev",
+                params={"prompt": "Show me the latest open orders."},
+                mcp_config=MCPExecutionConfig(
+                    server_names=["sql-dab"],
+                    prompt="Show me the latest open orders.",
+                    allow_auto_selection=True,
+                ),
+            ),
             trigger_source="api",
         )
 
-        executor = get_executor(execution_request)
-
-        self.assertIsInstance(executor, SQLJobExecutor)
+        self.assertEqual(execution_request.execution_backend, "mcp")
+        self.assertEqual(execution_request.execution_mode, "agent")
+        self.assertEqual(execution_request.mcp_config.server_names, ["sql-dab"])
 
     def test_dispatch_execution_uses_registered_executor(self) -> None:
         execution_request = build_execution_request(
@@ -154,8 +160,8 @@ class MCPJobServiceTests(unittest.TestCase):
             trigger_source="api",
         )
 
-        with patch("app.services.connector_service.get_executor") as get_exec:
-            get_exec.return_value.execute.return_value = {
+        with patch("app.services.connector_service._EXECUTOR.execute") as execute:
+            execute.return_value = {
                 "connector_run_id": "mcp_1",
                 "status": "succeeded",
                 "duration_ms": 5,
@@ -165,8 +171,7 @@ class MCPJobServiceTests(unittest.TestCase):
 
             result = dispatch_execution(execution_request)
 
-        get_exec.assert_called_once_with(execution_request)
-        get_exec.return_value.execute.assert_called_once_with(execution_request)
+        execute.assert_called_once_with(execution_request)
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(result["metadata"], {"ok": True})
 

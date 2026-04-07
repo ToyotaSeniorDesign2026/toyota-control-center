@@ -1,5 +1,7 @@
 import { createContext, useContext, useState, ReactNode } from "react";
 
+const USER_ROLE_KEY = "control-center-user-role";
+
 interface UserProfile {
   firstName: string;
   lastName: string;
@@ -47,13 +49,25 @@ const defaultProfile: UserProfile = {
 const UserContext = createContext<UserContextType | undefined>(undefined);
 
 export function UserProvider({ children }: { children: ReactNode }) {
-  const [profile, setProfile] = useState<UserProfile>(defaultProfile);
+  const [profile, setProfile] = useState<UserProfile>(() => {
+    if (typeof window === "undefined") {
+      return defaultProfile;
+    }
+
+    const savedRole = window.localStorage.getItem(USER_ROLE_KEY);
+    return savedRole === "user" || savedRole === "admin"
+      ? { ...defaultProfile, role: savedRole }
+      : defaultProfile;
+  });
 
   const updateProfile = (updates: Partial<UserProfile>) => {
     setProfile((prev) => ({ ...prev, ...updates }));
   };
 
   const setUserRole = (role: "admin" | "user") => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(USER_ROLE_KEY, role);
+    }
     setProfile((prev) => ({ ...prev, role }));
   };
 

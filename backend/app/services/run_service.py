@@ -49,10 +49,17 @@ def _run_kind(db: Session, run: Run) -> str:
     return resource.kind if resource and resource.kind else "runtime"
 
 
-def _successful_completion_status(kind: str, execution_backend: str | None, resource_type: str | None) -> str:
+def _successful_completion_status(
+    kind: str,
+    execution_backend: str | None,
+    resource_type: str | None,
+    execution_status: str | None = None,
+) -> str:
     if kind != "runtime":
         return "deployed"
-    if execution_backend == "mcp" or (resource_type or "").lower() == "sql":
+    if execution_status == "succeeded":
+        return "succeeded"
+    if execution_backend == "mcp":
         return "succeeded"
     return "running"
 
@@ -221,14 +228,36 @@ def create_run_and_maybe_execute(db: Session, user, payload: RunCreate):
         },
     )
 
-    result = dispatch_execution(execution_request)
+    try:
+        result = dispatch_execution(execution_request)
+    except Exception as exc:
+        _transition_run_or_409(db, run, "failed")
+        run.error = str(exc)
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        sync_run_execution_status(db, run)
+        append_run_log(
+            db,
+            run_id,
+            "ERROR",
+            "Execution failed before connector completion",
+            {"error": str(exc)},
+        )
+        write_audit(db, user, "RUN_EXECUTED", {"run_id": run_id, "status": run.status})
+        return _run_to_out(run)
     run.connector_run_id = result["connector_run_id"]
 
     if result["error"]:
         _transition_run_or_409(db, run, "failed")
         run.error = result["error"]
     else:
-        next_status = _successful_completion_status(kind, run.execution_backend, resource.type)
+        next_status = _successful_completion_status(
+            kind,
+            run.execution_backend,
+            resource.type,
+            result.get("status"),
+        )
         _transition_run_or_409(db, run, next_status)
         run.error = None
     db.add(run)

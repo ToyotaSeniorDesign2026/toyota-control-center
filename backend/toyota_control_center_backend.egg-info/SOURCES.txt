@@ -45,6 +45,7 @@ app/services/execution_service.py
 app/services/field_extraction_service.py
 app/services/github_actions_service.py
 app/services/log_service.py
+app/services/openai_chat_service.py
 app/services/policy_service.py
 app/services/resource_service.py
 app/services/resource_type_service.py
