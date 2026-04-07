@@ -1,5 +1,7 @@
 import React, { useEffect, useState, ChangeEvent, FormEvent } from 'react';
 import { useNavigate } from "react-router";
+import { createJobFromForm, saveDraft, saveTemplate } from "../../lib/userDashboardStore";
+import { StructuredScheduleFields } from "./StructuredScheduleFields";
 import { 
   Calendar, 
   Upload, 
@@ -18,6 +20,11 @@ interface FormData {
   scheduleType: 'daily' | 'weekly' | 'monthly' | 'on-demand';
   scheduleDay: string;
   scheduleTime: string;
+  weeklyDays: string[];
+  startDate: string;
+  stopCondition: 'never' | 'on-date' | 'after-runs';
+  endDate: string;
+  maxRuns: string;
   sourceFile: File | null;
   outputFormat: 'xlsx' | 'csv' | 'pdf';
   emailRecipients: string;
@@ -32,9 +39,22 @@ interface FormErrors {
 interface ExcelReportFormProps {
   initialData?: Record<string, unknown>;
   aiPrompt?: string;
+  embedded?: boolean;
+  onCancel?: () => void;
+  onDraftSaved?: () => void;
+  onTemplateSaved?: () => void;
+  onJobCreated?: (job: Record<string, unknown>) => void;
 }
 
-const ExcelReportForm: React.FC<ExcelReportFormProps> = ({ initialData, aiPrompt }) => {
+const ExcelReportForm: React.FC<ExcelReportFormProps> = ({
+  initialData,
+  aiPrompt,
+  embedded = false,
+  onCancel,
+  onDraftSaved,
+  onTemplateSaved,
+  onJobCreated,
+}) => {
   const navigate = useNavigate();
   const [formData, setFormData] = useState<FormData>({
     jobName: '',
@@ -43,6 +63,11 @@ const ExcelReportForm: React.FC<ExcelReportFormProps> = ({ initialData, aiPrompt
     scheduleType: 'monthly',
     scheduleDay: '1',
     scheduleTime: '09:00',
+    weeklyDays: ['1'],
+    startDate: new Date().toISOString().slice(0, 10),
+    stopCondition: 'never',
+    endDate: '',
+    maxRuns: '12',
     sourceFile: null,
     outputFormat: 'xlsx',
     emailRecipients: '',
@@ -52,6 +77,7 @@ const ExcelReportForm: React.FC<ExcelReportFormProps> = ({ initialData, aiPrompt
 
   const [errors, setErrors] = useState<FormErrors>({});
   const [showSuccess, setShowSuccess] = useState(false);
+  const [successMessage, setSuccessMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showAIPrefill, setShowAIPrefill] = useState(false);
 
@@ -89,6 +115,21 @@ const ExcelReportForm: React.FC<ExcelReportFormProps> = ({ initialData, aiPrompt
     }
   };
 
+  const handleWeeklyDayToggle = (dayValue: string) => {
+    setFormData((prev) => {
+      const alreadySelected = prev.weeklyDays.includes(dayValue);
+      const nextDays = alreadySelected
+        ? prev.weeklyDays.filter((day) => day !== dayValue)
+        : [...prev.weeklyDays, dayValue].sort();
+
+      return {
+        ...prev,
+        weeklyDays: nextDays.length > 0 ? nextDays : [dayValue],
+        scheduleDay: (nextDays.length > 0 ? nextDays : [dayValue])[0],
+      };
+    });
+  };
+
   const validateForm = (): boolean => {
     const newErrors: FormErrors = {};
 
@@ -106,6 +147,12 @@ const ExcelReportForm: React.FC<ExcelReportFormProps> = ({ initialData, aiPrompt
     if (formData.scheduleType !== 'on-demand' && !formData.scheduleTime) {
       newErrors.scheduleTime = 'Schedule time is required';
     }
+    if (formData.stopCondition === 'on-date' && !formData.endDate) {
+      newErrors.endDate = 'End date is required';
+    }
+    if (formData.stopCondition === 'after-runs' && !formData.maxRuns.trim()) {
+      newErrors.maxRuns = 'Maximum runs is required';
+    }
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -120,33 +167,41 @@ const ExcelReportForm: React.FC<ExcelReportFormProps> = ({ initialData, aiPrompt
 
     setIsSubmitting(true);
     
-    // Simulate API call
     setTimeout(() => {
+      const createdJob = createJobFromForm("Excel", formData as unknown as Record<string, unknown>);
       setIsSubmitting(false);
+      setSuccessMessage("Job submitted for approval. Opening Pending Promotions...");
       setShowSuccess(true);
-      
-      // Reset form after success
       setTimeout(() => {
-        setShowSuccess(false);
-        setFormData({
-          jobName: '',
-          description: '',
-          owner: '',
-          scheduleType: 'monthly',
-          scheduleDay: '1',
-          scheduleTime: '09:00',
-          sourceFile: null,
-          outputFormat: 'xlsx',
-          emailRecipients: '',
-          includeCharts: true,
-          dataSensitivity: 'internal'
-        });
-      }, 3000);
+        if (embedded) {
+          onJobCreated?.(createdJob as unknown as Record<string, unknown>);
+        } else {
+          navigate("/promotions");
+        }
+      }, 900);
     }, 1500);
   };
 
+  const handleSaveDraft = () => {
+    saveDraft("Excel", formData as unknown as Record<string, unknown>);
+    if (embedded) {
+      onDraftSaved?.();
+    } else {
+      navigate("/forms");
+    }
+  };
+
+  const handleSaveTemplate = () => {
+    saveTemplate("Excel", formData as unknown as Record<string, unknown>);
+    if (embedded) {
+      onTemplateSaved?.();
+    } else {
+      navigate("/forms/saved-templates");
+    }
+  };
+
   return (
-    <div style={styles.container}>
+    <div style={{ ...styles.container, minHeight: embedded ? 'auto' : '100vh', padding: embedded ? '0' : '40px 20px', backgroundColor: embedded ? 'transparent' : '#F5F5F5' }}>
       <div style={styles.formWrapper}>
         {/* Header */}
         <div style={styles.header}>
@@ -163,7 +218,16 @@ const ExcelReportForm: React.FC<ExcelReportFormProps> = ({ initialData, aiPrompt
         {showSuccess && (
           <div style={styles.successBanner}>
             <CheckCircle size={20} color="#10B981" />
-            <span>Job created successfully! Redirecting to dashboard...</span>
+            <span>{successMessage}</span>
+          </div>
+        )}
+
+        {showAIPrefill && (
+          <div style={styles.infoBox}>
+            <Info size={16} color="#EB0A1E" />
+            <span>
+              AI prefilled this form{aiPrompt ? ` from prompt: "${aiPrompt}"` : ""}. Review and adjust before submit.
+            </span>
           </div>
         )}
 
@@ -244,70 +308,25 @@ const ExcelReportForm: React.FC<ExcelReportFormProps> = ({ initialData, aiPrompt
             </div>
           </div>
 
-          {/* Schedule Section */}
-          <div style={styles.section}>
-            <h2 style={styles.sectionTitle}>
-              <Clock size={20} color="#EB0A1E" style={{ marginRight: '8px' }} />
-              Schedule
-            </h2>
-
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Run Frequency</label>
-              <select
-                name="scheduleType"
-                value={formData.scheduleType}
-                onChange={handleInputChange}
-                style={styles.select}
-              >
-                <option value="daily">Daily</option>
-                <option value="weekly">Weekly</option>
-                <option value="monthly">Monthly</option>
-                <option value="on-demand">On-Demand Only</option>
-              </select>
-            </div>
-
-            {formData.scheduleType !== 'on-demand' && (
-              <div style={styles.formRow}>
-                {formData.scheduleType === 'monthly' && (
-                  <div style={styles.formGroup}>
-                    <label style={styles.label}>Day of Month</label>
-                    <select
-                      name="scheduleDay"
-                      value={formData.scheduleDay}
-                      onChange={handleInputChange}
-                      style={styles.select}
-                    >
-                      {Array.from({ length: 28 }, (_, i) => i + 1).map(day => (
-                        <option key={day} value={day}>{day}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-
-                <div style={styles.formGroup}>
-                  <label style={styles.label}>Time</label>
-                  <input
-                    type="time"
-                    name="scheduleTime"
-                    value={formData.scheduleTime}
-                    onChange={handleInputChange}
-                    style={styles.input}
-                  />
-                </div>
-              </div>
-            )}
-
-            <div style={styles.infoBox}>
-              <Info size={16} color="#EB0A1E" />
-              <span>
-                {formData.scheduleType === 'monthly' 
-                  ? `This job will run on the ${formData.scheduleDay}${getOrdinalSuffix(parseInt(formData.scheduleDay))} of every month at ${formData.scheduleTime}`
-                  : formData.scheduleType === 'on-demand'
-                  ? 'This job will only run when manually triggered'
-                  : `This job will run ${formData.scheduleType} at ${formData.scheduleTime}`}
-              </span>
-            </div>
-          </div>
+          <StructuredScheduleFields
+            scheduleType={formData.scheduleType}
+            scheduleDay={formData.scheduleDay}
+            scheduleTime={formData.scheduleTime}
+            weeklyDays={formData.weeklyDays}
+            startDate={formData.startDate}
+            stopCondition={formData.stopCondition}
+            endDate={formData.endDate}
+            maxRuns={formData.maxRuns}
+            summaryPrefix="This job"
+            scheduleTimeError={errors.scheduleTime}
+            onFieldChange={(field, value) =>
+              setFormData((prev) => ({
+                ...prev,
+                [field]: value,
+              }))
+            }
+            onWeeklyDayToggle={handleWeeklyDayToggle}
+          />
 
           {/* File Configuration Section */}
           <div style={styles.section}>
@@ -419,10 +438,24 @@ const ExcelReportForm: React.FC<ExcelReportFormProps> = ({ initialData, aiPrompt
           <div style={styles.buttonGroup}>
             <button
               type="button"
-              onClick={() => navigate("/user-home")}
+              onClick={() => (embedded ? onCancel?.() : navigate("/user-home"))}
               style={styles.cancelButton}
             >
               Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveDraft}
+              style={styles.secondaryButton}
+            >
+              Save Draft
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveTemplate}
+              style={styles.secondaryButton}
+            >
+              Save as Template
             </button>
             <button
               type="submit"
@@ -432,7 +465,7 @@ const ExcelReportForm: React.FC<ExcelReportFormProps> = ({ initialData, aiPrompt
                 ...(isSubmitting ? styles.submitButtonDisabled : {})
               }}
             >
-              {isSubmitting ? 'Creating Job...' : 'Create Job'}
+              {isSubmitting ? 'Submitting...' : 'Submit for Approval'}
             </button>
           </div>
         </form>
@@ -642,6 +675,7 @@ const styles: { [key: string]: React.CSSProperties } = {
   },
   buttonGroup: {
     display: 'flex',
+    flexWrap: 'wrap',
     justifyContent: 'flex-end',
     gap: '12px',
     marginTop: '32px',
@@ -655,6 +689,17 @@ const styles: { [key: string]: React.CSSProperties } = {
     color: '#666666',
     backgroundColor: '#FFFFFF',
     border: '2px solid #DDDDDD',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+  },
+  secondaryButton: {
+    padding: '12px 24px',
+    fontSize: '14px',
+    fontWeight: '600',
+    color: '#EB0A1E',
+    backgroundColor: '#FFF5F5',
+    border: '1px solid #F6B5BC',
     borderRadius: '4px',
     cursor: 'pointer',
     transition: 'all 0.2s',

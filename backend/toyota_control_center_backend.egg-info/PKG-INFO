@@ -16,3 +16,4 @@ Requires-Dist: google-genai>=1.65.0
 Requires-Dist: instructor>=1.7.0
 Requires-Dist: python-dotenv>=1.2.2
 Requires-Dist: arxiv>=2.4.0
+Requires-Dist: openai>=1.0.0

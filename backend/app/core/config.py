@@ -2,6 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+
+# Load backend/.env for local development before reading settings.
+if load_dotenv is not None:
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 from dotenv import load_dotenv
 
@@ -45,6 +56,10 @@ class Settings:
     db_max_overflow: int = _as_int(os.getenv("DB_MAX_OVERFLOW"), default=20)
     db_pool_recycle: int = _as_int(os.getenv("DB_POOL_RECYCLE"), default=1800)
     db_pool_pre_ping: bool = _as_bool(os.getenv("DB_POOL_PRE_PING"), default=True)
+
+    # OpenAI Configuration
+    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
+    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o")
 
 
 settings = Settings()

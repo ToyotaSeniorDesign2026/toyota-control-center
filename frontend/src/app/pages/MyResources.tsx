@@ -1,24 +1,28 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { CheckCircle } from "lucide-react";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
 import { JobDetailModal } from "../components/JobDetailModal";
-import { useJobRuns } from "../contexts/JobRunContext";
-import { buildUserJobs } from "../lib/jobRunViewModels";
 import {
   formatJobDate,
   getJobTypeColor,
-  mockMyJobs,
+  getJobStatusColor,
   type Job,
 } from "./jobsData";
+import { getMyJobs, subscribeToUserDashboardStore } from "../lib/userDashboardStore";
 
 export default function MyJobs() {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
-  const { resources, runs } = useJobRuns();
-  const liveJobs = buildUserJobs(resources, runs);
-  const jobs = liveJobs.length > 0 ? liveJobs : mockMyJobs;
+  const [jobs, setJobs] = useState<Job[]>(() => getMyJobs());
+
+  useEffect(() => {
+    setJobs(getMyJobs());
+    return subscribeToUserDashboardStore(() => {
+      setJobs(getMyJobs());
+    });
+  }, []);
 
   const handleJobClick = (job: Job) => {
     setSelectedJob(job);
@@ -68,6 +72,9 @@ export default function MyJobs() {
                         {job.type}
                       </div>
                     </div>
+                    <span className={`rounded-full border px-2 py-1 text-[11px] font-semibold ${getJobStatusColor(job.status)}`}>
+                      {job.status}
+                    </span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-xs text-gray-500">{formatJobDate(job.createdAt)}</span>

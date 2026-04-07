@@ -3,6 +3,25 @@ import { useNavigate } from "react-router";
 import { Button } from "../components/ui/button";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
+import { getLatestDraftForm, getSavedTemplates } from "../lib/userDashboardStore";
+
+function buildEmail(prompt: string): string {
+  if (prompt.toLowerCase().includes("finance")) return "finance.team@toyota.com";
+  if (prompt.toLowerCase().includes("sales")) return "sales.ops@toyota.com";
+  if (prompt.toLowerCase().includes("exec")) return "executive.team@toyota.com";
+  return "analyst@toyota.com";
+}
+
+function buildName(prefix: string, prompt: string): string {
+  const words = prompt
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 4)
+    .join("_");
+  return words ? `${prefix}_${words}` : `${prefix}_automation`;
+}
 
 function buildEmail(prompt: string): string {
   if (prompt.toLowerCase().includes("finance")) return "finance.team@toyota.com";
@@ -27,24 +46,7 @@ export default function Forms() {
   const [aiPrompt, setAiPrompt] = useState("");
   const [isAutofillChooserOpen, setIsAutofillChooserOpen] = useState(false);
   const navigate = useNavigate();
-  const draftForm = {
-    jobName: "dealer_scorecard_q2",
-    route: "/sql-job",
-    progress: "60%",
-    aiDraft: {
-      jobName: "dealer_scorecard_q2",
-      description: "Quarterly dealer scorecard with regional KPI rollups.",
-      owner: "dealer.analytics@toyota.com",
-      reportTemplate: "dealer_performance",
-      dateRange: "90",
-      regionFilter: "all",
-      departmentFilter: "all",
-      minAmount: "5000",
-      outputDestination: "email",
-      emailRecipients: "dealer.analytics@toyota.com",
-      dataSensitivity: "internal",
-    },
-  };
+  const draftForm = getLatestDraftForm();
 
   const openExcelWithAI = () => {
     const draft = {
@@ -110,42 +112,11 @@ export default function Forms() {
     navigate("/powerpoint", { state: { aiPrompt, aiDraft: draft } });
   };
 
-  const savedTemplateOptions = [
-    {
-      label: "Saved Template: q2_dealer_scorecard",
-      route: "/sql-job",
-      draft: {
-        jobName: "q2_dealer_scorecard",
-        description: "Quarterly dealer scorecard and KPI ranking output.",
-        owner: "dealer.analytics@toyota.com",
-        reportTemplate: "dealer_performance",
-        dateRange: "90",
-        regionFilter: "all",
-        departmentFilter: "all",
-        minAmount: "5000",
-        outputDestination: "email",
-        emailRecipients: "dealer.analytics@toyota.com",
-        dataSensitivity: "internal",
-      },
-    },
-    {
-      label: "Saved Template: monthly_exec_finance_deck",
-      route: "/powerpoint",
-      draft: {
-        jobName: "monthly_exec_finance_deck",
-        description: "Executive finance summary with revenue and margin charts.",
-        owner: "finance.ops@toyota.com",
-        presentationType: "executive_dashboard",
-        dataSource: "financial_database",
-        includeTables: true,
-        includeCharts: true,
-        includeImages: false,
-        outputFormat: "pptx",
-        emailRecipients: "finance.ops@toyota.com",
-        dataSensitivity: "internal",
-      },
-    },
-  ];
+  const savedTemplateOptions = getSavedTemplates().map((template) => ({
+    label: `Saved Template: ${template.name}`,
+    route: template.route,
+    draft: template.draft,
+  }));
 
   const openSavedTemplate = (route: string, draft: Record<string, unknown>) => {
     navigate(route, { state: { aiPrompt, aiDraft: draft } });
@@ -171,22 +142,26 @@ export default function Forms() {
             <div className="flex flex-col gap-4 p-6 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-xl font-semibold text-gray-900">
-                  Continue editing {draftForm.jobName} form
+                  Continue editing {draftForm?.jobName ?? "your latest"} form
                 </h2>
                 <p className="mt-1 text-sm text-gray-600">
-                  This form is half-filled and saved at {draftForm.progress} completion.
+                  {draftForm
+                    ? `This form is saved at ${draftForm.progress} completion and ready to finish.`
+                    : "Your newest in-progress form will appear here once you save a draft."}
                 </p>
               </div>
               <Button
                 onClick={() =>
+                  draftForm &&
                   navigate(draftForm.route, {
                     state: {
                       aiPrompt: "Resume saved draft form",
-                      aiDraft: draftForm.aiDraft,
+                      aiDraft: draftForm.draft,
                     },
                   })
                 }
-                className="gap-2 bg-[#ed0923] text-white hover:bg-[#d10820]"
+                disabled={!draftForm}
+                className="gap-2 bg-[#ed0923] text-white hover:bg-[#d10820] disabled:cursor-not-allowed disabled:bg-gray-300"
               >
                 Continue Editing
               </Button>
