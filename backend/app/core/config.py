@@ -2,6 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+
+# Load backend/.env for local development before reading settings.
+if load_dotenv is not None:
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 
 def _as_bool(raw: str | None, default: bool = False) -> bool:

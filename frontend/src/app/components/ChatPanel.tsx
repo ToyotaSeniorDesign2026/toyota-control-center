@@ -1,6 +1,12 @@
 import { MessageSquare, X, Send, Clock, Plus, XCircle, Loader } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 
+const MODEL_OPTIONS = [
+  { label: "GPT-4.1", value: "gpt-4.1" },
+  { label: "GPT-4o", value: "gpt-4o" },
+  { label: "GPT-4o mini", value: "gpt-4o-mini" },
+] as const;
+
 interface AssistantActivityStep {
   id: string;
   label: string;
@@ -154,7 +160,7 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
   const [inputValue, setInputValue] = useState("");
   const [showHistory, setShowHistory] = useState(false);
   const [chatHistory, setChatHistory] = useState<ChatThread[]>(mockChatHistory);
-  const [selectedModel, setSelectedModel] = useState("GPT-4o");
+  const [selectedModel, setSelectedModel] = useState<(typeof MODEL_OPTIONS)[number]["value"]>("gpt-4o");
   const [isDragOverInput, setIsDragOverInput] = useState(false);
   const [attachedItems, setAttachedItems] = useState<AttachedItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -327,7 +333,7 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
         body: JSON.stringify({
           message: inputValue.trim() || "Please help with the attached item",
           conversation_history: conversationHistory,
-          model: selectedModel === "GPT-4o" ? "gpt-4o" : "gpt-4",
+          model: selectedModel,
           current_draft_data: currentDraftData,
         }),
       });
@@ -754,13 +760,14 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
           <label className="text-xs text-gray-700 font-medium">Model:</label>
           <select
             value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
+            onChange={(e) => setSelectedModel(e.target.value as (typeof MODEL_OPTIONS)[number]["value"])}
             className="flex-1 text-xs border border-gray-300 rounded-md px-3 py-2 text-gray-700 bg-white focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923] transition"
           >
-            <option value="GPT-4.1">GPT-4.1</option>
-            <option value="GPT-4o">GPT-4o</option>
-            <option value="Claude-3.7">Claude 3.7</option>
-            <option value="Gemini-2.0">Gemini 2.0</option>
+            {MODEL_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
           </select>
         </div>
       </div>

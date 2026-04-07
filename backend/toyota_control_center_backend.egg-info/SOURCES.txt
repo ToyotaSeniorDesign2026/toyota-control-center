@@ -42,6 +42,7 @@ app/services/audit_service.py
 app/services/chat_service.py
 app/services/connector_service.py
 app/services/execution_service.py
+app/services/field_extraction_service.py
 app/services/github_actions_service.py
 app/services/log_service.py
 app/services/policy_service.py
