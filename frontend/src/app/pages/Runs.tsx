@@ -17,7 +17,7 @@ export type ViewType = "table" | "timeline";
 
 export interface Run {
   id: string;
-  resourceName: string;
+  jobName: string;
   type: "AI Agent" | "Airflow" | "dbt" | "SQL" | "BI" | "Excel" | "PowerPoint";
   environment: string;
   startedAt: string;
@@ -98,7 +98,7 @@ export default function Runs() {
                   <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
                   <input
                     type="text"
-                    placeholder="Search by resource name or run ID..."
+                    placeholder="Search by job name or run ID..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     className="h-9 w-full rounded-md border border-gray-200 bg-white pl-10 pr-4 text-sm placeholder:text-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"

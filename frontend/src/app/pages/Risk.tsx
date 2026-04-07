@@ -4,7 +4,7 @@ import { Button } from "../components/ui/button";
 import { RiskMetrics } from "../components/risk/RiskMetrics";
 import { RiskDistributionChart } from "../components/risk/RiskDistributionChart";
 import { RiskDriversSection } from "../components/risk/RiskDriversSection";
-import { HighRiskResourcesTable, RiskResource } from "../components/risk/HighRiskResourcesTable";
+import { HighRiskJobsTable, RiskJob } from "../components/risk/HighRiskJobsTable";
 import { RiskDetailDrawer } from "../components/risk/RiskDetailDrawer";
 import {
   DropdownMenu,
@@ -16,7 +16,7 @@ import { ChevronDown } from "lucide-react";
 
 export default function Risk() {
   const [dateRange, setDateRange] = useState("Last 7 Days");
-  const [selectedResource, setSelectedResource] = useState<RiskResource | null>(null);
+  const [selectedJob, setSelectedJob] = useState<RiskJob | null>(null);
 
   return (
     <>
@@ -83,26 +83,26 @@ export default function Risk() {
         <RiskDriversSection />
       </div>
 
-      {/* High-Risk Resources Table */}
+      {/* High-Risk Jobs Table */}
       <div className="mb-4">
-        <HighRiskResourcesTable
-          resources={[]}
-          onViewDetails={setSelectedResource}
+        <HighRiskJobsTable
+          jobs={[]}
+          onViewDetails={setSelectedJob}
         />
       </div>
 
       {/* Risk Detail Drawer */}
-      {selectedResource && (
+      {selectedJob && (
         <>
           {/* Overlay */}
           <div
             className="fixed inset-0 z-40 bg-black/30"
-            onClick={() => setSelectedResource(null)}
+            onClick={() => setSelectedJob(null)}
           />
           {/* Drawer */}
           <RiskDetailDrawer
-            resource={selectedResource}
-            onClose={() => setSelectedResource(null)}
+            job={selectedJob}
+            onClose={() => setSelectedJob(null)}
           />
         </>
       )}

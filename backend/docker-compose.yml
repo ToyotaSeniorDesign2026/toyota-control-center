@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:16
@@ -14,5 +12,26 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  api:
+    build: .
+    container_name: control_center_api
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    env_file: .env
+    environment:
+      APP_NAME: Toyota Control Center API
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/control_center
+      DB_ECHO: "false"
+      DB_SSL_MODE: local
+      DB_POOL_SIZE: "10"
+      DB_MAX_OVERFLOW: "20"
+      DB_POOL_RECYCLE: "1800"
+      DB_POOL_PRE_PING: "true"
+    ports:
+      - "8000:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
 volumes:
   postgres_data:
+

@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI
 
-from app.api.routers import audit, auth, integrations, policy, resource_types, resources, runs
+from app.api.routers import audit, auth, chat, integrations, policy, resource_types, resources, runs
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.logging import setup_logging
@@ -26,6 +26,7 @@ def create_app() -> FastAPI:
     app.include_router(policy.router, prefix="/policy", tags=["policy"])
     app.include_router(audit.router, prefix="/audit", tags=["audit"])
     app.include_router(integrations.router, prefix="/integrations", tags=["integrations"])
+    app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 
     return app
 

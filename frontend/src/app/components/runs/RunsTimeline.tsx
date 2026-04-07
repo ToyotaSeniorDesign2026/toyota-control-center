@@ -26,7 +26,7 @@ interface RunsTimelineProps {
 const mockRuns: Run[] = [
   {
     id: "run-a7f3d2",
-    resourceName: "customer_churn_predictor",
+    jobName: "customer_churn_predictor",
     type: "AI Agent",
     environment: "Prod",
     startedAt: "2 min ago",
@@ -37,7 +37,7 @@ const mockRuns: Run[] = [
   },
   {
     id: "run-9c2e1d",
-    resourceName: "dbt_daily_model",
+    jobName: "dbt_daily_model",
     type: "dbt",
     environment: "Semi-Prod",
     startedAt: "5 min ago",
@@ -49,7 +49,7 @@ const mockRuns: Run[] = [
   },
   {
     id: "run-4b8f3a",
-    resourceName: "revenue_dashboard",
+    jobName: "revenue_dashboard",
     type: "BI",
     environment: "Prod",
     startedAt: "15 min ago",
@@ -60,7 +60,7 @@ const mockRuns: Run[] = [
   },
   {
     id: "run-7e3b9f",
-    resourceName: "airflow_etl_pipeline",
+    jobName: "airflow_etl_pipeline",
     type: "Airflow",
     environment: "Prod",
     startedAt: "28 min ago",
@@ -72,7 +72,7 @@ const mockRuns: Run[] = [
   },
   {
     id: "run-2d5c8a",
-    resourceName: "sales_forecast_query",
+    jobName: "sales_forecast_query",
     type: "SQL",
     environment: "Prod",
     startedAt: "1 hour ago",
@@ -83,7 +83,7 @@ const mockRuns: Run[] = [
   },
   {
     id: "run-6f1e4b",
-    resourceName: "inventory_optimizer",
+    jobName: "inventory_optimizer",
     type: "AI Agent",
     environment: "Dev",
     startedAt: "2 hours ago",
@@ -95,7 +95,7 @@ const mockRuns: Run[] = [
   },
   {
     id: "run-8a3c7d",
-    resourceName: "dbt_staging_models",
+    jobName: "dbt_staging_models",
     type: "dbt",
     environment: "Dev",
     startedAt: "3 hours ago",
@@ -106,7 +106,7 @@ const mockRuns: Run[] = [
   },
   {
     id: "run-5b9d2e",
-    resourceName: "quarterly_report_deck",
+    jobName: "quarterly_report_deck",
     type: "PowerPoint",
     environment: "Prod",
     startedAt: "5 hours ago",
@@ -161,11 +161,11 @@ function EmptyState() {
           No runs yet.
         </h3>
         <p className="mt-2 text-sm text-gray-600">
-          Run a resource to begin tracking execution history.
+          Run a job to begin tracking execution history.
         </p>
         <button className="mt-6 inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">
           <Play className="h-4 w-4" />
-          Run Resource
+          Run Job
         </button>
       </div>
     </div>
@@ -182,7 +182,7 @@ export function RunsTimeline({
   const filteredRuns = mockRuns.filter((run) => {
     if (
       searchQuery &&
-      !run.resourceName.toLowerCase().includes(searchQuery.toLowerCase()) &&
+      !run.jobName.toLowerCase().includes(searchQuery.toLowerCase()) &&
       !run.id.toLowerCase().includes(searchQuery.toLowerCase())
     ) {
       return false;
@@ -244,7 +244,7 @@ export function RunsTimeline({
                   <div className="flex-1">
                     <div className="flex items-center gap-3">
                       <h4 className="font-semibold text-gray-900">
-                        {run.resourceName}
+                        {run.jobName}
                       </h4>
                       <div className="flex items-center gap-1.5 text-gray-600">
                         {getTypeIcon(run.type)}

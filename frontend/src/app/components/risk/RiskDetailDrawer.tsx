@@ -1,8 +1,8 @@
 import { X, TrendingUp, TrendingDown } from "lucide-react";
-import { RiskResource } from "./HighRiskResourcesTable";
+import { RiskJob } from "./HighRiskJobsTable";
 
 interface RiskDetailDrawerProps {
-  resource: RiskResource | null;
+  job: RiskJob | null;
   onClose: () => void;
 }
 
@@ -12,7 +12,7 @@ const riskFactors = [
     label: "Data Sensitivity",
     weight: 35,
     value: "PII & Financial Data",
-    description: "Resource accesses personally identifiable information and financial records",
+    description: "Job accesses personally identifiable information and financial records",
     level: "critical",
   },
   {
@@ -28,7 +28,7 @@ const riskFactors = [
     label: "Schedule Frequency",
     weight: 15,
     value: "Every 5 minutes",
-    description: "High-frequency execution may impact system resources",
+    description: "High-frequency execution may impact system jobs",
     level: "medium",
   },
   {
@@ -92,15 +92,15 @@ const levelColors = {
   },
 };
 
-export function RiskDetailDrawer({ resource, onClose }: RiskDetailDrawerProps) {
-  if (!resource) return null;
+export function RiskDetailDrawer({ job, onClose }: RiskDetailDrawerProps) {
+  if (!job) return null;
 
   const riskColor =
-    resource.riskLevel === "Critical"
+    job.riskLevel === "Critical"
       ? "text-red-600"
-      : resource.riskLevel === "High"
+      : job.riskLevel === "High"
       ? "text-orange-600"
-      : resource.riskLevel === "Medium"
+      : job.riskLevel === "Medium"
       ? "text-yellow-600"
       : "text-green-600";
 
@@ -117,11 +117,11 @@ export function RiskDetailDrawer({ resource, onClose }: RiskDetailDrawerProps) {
               <span
                 className={`rounded px-2 py-0.5 text-xs font-semibold ${riskColor} bg-opacity-10`}
               >
-                {resource.riskLevel}
+                {job.riskLevel}
               </span>
             </div>
             <div className="mt-1 text-sm text-gray-600 font-mono">
-              {resource.id}
+              {job.id}
             </div>
           </div>
           <button
@@ -136,10 +136,10 @@ export function RiskDetailDrawer({ resource, onClose }: RiskDetailDrawerProps) {
         <div className="mt-4 grid grid-cols-2 gap-4">
           <div>
             <div className="text-xs font-medium text-gray-500 uppercase">
-              Resource Name
+              Job Name
             </div>
             <div className="mt-1 text-sm font-semibold text-gray-900">
-              {resource.name}
+              {job.name}
             </div>
           </div>
           <div>
@@ -147,7 +147,7 @@ export function RiskDetailDrawer({ resource, onClose }: RiskDetailDrawerProps) {
               Risk Score
             </div>
             <div className={`mt-1 text-2xl font-bold ${riskColor}`}>
-              {resource.riskScore}
+              {job.riskScore}
             </div>
           </div>
           <div>
@@ -155,7 +155,7 @@ export function RiskDetailDrawer({ resource, onClose }: RiskDetailDrawerProps) {
               Type
             </div>
             <div className="mt-1 text-sm font-semibold text-gray-900">
-              {resource.type}
+              {job.type}
             </div>
           </div>
           <div>
@@ -163,7 +163,7 @@ export function RiskDetailDrawer({ resource, onClose }: RiskDetailDrawerProps) {
               Environment
             </div>
             <div className="mt-1 text-sm font-semibold text-gray-900">
-              {resource.environment}
+              {job.environment}
             </div>
           </div>
         </div>
@@ -280,7 +280,7 @@ export function RiskDetailDrawer({ resource, onClose }: RiskDetailDrawerProps) {
                 Owner
               </div>
               <div className="mt-1 text-sm font-medium text-gray-900">
-                {resource.owner}
+                {job.owner}
               </div>
             </div>
             <div>
@@ -288,7 +288,7 @@ export function RiskDetailDrawer({ resource, onClose }: RiskDetailDrawerProps) {
                 Primary Risk Driver
               </div>
               <div className="mt-1 text-sm font-medium text-gray-900">
-                {resource.primaryDriver}
+                {job.primaryDriver}
               </div>
             </div>
             <div>
@@ -296,7 +296,7 @@ export function RiskDetailDrawer({ resource, onClose }: RiskDetailDrawerProps) {
                 Approval Required
               </div>
               <div className="mt-1 text-sm font-medium text-gray-900">
-                {resource.approvalRequired ? "Yes" : "No"}
+                {job.approvalRequired ? "Yes" : "No"}
               </div>
             </div>
             <div>
@@ -304,7 +304,7 @@ export function RiskDetailDrawer({ resource, onClose }: RiskDetailDrawerProps) {
                 Last Modified
               </div>
               <div className="mt-1 text-sm font-medium text-gray-900">
-                {new Date(resource.lastModified).toLocaleDateString("en-US", {
+                {new Date(job.lastModified).toLocaleDateString("en-US", {
                   month: "short",
                   day: "numeric",
                   year: "numeric",

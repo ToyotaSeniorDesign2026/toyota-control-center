@@ -1,9 +1,10 @@
-import { Bell } from "lucide-react";
+import { Bell, CalendarDays } from "lucide-react";
 import { Link } from "react-router";
 import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
 import { useUser } from "../contexts/UserContext";
 import { useState } from "react";
 import { NotificationPanel } from "./notifications/NotificationPanel";
+import { useCalendarOverlay } from "../contexts/CalendarContext";
 
 export function UserNavigation({ 
   activePage = "Dashboard",
@@ -13,19 +14,13 @@ export function UserNavigation({
   onProfileClick?: () => void;
 }) {
   const { profile } = useUser();
+  const { openCalendar } = useCalendarOverlay();
   const [isNotificationPanelOpen, setIsNotificationPanelOpen] = useState(false);
-  
-  const navItems = [
-    { label: "Dashboard", active: activePage === "Dashboard", path: "/user-home" },
-    { label: "Forms", active: activePage === "Forms", path: "/forms" },
-    { label: "My Resources", active: activePage === "My Resources", path: "/my-resources" },
-    { label: "Promotions & Edits", active: activePage === "Promotions & Edits", path: "/promotions-edits" },
-    { label: "User", active: false, secondary: true, path: "#" },
-  ];
 
   return (
-    <header className="border-b border-gray-200 bg-white">
-      <div className="flex h-16 items-center justify-between px-6">
+    <>
+      <header className="border-b border-gray-200 bg-white">
+        <div className="flex h-16 items-center justify-between px-6">
         {/* Left: Logo and Nav */}
         <div className="flex items-center gap-8">
           <Link to="/user-home" className="flex items-center gap-2">
@@ -37,33 +32,33 @@ export function UserNavigation({
             </div>
           </Link>
           <nav className="flex items-center gap-1">
-            {navItems.map((item) => (
-              item.secondary ? (
-                <span
-                  key={item.label}
-                  className="px-3 py-2 text-sm font-medium text-gray-400"
-                >
-                  {item.label}
-                </span>
-              ) : (
-                <Link
-                  key={item.label}
-                  to={item.path}
-                  className={`px-3 py-2 text-sm font-medium transition-colors rounded-md ${
-                    item.active
-                      ? "bg-gray-100 text-gray-900"
-                      : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
-                  }`}
-                >
-                  {item.label}
-                </Link>
-              )
-            ))}
+            {/* Workspace */}
+            <Link
+              to="/user-home"
+              className={`px-3 py-2 text-sm font-medium transition-colors rounded-md ${
+                activePage === "Dashboard"
+                  ? "bg-gray-100 text-gray-900"
+                  : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+              }`}
+            >
+              Workspace
+            </Link>
+
+            {/* User */}
+            <span className="px-3 py-2 text-sm font-medium text-gray-400">User</span>
           </nav>
         </div>
 
         {/* Right: Notifications, User */}
         <div className="flex items-center gap-4">
+          <button
+            onClick={openCalendar}
+            className="rounded-lg p-2 transition-colors text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            title="Open Calendar"
+          >
+            <CalendarDays className="h-5 w-5" />
+          </button>
+
           {/* Notifications */}
           <button
             className="relative rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
@@ -87,13 +82,14 @@ export function UserNavigation({
             )}
           </Avatar>
         </div>
-      </div>
-      
-      {/* Notification Panel */}
-      <NotificationPanel 
-        isOpen={isNotificationPanelOpen} 
-        onClose={() => setIsNotificationPanelOpen(false)} 
-      />
-    </header>
+        </div>
+        
+        {/* Notification Panel */}
+        <NotificationPanel 
+          isOpen={isNotificationPanelOpen} 
+          onClose={() => setIsNotificationPanelOpen(false)} 
+        />
+      </header>
+    </>
   );
 }

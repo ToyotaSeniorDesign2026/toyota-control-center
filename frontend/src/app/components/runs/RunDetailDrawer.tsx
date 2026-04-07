@@ -81,7 +81,7 @@ export function RunDetailDrawer({ run, open, onClose }: RunDetailDrawerProps) {
             <div className="flex-1">
               <div className="flex items-center gap-3">
                 <h2 className="text-xl font-semibold text-gray-900">
-                  {run.resourceName}
+                  {run.jobName}
                 </h2>
                 <span
                   className={`rounded-full px-3 py-1 text-sm font-medium ${
@@ -183,7 +183,7 @@ export function RunDetailDrawer({ run, open, onClose }: RunDetailDrawerProps) {
               Re-run
             </Button>
             <Button variant="outline" className="flex-1">
-              View Resource
+              View Job
             </Button>
           </div>
 
@@ -248,7 +248,7 @@ export function RunDetailDrawer({ run, open, onClose }: RunDetailDrawerProps) {
                   </p>
                 </div>
                 <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-                  <p className="text-sm font-medium text-gray-900">Compute Resources</p>
+                  <p className="text-sm font-medium text-gray-900">Compute Requirements</p>
                   <p className="mt-1 text-sm text-gray-600">
                     4 vCPUs, 16 GB RAM
                   </p>

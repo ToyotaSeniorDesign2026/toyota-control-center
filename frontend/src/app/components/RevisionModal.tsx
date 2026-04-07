@@ -2,7 +2,7 @@ import { X, Save, AlertCircle } from "lucide-react";
 import { Button } from "./ui/button";
 import { useState, useEffect } from "react";
 
-interface Resource {
+interface Job {
   id: string;
   name: string;
   type: "AI Agent" | "SQL Query" | "dbt Model" | "API Connection";
@@ -15,12 +15,12 @@ interface Resource {
 }
 
 interface RevisionModalProps {
-  resource: Resource | null;
+  job: Job | null;
   isOpen: boolean;
   onClose: () => void;
 }
 
-export function RevisionModal({ resource, isOpen, onClose }: RevisionModalProps) {
+export function RevisionModal({ job, isOpen, onClose }: RevisionModalProps) {
   const [formData, setFormData] = useState({
     name: "",
     description: "",
@@ -28,19 +28,19 @@ export function RevisionModal({ resource, isOpen, onClose }: RevisionModalProps)
   });
 
   useEffect(() => {
-    if (resource) {
+    if (job) {
       setFormData({
-        name: resource.name,
-        description: resource.description || "",
+        name: job.name,
+        description: job.description || "",
         notes: "",
       });
     }
-  }, [resource]);
+  }, [job]);
 
-  if (!isOpen || !resource) return null;
+  if (!isOpen || !job) return null;
 
   const handleSubmit = () => {
-    console.log("Resubmitting resource:", formData);
+    console.log("Resubmitting job:", formData);
     // Handle resubmission
     handleClose();
   };
@@ -77,9 +77,9 @@ export function RevisionModal({ resource, isOpen, onClose }: RevisionModalProps)
           <div className="flex items-start justify-between">
             <div className="flex-1">
               <div className="flex items-center gap-3">
-                <h2 className="text-xl font-semibold text-gray-900">Revise Resource</h2>
-                <span className={`rounded-full px-3 py-1 text-xs font-medium ${getTypeColor(resource.type)}`}>
-                  {resource.type}
+                <h2 className="text-xl font-semibold text-gray-900">Revise Job</h2>
+                <span className={`rounded-full px-3 py-1 text-xs font-medium ${getTypeColor(job.type)}`}>
+                  {job.type}
                 </span>
               </div>
               <p className="mt-1 text-sm text-gray-600">Make necessary changes and resubmit for approval</p>
@@ -96,27 +96,27 @@ export function RevisionModal({ resource, isOpen, onClose }: RevisionModalProps)
         {/* Content */}
         <div className="overflow-y-auto max-h-[calc(90vh-200px)] p-6 space-y-6">
           {/* Rejection Reason */}
-          {resource.rejectionReason && (
+          {job.rejectionReason && (
             <div className="rounded-lg bg-red-50 border border-red-200 p-4">
               <div className="flex items-start gap-3">
                 <AlertCircle className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" />
                 <div className="flex-1">
                   <h4 className="text-sm font-semibold text-red-900 mb-1">Rejection Reason</h4>
-                  <p className="text-sm text-red-800">{resource.rejectionReason}</p>
+                  <p className="text-sm text-red-800">{job.rejectionReason}</p>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Resource Details */}
+          {/* Job Details */}
           <div className="grid grid-cols-2 gap-4">
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-              <span className="text-xs font-medium text-gray-600">Resource ID</span>
-              <p className="text-sm font-semibold text-gray-900 mt-1">{resource.id}</p>
+              <span className="text-xs font-medium text-gray-600">Job ID</span>
+              <p className="text-sm font-semibold text-gray-900 mt-1">{job.id}</p>
             </div>
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
               <span className="text-xs font-medium text-gray-600">Current Environment</span>
-              <p className="text-sm font-semibold text-gray-900 mt-1">{resource.currentEnvironment}</p>
+              <p className="text-sm font-semibold text-gray-900 mt-1">{job.currentEnvironment}</p>
             </div>
           </div>
 
@@ -124,7 +124,7 @@ export function RevisionModal({ resource, isOpen, onClose }: RevisionModalProps)
           <div className="space-y-4">
             <div>
               <label htmlFor="name" className="block text-sm font-medium text-gray-700 mb-2">
-                Resource Name
+                Job Name
               </label>
               <input
                 id="name"
@@ -145,7 +145,7 @@ export function RevisionModal({ resource, isOpen, onClose }: RevisionModalProps)
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                 rows={4}
                 className="w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm placeholder:text-gray-400 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923] resize-none"
-                placeholder="Describe what this resource does and any changes made..."
+                placeholder="Describe what this job does and any changes made..."
               />
             </div>
 

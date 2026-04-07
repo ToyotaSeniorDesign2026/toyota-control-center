@@ -1,5 +1,7 @@
-import React, { useState, ChangeEvent, FormEvent } from 'react';
+import React, { useEffect, useState, ChangeEvent, FormEvent } from 'react';
 import { useNavigate } from "react-router";
+import { createJobFromForm, saveDraft, saveTemplate } from "../../lib/userDashboardStore";
+import { StructuredScheduleFields } from "./StructuredScheduleFields";
 import { 
   Calendar, 
   Upload, 
@@ -20,6 +22,11 @@ interface FormData {
   scheduleType: 'daily' | 'weekly' | 'monthly' | 'on-demand';
   scheduleDay: string;
   scheduleTime: string;
+  weeklyDays: string[];
+  startDate: string;
+  stopCondition: 'never' | 'on-date' | 'after-runs';
+  endDate: string;
+  maxRuns: string;
   templateFile: File | null;
   presentationType: string;
   dataSource: string;
@@ -81,7 +88,25 @@ const presentationTemplates: PresentationTemplate[] = [
   }
 ];
 
-const PowerPointForm: React.FC = () => {
+interface PowerPointFormProps {
+  initialData?: Record<string, unknown>;
+  aiPrompt?: string;
+  embedded?: boolean;
+  onCancel?: () => void;
+  onDraftSaved?: () => void;
+  onTemplateSaved?: () => void;
+  onJobCreated?: (job: Record<string, unknown>) => void;
+}
+
+const PowerPointForm: React.FC<PowerPointFormProps> = ({
+  initialData,
+  aiPrompt,
+  embedded = false,
+  onCancel,
+  onDraftSaved,
+  onTemplateSaved,
+  onJobCreated,
+}) => {
   const navigate = useNavigate();
   const [formData, setFormData] = useState<FormData>({
     jobName: '',
@@ -90,6 +115,11 @@ const PowerPointForm: React.FC = () => {
     scheduleType: 'monthly',
     scheduleDay: '1',
     scheduleTime: '08:00',
+    weeklyDays: ['1'],
+    startDate: new Date().toISOString().slice(0, 10),
+    stopCondition: 'never',
+    endDate: '',
+    maxRuns: '12',
     templateFile: null,
     presentationType: '',
     dataSource: 'sales_database',
@@ -103,9 +133,20 @@ const PowerPointForm: React.FC = () => {
 
   const [errors, setErrors] = useState<FormErrors>({});
   const [showSuccess, setShowSuccess] = useState(false);
+  const [successMessage, setSuccessMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showAIPrefill, setShowAIPrefill] = useState(false);
 
   const selectedTemplate = presentationTemplates.find(t => t.id === formData.presentationType);
+
+  useEffect(() => {
+    if (!initialData) return;
+    setFormData((prev) => ({
+      ...prev,
+      ...initialData,
+    }));
+    setShowAIPrefill(true);
+  }, [initialData]);
 
   const handleInputChange = (
     e: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
@@ -131,6 +172,21 @@ const PowerPointForm: React.FC = () => {
     }
   };
 
+  const handleWeeklyDayToggle = (dayValue: string) => {
+    setFormData((prev) => {
+      const alreadySelected = prev.weeklyDays.includes(dayValue);
+      const nextDays = alreadySelected
+        ? prev.weeklyDays.filter((day) => day !== dayValue)
+        : [...prev.weeklyDays, dayValue].sort();
+
+      return {
+        ...prev,
+        weeklyDays: nextDays.length > 0 ? nextDays : [dayValue],
+        scheduleDay: (nextDays.length > 0 ? nextDays : [dayValue])[0],
+      };
+    });
+  };
+
   const validateForm = (): boolean => {
     const newErrors: FormErrors = {};
 
@@ -148,6 +204,12 @@ const PowerPointForm: React.FC = () => {
     if (formData.scheduleType !== 'on-demand' && !formData.scheduleTime) {
       newErrors.scheduleTime = 'Schedule time is required';
     }
+    if (formData.stopCondition === 'on-date' && !formData.endDate) {
+      newErrors.endDate = 'End date is required';
+    }
+    if (formData.stopCondition === 'after-runs' && !formData.maxRuns.trim()) {
+      newErrors.maxRuns = 'Maximum runs is required';
+    }
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -163,34 +225,40 @@ const PowerPointForm: React.FC = () => {
     setIsSubmitting(true);
     
     setTimeout(() => {
+      const createdJob = createJobFromForm("PowerPoint", formData as unknown as Record<string, unknown>);
       setIsSubmitting(false);
+      setSuccessMessage("Presentation submitted for approval. Opening Pending Promotions...");
       setShowSuccess(true);
-      
       setTimeout(() => {
-        setShowSuccess(false);
-        setFormData({
-          jobName: '',
-          description: '',
-          owner: '',
-          scheduleType: 'monthly',
-          scheduleDay: '1',
-          scheduleTime: '08:00',
-          templateFile: null,
-          presentationType: '',
-          dataSource: 'sales_database',
-          includeTables: true,
-          includeCharts: true,
-          includeImages: false,
-          outputFormat: 'pptx',
-          emailRecipients: '',
-          dataSensitivity: 'internal'
-        });
-      }, 3000);
+        if (embedded) {
+          onJobCreated?.(createdJob as unknown as Record<string, unknown>);
+        } else {
+          navigate("/promotions");
+        }
+      }, 900);
     }, 1500);
   };
 
+  const handleSaveDraft = () => {
+    saveDraft("PowerPoint", formData as unknown as Record<string, unknown>);
+    if (embedded) {
+      onDraftSaved?.();
+    } else {
+      navigate("/forms");
+    }
+  };
+
+  const handleSaveTemplate = () => {
+    saveTemplate("PowerPoint", formData as unknown as Record<string, unknown>);
+    if (embedded) {
+      onTemplateSaved?.();
+    } else {
+      navigate("/forms/saved-templates");
+    }
+  };
+
   return (
-    <div style={styles.container}>
+    <div style={{ ...styles.container, minHeight: embedded ? 'auto' : '100vh', padding: embedded ? '0' : '40px 20px', backgroundColor: embedded ? 'transparent' : '#F5F5F5' }}>
       <div style={styles.formWrapper}>
         {/* Header */}
         <div style={styles.header}>
@@ -207,7 +275,16 @@ const PowerPointForm: React.FC = () => {
         {showSuccess && (
           <div style={styles.successBanner}>
             <CheckCircle size={20} color="#10B981" />
-            <span>Job created successfully! Redirecting to dashboard...</span>
+            <span>{successMessage}</span>
+          </div>
+        )}
+
+        {showAIPrefill && (
+          <div style={styles.infoBox}>
+            <Info size={16} color="#EB0A1E" />
+            <span>
+              AI prefilled this form{aiPrompt ? ` from prompt: "${aiPrompt}"` : ""}. Review and adjust before submit.
+            </span>
           </div>
         )}
 
@@ -434,70 +511,25 @@ const PowerPointForm: React.FC = () => {
             </div>
           </div>
 
-          {/* Schedule Section */}
-          <div style={styles.section}>
-            <h2 style={styles.sectionTitle}>
-              <Clock size={20} color="#EB0A1E" style={{ marginRight: '8px' }} />
-              Schedule
-            </h2>
-
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Run Frequency</label>
-              <select
-                name="scheduleType"
-                value={formData.scheduleType}
-                onChange={handleInputChange}
-                style={styles.select}
-              >
-                <option value="daily">Daily</option>
-                <option value="weekly">Weekly</option>
-                <option value="monthly">Monthly</option>
-                <option value="on-demand">On-Demand Only</option>
-              </select>
-            </div>
-
-            {formData.scheduleType !== 'on-demand' && (
-              <div style={styles.formRow}>
-                {formData.scheduleType === 'monthly' && (
-                  <div style={styles.formGroup}>
-                    <label style={styles.label}>Day of Month</label>
-                    <select
-                      name="scheduleDay"
-                      value={formData.scheduleDay}
-                      onChange={handleInputChange}
-                      style={styles.select}
-                    >
-                      {Array.from({ length: 28 }, (_, i) => i + 1).map(day => (
-                        <option key={day} value={day}>{day}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-
-                <div style={styles.formGroup}>
-                  <label style={styles.label}>Time</label>
-                  <input
-                    type="time"
-                    name="scheduleTime"
-                    value={formData.scheduleTime}
-                    onChange={handleInputChange}
-                    style={styles.input}
-                  />
-                </div>
-              </div>
-            )}
-
-            <div style={styles.infoBox}>
-              <Info size={16} color="#EB0A1E" />
-              <span>
-                {formData.scheduleType === 'monthly' 
-                  ? `This presentation will be generated on the ${formData.scheduleDay}${getOrdinalSuffix(parseInt(formData.scheduleDay))} of every month at ${formData.scheduleTime}`
-                  : formData.scheduleType === 'on-demand'
-                  ? 'This presentation will only be generated when you manually trigger it'
-                  : `This presentation will be generated ${formData.scheduleType} at ${formData.scheduleTime}`}
-              </span>
-            </div>
-          </div>
+          <StructuredScheduleFields
+            scheduleType={formData.scheduleType}
+            scheduleDay={formData.scheduleDay}
+            scheduleTime={formData.scheduleTime}
+            weeklyDays={formData.weeklyDays}
+            startDate={formData.startDate}
+            stopCondition={formData.stopCondition}
+            endDate={formData.endDate}
+            maxRuns={formData.maxRuns}
+            summaryPrefix="This presentation"
+            scheduleTimeError={errors.scheduleTime}
+            onFieldChange={(field, value) =>
+              setFormData((prev) => ({
+                ...prev,
+                [field]: value,
+              }))
+            }
+            onWeeklyDayToggle={handleWeeklyDayToggle}
+          />
 
           {/* Output & Delivery Section */}
           <div style={styles.section}>
@@ -558,10 +590,24 @@ const PowerPointForm: React.FC = () => {
           <div style={styles.buttonGroup}>
             <button
               type="button"
-              onClick={() => navigate("/forms")}
+              onClick={() => (embedded ? onCancel?.() : navigate("/forms"))}
               style={styles.cancelButton}
             >
               Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveDraft}
+              style={styles.secondaryButton}
+            >
+              Save Draft
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveTemplate}
+              style={styles.secondaryButton}
+            >
+              Save as Template
             </button>
             <button
               type="submit"
@@ -571,7 +617,7 @@ const PowerPointForm: React.FC = () => {
                 ...(isSubmitting ? styles.submitButtonDisabled : {})
               }}
             >
-              {isSubmitting ? 'Creating Job...' : 'Create Presentation Job'}
+              {isSubmitting ? 'Submitting...' : 'Submit for Approval'}
             </button>
           </div>
         </form>
@@ -832,6 +878,7 @@ const styles: { [key: string]: React.CSSProperties } = {
   },
   buttonGroup: {
     display: 'flex',
+    flexWrap: 'wrap',
     justifyContent: 'flex-end',
     gap: '12px',
     marginTop: '32px',
@@ -845,6 +892,17 @@ const styles: { [key: string]: React.CSSProperties } = {
     color: '#666666',
     backgroundColor: '#FFFFFF',
     border: '2px solid #DDDDDD',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+  },
+  secondaryButton: {
+    padding: '12px 24px',
+    fontSize: '14px',
+    fontWeight: '600',
+    color: '#EB0A1E',
+    backgroundColor: '#FFF5F5',
+    border: '1px solid #F6B5BC',
     borderRadius: '4px',
     cursor: 'pointer',
     transition: 'all 0.2s',

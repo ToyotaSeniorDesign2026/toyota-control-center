@@ -16,7 +16,7 @@ export default function Layout() {
     if (location.pathname === "/") return "Dashboard";
     if (location.pathname === "/user-home") return "Home";
     if (location.pathname.startsWith("/research")) return "Research";
-    if (location.pathname.startsWith("/resources")) return "Resources";
+    if (location.pathname.startsWith("/jobs")) return "Jobs";
     if (location.pathname.startsWith("/runs")) return "Runs";
     if (location.pathname.startsWith("/approvals")) return "Approvals";
     if (location.pathname.startsWith("/risk")) return "Risk";

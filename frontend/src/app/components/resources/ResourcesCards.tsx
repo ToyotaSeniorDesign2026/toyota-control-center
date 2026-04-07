@@ -1,4 +1,4 @@
-import { FilterType } from "../../pages/Resources";
+import { FilterType } from "../../pages/Jobs";
 import {
   MoreVertical,
   Play,
@@ -29,7 +29,7 @@ import { Badge } from "../ui/badge";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import { useState } from "react";
 
-interface ResourcesCardsProps {
+interface JobsCardsProps {
   searchQuery: string;
   typeFilter: string;
   statusFilter: string;
@@ -37,7 +37,7 @@ interface ResourcesCardsProps {
   activeFilter: FilterType;
 }
 
-interface Resource {
+interface Job {
   id: string;
   name: string;
   type: "AI Agent" | "Airflow" | "dbt" | "SQL" | "BI" | "Excel" | "PowerPoint";
@@ -51,7 +51,7 @@ interface Resource {
   tags?: string[];
 }
 
-const mockResources: Resource[] = [
+const mockJobs: Job[] = [
   {
     id: "1",
     name: "customer_churn_predictor",
@@ -184,7 +184,7 @@ const mockResources: Resource[] = [
   },
 ];
 
-function getTypeIcon(type: Resource["type"]) {
+function getTypeIcon(type: Job["type"]) {
   switch (type) {
     case "AI Agent":
       return <Bot className="h-4 w-4" />;
@@ -203,7 +203,7 @@ function getTypeIcon(type: Resource["type"]) {
   }
 }
 
-function getTypeColor(type: Resource["type"]) {
+function getTypeColor(type: Job["type"]) {
   switch (type) {
     case "AI Agent":
       return "bg-purple-100 text-purple-700";
@@ -230,38 +230,38 @@ function EmptyState() {
           <Package className="h-12 w-12 text-gray-400" />
         </div>
         <h3 className="mt-4 text-lg font-semibold text-gray-900">
-          No resources yet.
+          No jobs yet.
         </h3>
         <p className="mt-2 text-sm text-gray-600">
           Create your first AI agent or automation job to get started.
         </p>
         <button className="mt-6 inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">
           <Play className="h-4 w-4" />
-          Create Resource
+          Create Job
         </button>
       </div>
     </div>
   );
 }
 
-export function ResourcesCards({
+export function JobsCards({
   searchQuery,
   typeFilter,
   statusFilter,
   riskFilter,
   activeFilter,
-}: ResourcesCardsProps) {
+}: JobsCardsProps) {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 6;
 
-  // Filter resources based on all criteria
-  const filteredResources = mockResources.filter((resource) => {
+  // Filter jobs based on all criteria
+  const filteredJobs = mockJobs.filter((job) => {
     // Search filter
     if (
       searchQuery &&
-      !resource.name.toLowerCase().includes(searchQuery.toLowerCase()) &&
-      !resource.owner.toLowerCase().includes(searchQuery.toLowerCase()) &&
-      !resource.tags?.some((tag) =>
+      !job.name.toLowerCase().includes(searchQuery.toLowerCase()) &&
+      !job.owner.toLowerCase().includes(searchQuery.toLowerCase()) &&
+      !job.tags?.some((tag) =>
         tag.toLowerCase().includes(searchQuery.toLowerCase())
       )
     ) {
@@ -269,53 +269,53 @@ export function ResourcesCards({
     }
 
     // Type filter
-    if (typeFilter !== "All Types" && resource.type !== typeFilter) {
+    if (typeFilter !== "All Types" && job.type !== typeFilter) {
       return false;
     }
 
     // Status filter
     if (
       statusFilter !== "All Status" &&
-      resource.status !== statusFilter.toLowerCase()
+      job.status !== statusFilter.toLowerCase()
     ) {
       return false;
     }
 
     // Risk filter
-    if (riskFilter === "Low" && resource.riskScore >= 30) return false;
+    if (riskFilter === "Low" && job.riskScore >= 30) return false;
     if (
       riskFilter === "Medium" &&
-      (resource.riskScore < 30 || resource.riskScore >= 60)
+      (job.riskScore < 30 || job.riskScore >= 60)
     )
       return false;
-    if (riskFilter === "High" && resource.riskScore < 60) return false;
+    if (riskFilter === "High" && job.riskScore < 60) return false;
 
     // Sidebar filter
-    if (activeFilter === "high-risk" && resource.riskScore < 60) return false;
-    if (activeFilter === "failed" && resource.status !== "failed") return false;
+    if (activeFilter === "high-risk" && job.riskScore < 60) return false;
+    if (activeFilter === "failed" && job.status !== "failed") return false;
 
     return true;
   });
 
   // Pagination calculations
-  const totalPages = Math.ceil(filteredResources.length / itemsPerPage);
+  const totalPages = Math.ceil(filteredJobs.length / itemsPerPage);
   const startIndex = (currentPage - 1) * itemsPerPage;
   const endIndex = startIndex + itemsPerPage;
-  const paginatedResources = filteredResources.slice(startIndex, endIndex);
+  const paginatedJobs = filteredJobs.slice(startIndex, endIndex);
 
   // Reset to page 1 when filters change
   if (currentPage > totalPages && totalPages > 0) {
     setCurrentPage(1);
   }
 
-  if (filteredResources.length === 0 && searchQuery === "" && typeFilter === "All Types") {
+  if (filteredJobs.length === 0 && searchQuery === "" && typeFilter === "All Types") {
     return <EmptyState />;
   }
 
-  if (filteredResources.length === 0) {
+  if (filteredJobs.length === 0) {
     return (
       <div className="rounded-lg border border-gray-200 bg-white p-12 text-center shadow-sm">
-        <p className="text-gray-600">No resources match your filters.</p>
+        <p className="text-gray-600">No jobs match your filters.</p>
       </div>
     );
   }
@@ -323,24 +323,24 @@ export function ResourcesCards({
   return (
     <>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {paginatedResources.map((resource) => {
+        {paginatedJobs.map((job) => {
           const statusColor =
-            resource.status === "healthy"
+            job.status === "healthy"
               ? "bg-green-500"
-              : resource.status === "warning"
+              : job.status === "warning"
               ? "bg-yellow-500"
               : "bg-red-500";
 
           const riskColor =
-            resource.riskScore < 30
+            job.riskScore < 30
               ? "bg-green-50 text-green-700 border-green-200"
-              : resource.riskScore < 60
+              : job.riskScore < 60
               ? "bg-yellow-50 text-yellow-700 border-yellow-200"
               : "bg-red-50 text-red-700 border-red-200";
 
           return (
             <div
-              key={resource.id}
+              key={job.id}
               className="group relative rounded-lg border border-gray-200 bg-white p-5 shadow-sm transition-shadow hover:shadow-md"
             >
               {/* Status Indicator */}
@@ -351,35 +351,35 @@ export function ResourcesCards({
               {/* Type Badge */}
               <div
                 className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium ${getTypeColor(
-                  resource.type
+                  job.type
                 )}`}
               >
-                {getTypeIcon(resource.type)}
-                {resource.type}
+                {getTypeIcon(job.type)}
+                {job.type}
               </div>
 
-              {/* Resource Name */}
+              {/* Job Name */}
               <h3 className="mt-3 font-semibold text-gray-900 group-hover:text-blue-600 transition-colors cursor-pointer">
-                {resource.name}
+                {job.name}
               </h3>
 
               {/* Environment */}
-              <p className="mt-1 text-xs text-gray-500">{resource.environment}</p>
+              <p className="mt-1 text-xs text-gray-500">{job.environment}</p>
 
               {/* Risk Score */}
               <div className="mt-3">
                 <Badge variant="outline" className={`${riskColor} border`}>
-                  Risk: {resource.riskScore}
+                  Risk: {job.riskScore}
                 </Badge>
               </div>
 
               {/* Schedule & Last Run */}
               <div className="mt-4 space-y-1 border-t border-gray-100 pt-4">
                 <p className="text-xs text-gray-600">
-                  <span className="font-medium">Schedule:</span> {resource.schedule}
+                  <span className="font-medium">Schedule:</span> {job.schedule}
                 </p>
                 <p className="text-xs text-gray-600">
-                  <span className="font-medium">Last run:</span> {resource.lastRun}
+                  <span className="font-medium">Last run:</span> {job.lastRun}
                 </p>
               </div>
 
@@ -388,10 +388,10 @@ export function ResourcesCards({
                 <div className="flex items-center gap-2">
                   <Avatar className="h-6 w-6">
                     <AvatarFallback className="bg-gray-200 text-xs text-gray-700">
-                      {resource.ownerInitials}
+                      {job.ownerInitials}
                     </AvatarFallback>
                   </Avatar>
-                  <span className="text-xs text-gray-600">{resource.owner}</span>
+                  <span className="text-xs text-gray-600">{job.owner}</span>
                 </div>
 
                 <div className="flex items-center gap-1">

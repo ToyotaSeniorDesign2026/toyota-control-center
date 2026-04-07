@@ -2,7 +2,7 @@ import { Eye, AlertCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { Button } from "../ui/button";
 
-export interface RiskResource {
+export interface RiskJob {
   id: string;
   name: string;
   type: "AI Agent" | "Airflow" | "dbt" | "SQL" | "BI";
@@ -15,12 +15,12 @@ export interface RiskResource {
   approvalRequired: boolean;
 }
 
-interface HighRiskResourcesTableProps {
-  resources: RiskResource[];
-  onViewDetails: (resource: RiskResource) => void;
+interface HighRiskJobsTableProps {
+  jobs: RiskJob[];
+  onViewDetails: (job: RiskJob) => void;
 }
 
-const mockResources: RiskResource[] = [
+const mockJobs: RiskJob[] = [
   {
     id: "RES-1847",
     name: "customer_pii_extraction_agent",
@@ -154,27 +154,27 @@ function formatDate(dateString: string): string {
   }
 }
 
-export function HighRiskResourcesTable({
-  resources,
+export function HighRiskJobsTable({
+  jobs,
   onViewDetails,
-}: HighRiskResourcesTableProps) {
-  const displayResources = resources.length > 0 ? resources : mockResources;
+}: HighRiskJobsTableProps) {
+  const displayJobs = jobs.length > 0 ? jobs : mockJobs;
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 5;
 
-  const totalPages = Math.ceil(displayResources.length / itemsPerPage);
+  const totalPages = Math.ceil(displayJobs.length / itemsPerPage);
   const startIndex = (currentPage - 1) * itemsPerPage;
   const endIndex = startIndex + itemsPerPage;
-  const paginatedResources = displayResources.slice(startIndex, endIndex);
+  const paginatedJobs = displayJobs.slice(startIndex, endIndex);
 
   return (
     <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
       <div className="border-b border-gray-200 bg-gray-50 px-4 py-3">
         <h3 className="text-lg font-semibold text-gray-900">
-          High-Risk Resources
+          High-Risk Jobs
         </h3>
         <p className="mt-1 text-sm text-gray-600">
-          Resources with elevated risk scores requiring attention
+          Jobs with elevated risk scores requiring attention
         </p>
       </div>
 
@@ -183,7 +183,7 @@ export function HighRiskResourcesTable({
           <thead>
             <tr className="border-b border-gray-200 bg-gray-50">
               <th className="px-3 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
-                Resource Name
+                Job Name
               </th>
               <th className="px-3 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
                 Type
@@ -212,78 +212,78 @@ export function HighRiskResourcesTable({
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200 bg-white">
-            {paginatedResources.map((resource) => {
-              const riskColor = riskLevelColors[resource.riskLevel];
-              const typeColor = typeColors[resource.type];
-              const envColor = envColors[resource.environment];
+            {paginatedJobs.map((job) => {
+              const riskColor = riskLevelColors[job.riskLevel];
+              const typeColor = typeColors[job.type];
+              const envColor = envColors[job.environment];
 
               return (
                 <tr
-                  key={resource.id}
+                  key={job.id}
                   className={`group hover:bg-gray-50 transition-colors cursor-pointer ${
-                    resource.riskLevel === "Critical" || resource.riskLevel === "High"
+                    job.riskLevel === "Critical" || job.riskLevel === "High"
                       ? "bg-red-50/30"
                       : ""
                   }`}
-                  onClick={() => onViewDetails(resource)}
+                  onClick={() => onViewDetails(job)}
                 >
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-2">
-                      {resource.approvalRequired && (
+                      {job.approvalRequired && (
                         <AlertCircle className="h-4 w-4 text-orange-500" />
                       )}
                       <div className="text-sm font-medium text-gray-900">
-                        {resource.name}
+                        {job.name}
                       </div>
                     </div>
                   </td>
                   <td className="px-3 py-2">
                     <div className={`text-sm font-medium ${typeColor}`}>
-                      {resource.type}
+                      {job.type}
                     </div>
                   </td>
                   <td className="px-3 py-2">
                     <span
                       className={`inline-flex rounded px-2 py-1 text-xs font-medium ${envColor}`}
                     >
-                      {resource.environment}
+                      {job.environment}
                     </span>
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-2">
                       <div className={`h-2 w-2 rounded-full ${riskColor.dot}`} />
                       <span className="text-sm font-bold text-gray-900">
-                        {resource.riskScore}
+                        {job.riskScore}
                       </span>
                       <span
                         className={`rounded px-2 py-0.5 text-xs font-medium ${riskColor.bg} ${riskColor.text}`}
                       >
-                        {resource.riskLevel}
+                        {job.riskLevel}
                       </span>
                     </div>
                   </td>
                   <td className="px-3 py-2">
                     <div className="text-sm text-gray-700">
-                      {resource.primaryDriver}
+                      {job.primaryDriver}
                     </div>
                   </td>
                   <td className="px-3 py-2">
-                    <div className="text-sm text-gray-700">{resource.owner}</div>
+                    <div className="text-sm text-gray-700">{job.owner}</div>
                   </td>
                   <td className="px-3 py-2">
                     <div className="text-sm text-gray-600">
-                      {formatDate(resource.lastModified)}
+                      {formatDate(job.lastModified)}
                     </div>
                   </td>
                   <td className="px-3 py-2">
                     <span
                       className={`inline-flex rounded px-2 py-1 text-xs font-medium ${
-                        resource.approvalRequired
+                        job.approvalRequired
                           ? "bg-orange-100 text-orange-700"
                           : "bg-gray-100 text-gray-700"
                       }`}
                     >
-                      {resource.approvalRequired ? "Required" : "Not Required"}
+                      {job.approvalRequired ? "Required" : "Not Required"}
                     </span>
                   </td>
                   <td className="px-3 py-2 text-right">
@@ -293,7 +293,7 @@ export function HighRiskResourcesTable({
                       className="opacity-0 group-hover:opacity-100 transition-opacity"
                       onClick={(e) => {
                         e.stopPropagation();
-                        onViewDetails(resource);
+                        onViewDetails(job);
                       }}
                     >
                       <Eye className="h-4 w-4 mr-1" />
@@ -311,8 +311,8 @@ export function HighRiskResourcesTable({
       {totalPages > 1 && (
         <div className="flex items-center justify-between border-t border-gray-200 px-4 py-3">
           <div className="text-sm text-gray-600">
-            Showing {startIndex + 1} to {Math.min(endIndex, displayResources.length)} of{" "}
-            {displayResources.length} resources
+            Showing {startIndex + 1} to {Math.min(endIndex, displayJobs.length)} of{" "}
+            {displayJobs.length} jobs
           </div>
           <div className="flex items-center gap-2">
             <button

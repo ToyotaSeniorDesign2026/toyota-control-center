@@ -1,5 +1,5 @@
 import { MetricsBar } from "../components/MetricsBar";
-import { ResourcesTable } from "../components/ResourcesTable";
+import { JobsTable } from "../components/JobsTable";
 import { ActivityFeed } from "../components/ActivityFeed";
 import { ScheduledJobs } from "../components/ScheduledJobs";
 
@@ -15,8 +15,8 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         {/* Left Column - 70% */}
         <div className="space-y-6 lg:col-span-2">
-          {/* Resources Table */}
-          <ResourcesTable />
+          {/* Jobs Table */}
+          <JobsTable />
           
           {/* Scheduled Jobs */}
           <ScheduledJobs />

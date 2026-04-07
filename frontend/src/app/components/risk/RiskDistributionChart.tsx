@@ -40,7 +40,7 @@ export function RiskDistributionChart() {
             Risk Distribution by Environment
           </h3>
           <p className="mt-1 text-sm text-gray-600">
-            Resource risk levels across deployment environments
+            Job risk levels across deployment environments
           </p>
         </div>
         <ChevronDown
@@ -68,7 +68,7 @@ export function RiskDistributionChart() {
                   tick={{ fill: "#6b7280", fontSize: 12 }}
                   axisLine={{ stroke: "#d1d5db" }}
                   label={{
-                    value: "Number of Resources",
+                    value: "Number of Jobs",
                     angle: -90,
                     position: "insideLeft",
                     style: { fill: "#6b7280", fontSize: 12 },
