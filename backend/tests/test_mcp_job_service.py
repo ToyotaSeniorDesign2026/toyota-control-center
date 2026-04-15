@@ -140,6 +140,89 @@ class MCPJobServiceTests(unittest.TestCase):
         self.assertEqual(execution_request.execution_mode, "agent")
         self.assertEqual(execution_request.mcp_config.server_names, ["sql-dab"])
 
+    def test_sql_resource_uses_registered_query_to_build_agent_prompt(self) -> None:
+        execution_request = build_execution_request(
+            run_id="run_sql_registered",
+            resource=SimpleNamespace(
+                id="res_sql_registered",
+                name="dealer-sales-summary",
+                type="sql",
+                connector="sql-dab-analytics",
+                data_sensitivity="low",
+                kind="runtime",
+                environment="dev",
+                config={
+                    "connection_id": "analytics-readonly",
+                    "query": "select dealer_id, sum(amount) as total_sales from sales group by dealer_id",
+                },
+                tags=["sql"],
+                owner_id="u_analyst",
+                owner_domain="collections",
+            ),
+            payload=RunCreate(
+                resource_id="res_sql_registered",
+                target_environment="dev",
+                params={},
+            ),
+            trigger_source="api",
+        )
+
+        self.assertEqual(execution_request.execution_backend, "mcp")
+        self.assertEqual(execution_request.execution_mode, "agent")
+        self.assertEqual(execution_request.mcp_config.server_names, ["sql-dab-analytics"])
+        self.assertIn("analytics-readonly", execution_request.mcp_config.prompt)
+        self.assertIn("select dealer_id", execution_request.mcp_config.prompt)
+
+    def test_sql_run_query_override_wins_over_registered_default_query(self) -> None:
+        effective = resolve_effective_mcp_config(
+            SimpleNamespace(
+                id="res_sql_override",
+                name="dealer-sales-summary",
+                type="sql",
+                connector="sql-dab",
+                config={
+                    "connection_id": "analytics-readonly",
+                    "query": "select * from sales",
+                },
+                data_sensitivity="low",
+            ),
+            RunCreate(
+                resource_id="res_sql_override",
+                target_environment="dev",
+                params={"query": "select * from sales where sale_date = current_date"},
+            ),
+        )
+
+        self.assertEqual(effective.server_names, ["sql-dab"])
+        self.assertIn("sale_date = current_date", effective.prompt)
+        self.assertNotIn("select * from sales\n```", effective.prompt)
+
+    def test_sql_direct_tool_populates_query_and_connection_id_tool_arguments(self) -> None:
+        effective = resolve_effective_mcp_config(
+            SimpleNamespace(
+                id="res_sql_tool",
+                name="sql-tool-job",
+                type="sql",
+                connector="sql-dab",
+                config={"connection_id": "analytics-readonly"},
+                data_sensitivity="low",
+            ),
+            RunCreate(
+                resource_id="res_sql_tool",
+                target_environment="dev",
+                params={"query": "select 1"},
+                mcp_config=MCPExecutionConfig(
+                    tool_name="execute_sql",
+                    tool_arguments={},
+                ),
+            ),
+        )
+
+        self.assertEqual(effective.server_names, ["sql-dab"])
+        self.assertEqual(effective.tool_name, "execute_sql")
+        self.assertEqual(effective.tool_arguments["query"], "select 1")
+        self.assertEqual(effective.tool_arguments["connection_id"], "analytics-readonly")
+
     def test_dispatch_execution_uses_registered_executor(self) -> None:
         execution_request = build_execution_request(
             run_id="run_1",

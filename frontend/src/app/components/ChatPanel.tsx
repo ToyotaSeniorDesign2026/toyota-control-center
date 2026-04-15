@@ -43,18 +43,27 @@ interface ChatThread {
   messages: ChatMessage[];
 }
 
+interface ResourceSummary {
+  id: string;
+  name: string;
+  type: string;
+}
+
 interface ChatPanelProps {
   isOpen: boolean;
   onClose: () => void;
   onJobCreationIntent?: () => void;
   onFieldsExtracted?: (fields: Record<string, any>) => void;
   currentDraftData?: Record<string, any>;
+  assistantNotices?: Array<{ id: string; content: string }>;
   onConsoleEvent?: (
     type: "intent_detected" | "draft_created" | "extracted_fields" | "draft_updated" | "missing_fields_identified",
     message: string,
     data?: Record<string, any>,
     previousValues?: Record<string, any>
   ) => void;
+  resources?: ResourceSummary[];
+  onRunStarted?: (runId: string) => void;
 }
 
 const initialMessages: ChatMessage[] = [
@@ -67,7 +76,7 @@ const initialMessages: ChatMessage[] = [
   {
     id: "2",
     role: "assistant",
-    content: "What would you like help with today? You can ask me to:\n• Create a new job\n• Troubleshoot errors\n• Explain features\n• Draft job specifications",
+    content: "What would you like help with today? You can ask me to:\n• Create a new job\n• Run a job (e.g. \"run Customer Churn Analysis\")\n• Troubleshoot errors\n• Explain features\n• Draft job specifications",
     timestamp: new Date(),
   },
 ];
@@ -155,7 +164,8 @@ const mockChatHistory: ChatThread[] = [
   },
 ];
 
-export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtracted, currentDraftData, onConsoleEvent }: ChatPanelProps) {
+
+export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtracted, currentDraftData, assistantNotices, onConsoleEvent, resources, onRunStarted }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [inputValue, setInputValue] = useState("");
   const [showHistory, setShowHistory] = useState(false);
@@ -165,6 +175,25 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
   const [attachedItems, setAttachedItems] = useState<AttachedItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const seenNoticeIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!assistantNotices?.length) return;
+
+    const newNotices = assistantNotices.filter((notice) => !seenNoticeIdsRef.current.has(notice.id));
+    if (newNotices.length === 0) return;
+
+    newNotices.forEach((notice) => seenNoticeIdsRef.current.add(notice.id));
+    setMessages((prev) => [
+      ...prev,
+      ...newNotices.map((notice) => ({
+        id: notice.id,
+        role: "assistant" as const,
+        content: notice.content,
+        timestamp: new Date(),
+      })),
+    ]);
+  }, [assistantNotices]);
 
   // Auto-adjust textarea height
   useEffect(() => {
@@ -312,8 +341,6 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
       updateActivityStep(0, "completed");
       updateActivityStep(1, "in-progress");
 
-      await new Promise((resolve) => setTimeout(resolve, 300));
-
       // Convert messages to the format expected by the API
       const conversationHistory = messages
         .filter(msg => (msg.role === "user" || msg.role === "assistant") && msg.role !== "activity")
@@ -335,6 +362,7 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
           conversation_history: conversationHistory,
           model: selectedModel,
           current_draft_data: currentDraftData,
+          available_resources: resources ?? [],
         }),
       });
 
@@ -391,6 +419,11 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
         }, 200);
       }
       
+      // Notify parent if a run was started by the backend
+      if (data.run_id) {
+        onRunStarted?.(data.run_id);
+      }
+
       // Handle extracted fields from the message
       if (data.extracted_fields && onFieldsExtracted) {
         // Emit extracted fields event

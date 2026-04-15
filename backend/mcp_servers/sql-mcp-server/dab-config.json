@@ -31,5 +31,54 @@
       "mode": "development"
     }
   },
-  "entities": {}
+  "entities": {
+    "resources": {
+      "source": {
+        "type": "table",
+        "object": "resources"
+      },
+      "permissions": [
+        {
+          "role": "anonymous",
+          "actions": [
+            {
+              "action": "read"
+            }
+          ]
+        }
+      ]
+    },
+    "runs": {
+      "source": {
+        "type": "table",
+        "object": "runs"
+      },
+      "permissions": [
+        {
+          "role": "anonymous",
+          "actions": [
+            {
+              "action": "read"
+            }
+          ]
+        }
+      ]
+    },
+    "users": {
+      "source": {
+        "type": "table",
+        "object": "users"
+      },
+      "permissions": [
+        {
+          "role": "anonymous",
+          "actions": [
+            {
+              "action": "read"
+            }
+          ]
+        }
+      ]
+    }
+  }
 }

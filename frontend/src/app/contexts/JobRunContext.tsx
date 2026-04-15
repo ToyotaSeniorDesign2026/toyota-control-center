@@ -85,6 +85,10 @@ function dedupeById<T extends { id: string }>(items: T[]) {
   return Array.from(map.values());
 }
 
+function localOnly<T extends { id: string }>(items: T[]) {
+  return items.filter((item) => item.id.startsWith("local-"));
+}
+
 function toIsoNow() {
   return new Date().toISOString();
 }
@@ -282,8 +286,8 @@ export function JobRunProvider({ children }: { children: ReactNode }) {
   const syncFromApi = async () => {
     const token = getAuthToken();
     const [resourcesResponse, runsResponse] = await Promise.all([listResources(token), listRuns(token)]);
-    const nextResources = dedupeById([...resourcesResponse.items, ...resources]);
-    const nextRuns = dedupeById([...runsResponse.items, ...runs]).sort((a, b) =>
+    const nextResources = dedupeById([...localOnly(resources), ...resourcesResponse.items]);
+    const nextRuns = dedupeById([...localOnly(runs), ...runsResponse.items]).sort((a, b) =>
       b.updated_at.localeCompare(a.updated_at),
     );
 

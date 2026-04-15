@@ -2,6 +2,7 @@
 
 import logging
 from typing import Optional
+import json
 
 from app.core.config import settings
 
@@ -25,10 +26,12 @@ class ChatService:
                 self.client = None
 
     async def send_message(
-        self, 
-        message: str, 
+        self,
+        message: str,
         conversation_history: Optional[list] = None,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        current_draft: Optional[dict] = None,
+        available_resources: Optional[list] = None,
     ) -> str:
         """
         Send a message to OpenAI and get a response.
@@ -50,11 +53,29 @@ class ChatService:
             # Build messages list
             messages = []
             
+            draft_context = ""
+            if current_draft:
+                draft_context = (
+                    "\n\nCURRENT LIVE FORM DRAFT:\n"
+                    f"{json.dumps(current_draft, indent=2)}\n\n"
+                    "Use the current draft to decide the next missing field to ask for. "
+                    "Do not ask for fields that are already filled."
+                )
+
+            # Build resources list for system prompt
+            if available_resources:
+                resources_list = "\n".join(
+                    f"- id={r['id']}  name={r['name']}  type={r.get('type', 'unknown')}"
+                    for r in available_resources
+                )
+            else:
+                resources_list = "(none loaded)"
+
             # Add system prompt
-            system_prompt = """
+            system_prompt = f"""
             You are CC Assistant, an AI agent for the Toyota Control Center.
 
-            You help users create, edit, and understand jobs through a chat interface connected to a structured UI form.
+            You help users create, edit, and understand jobs and resources through a chat interface connected to a structured UI form.
 
             Your responsibilities are:
             1. respond naturally and helpfully to the user
@@ -63,7 +84,17 @@ class ChatService:
 
             You should sound conversational, concise, and professional.
 
-            SUPPORTED JOB TYPES:
+            RESOURCE MODEL:
+            - A resource is the reusable backend definition.
+            - A run executes a resource in a target environment.
+            - For SQL resources, the default query usually lives on the resource as config.query.
+            - A specific run may override the query with params.query.
+            - When the user asks to create a SQL job, guide them toward defining:
+              1. the reusable SQL resource
+              2. any run-specific overrides needed at execution time
+
+            SUPPORTED JOB / RESOURCE TYPES:
+            - SQL
             - Airflow
             - Excel
             - PowerPoint
@@ -77,6 +108,33 @@ class ChatService:
             - approval_required
             - tags
             - run_type
+            - action
+            - target_environment
+
+            RESOURCE FIELDS:
+            - name
+            - kind
+            - type
+            - connector
+            - environment
+            - data_sensitivity
+            - tags
+            - config
+
+            RUN FIELDS:
+            - action
+            - target_environment
+            - params
+
+            SQL RESOURCE / RUN FIELDS:
+            - query
+            - connection_id
+            - connector
+            - schedule
+            - params.query
+            - config.query
+            - config.connection_id
+            - config.schedule
 
             AIRFLOW FIELDS:
             - dag_name
@@ -114,13 +172,37 @@ class ChatService:
             - Ask follow-up questions when needed
             - Guide the user through missing important fields one step at a time
             - Do not mention internal schemas, extraction logic, or structured outputs unless asked
+            - When creating a SQL job, prioritize the required form fields in this order:
+              1. job name
+              2. owner
+              3. SQL connector / database
+              4. connection id
+              5. SQL query
+              6. target environment
+              7. run type: manual or scheduled
+              8. schedule, only when the run type is scheduled
+            - Ask for only one missing required SQL field per response.
+            - If the user says to run it manually, set run_type to manual and do not ask for a schedule.
+            - Treat the job name as the SQL resource name unless the user explicitly gives a different resource name.
 
             IMPORTANT:
             The UI may display your extracted field updates in a separate console, artifact panel, or live form.
             Your user-facing response should remain natural and should not contain raw JSON unless explicitly requested.
 
             If the user is creating a job, help move the workflow forward by asking for the next most useful missing detail.
-            """
+            If the user is creating a SQL job, prefer framing it as a reusable SQL resource plus optional run overrides.
+
+            AVAILABLE JOBS (resources the user can run):
+            {resources_list}
+
+            RUNNING EXISTING JOBS:
+            - When the user asks to run, re-run, execute, or trigger an existing job by name, look it up in AVAILABLE JOBS above.
+            - If a match is found and the user clearly intends to run it, append exactly this marker at the very end of your response: [RUN_JOB:resource_id]
+            - Replace "resource_id" with the actual id value from the list.
+            - Do NOT describe the marker to the user — it is processed automatically.
+            - Do NOT ask for confirmation if the user has already clearly expressed intent to run (e.g. "run X", "please run X again", "execute X").
+            - If the job is not in the list, explain that it does not exist yet and offer to create it.
+            """ + draft_context
             
             messages.append({"role": "system", "content": system_prompt})
             

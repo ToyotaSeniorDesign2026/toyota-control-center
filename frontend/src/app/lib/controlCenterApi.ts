@@ -160,3 +160,22 @@ export function requestOpenAIChat(payload: OpenAIChatRequest, token?: string | n
 export function listMcpServers(token?: string | null) {
   return request<MCPServerListResponse>("/integrations/mcp/servers", {}, token);
 }
+
+export interface RunLogEntry {
+  run_id: string;
+  timestamp: string;
+  level: string;
+  message: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface RunLogsResponse {
+  run_id: string;
+  status: string;
+  logs: RunLogEntry[];
+  next_cursor?: string | null;
+}
+
+export function getRunLogs(runId: string, token?: string | null) {
+  return request<RunLogsResponse>(`/runs/${runId}/logs?limit=500`, {}, token);
+}

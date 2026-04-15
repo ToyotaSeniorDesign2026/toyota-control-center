@@ -23,24 +23,6 @@ function buildName(prefix: string, prompt: string): string {
   return words ? `${prefix}_${words}` : `${prefix}_automation`;
 }
 
-function buildEmail(prompt: string): string {
-  if (prompt.toLowerCase().includes("finance")) return "finance.team@toyota.com";
-  if (prompt.toLowerCase().includes("sales")) return "sales.ops@toyota.com";
-  if (prompt.toLowerCase().includes("exec")) return "executive.team@toyota.com";
-  return "analyst@toyota.com";
-}
-
-function buildName(prefix: string, prompt: string): string {
-  const words = prompt
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 4)
-    .join("_");
-  return words ? `${prefix}_${words}` : `${prefix}_automation`;
-}
-
 export default function Forms() {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [aiPrompt, setAiPrompt] = useState("");

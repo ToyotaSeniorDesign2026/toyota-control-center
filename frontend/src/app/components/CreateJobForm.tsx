@@ -12,13 +12,15 @@ import {
   SelectValue,
 } from "./ui/select";
 
-type JobType = "Airflow" | "Excel" | "PowerPoint";
+type JobType = "Airflow" | "SQL" | "Excel" | "PowerPoint";
 
 interface UniversalFields {
   job_name: string;
   description: string;
   owner: string;
   environment: string;
+  target_environment: string;
+  data_sensitivity: string;
   schedule: string;
   approval_required: boolean;
   tags: string[];
@@ -46,6 +48,14 @@ interface ExcelDetails {
   file_location: string;
 }
 
+interface SQLDetails {
+  connector: string;
+  connection_id: string;
+  query: string;
+  output_destination: string;
+  result_limit: string;
+}
+
 interface PowerPointDetails {
   data_source: string;
   slide_template: string;
@@ -59,7 +69,7 @@ interface PowerPointDetails {
 interface CreateJobInputs {
   universal: UniversalFields;
   job_type: JobType;
-  job_details: AirflowDetails | ExcelDetails | PowerPointDetails;
+  job_details: AirflowDetails | SQLDetails | ExcelDetails | PowerPointDetails;
 }
 
 interface CreateJobFormProps {
@@ -67,9 +77,44 @@ interface CreateJobFormProps {
   onCancel?: () => void;
   draftData?: Record<string, any>;
   onDraftDataChange?: (data: Record<string, any>) => void;
+  hideFooter?: boolean;
 }
 
-export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange }: CreateJobFormProps) {
+const isRecord = (value: unknown): value is Record<string, any> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const normalizeJobType = (value: unknown): JobType | null => {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (normalized === "sql" || normalized === "query") return "SQL";
+  if (normalized === "airflow" || normalized === "dag") return "Airflow";
+  if (normalized === "excel" || normalized === "xls" || normalized === "xlsx") return "Excel";
+  if (normalized === "powerpoint" || normalized === "ppt" || normalized === "pptx") return "PowerPoint";
+  return null;
+};
+
+const normalizeEnvironment = (value: unknown) => {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "production") return "prod";
+  if (normalized === "semi-prod" || normalized === "semiprod") return "staging";
+  return normalized;
+};
+
+const sqlConnectorOptions = ["sql-dab", "sql-dab-analytics"];
+
+const defaultConnectionIdForConnector = (connector: string) => {
+  if (connector === "sql-dab") return "postgres";
+  if (connector === "sql-dab-analytics") return "analytics";
+  return "";
+};
+
+const normalizeSqlConnector = (value: unknown) => {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (sqlConnectorOptions.includes(normalized)) return normalized;
+  return "sql-dab";
+};
+
+export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange, hideFooter = false }: CreateJobFormProps) {
   const [jobType, setJobType] = useState<JobType>("Airflow");
   const [currentTag, setCurrentTag] = useState("");
 
@@ -79,6 +124,8 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
     description: "",
     owner: "",
     environment: "dev",
+    target_environment: "dev",
+    data_sensitivity: "low",
     schedule: "",
     approval_required: false,
     tags: [],
@@ -110,6 +157,15 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
     file_location: "",
   });
 
+  // SQL Details
+  const [sqlDetails, setSqlDetails] = useState<SQLDetails>({
+    connector: "sql-dab",
+    connection_id: "postgres",
+    query: "",
+    output_destination: "",
+    result_limit: "",
+  });
+
   // PowerPoint Details
   const [powerpointDetails, setPowerpointDetails] = useState<PowerPointDetails>({
     data_source: "",
@@ -129,6 +185,7 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
     type: JobType,
     uni: UniversalFields,
     airflow: AirflowDetails,
+    sql: SQLDetails,
     excel: ExcelDetails,
     powerpoint: PowerPointDetails
   ) => {
@@ -149,6 +206,27 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
       if (airflow.data_destinations) draft.data_destinations = airflow.data_destinations.split(",").map(s => s.trim()).filter(s => s);
       draft.retry_policy = airflow.retry_policy;
       draft.execution_timeout = airflow.execution_timeout;
+    } else if (type === "SQL") {
+      draft.connector = sql.connector;
+      draft.connection_id = sql.connection_id;
+      draft.query = sql.query;
+      draft.output_destination = sql.output_destination;
+      draft.result_limit = sql.result_limit;
+      draft.kind = "runtime";
+      draft.type = "sql";
+      draft.target_environment = uni.target_environment;
+      draft.data_sensitivity = uni.data_sensitivity;
+      draft.config = {
+        connection_id: sql.connection_id,
+        query: sql.query,
+        schedule: uni.schedule,
+        output_destination: sql.output_destination,
+        result_limit: sql.result_limit,
+      };
+      draft.params = {
+        query: sql.query,
+        connection_id: sql.connection_id,
+      };
     } else if (type === "Excel") {
       draft.input_data_sources = excel.input_data_sources;
       draft.transformations = excel.transformations;
@@ -177,25 +255,34 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
     isApplyingDraftDataRef.current = true;
     
     // Update job_type if provided
-    if (draftData.job_type && ["Airflow", "Excel", "PowerPoint"].includes(draftData.job_type)) {
-      setJobType(draftData.job_type);
+    const config = isRecord(draftData.config) ? draftData.config : {};
+    const params = isRecord(draftData.params) ? draftData.params : {};
+    const normalizedType =
+      normalizeJobType(draftData.job_type) ||
+      normalizeJobType(draftData.type) ||
+      (draftData.query || config.query || params.query ? "SQL" : null);
+
+    if (normalizedType) {
+      setJobType(normalizedType);
     }
     
     // Update universal fields
     setUniversal((prev) => ({
       ...prev,
-      ...(draftData.job_name !== undefined && { job_name: draftData.job_name }),
+      ...((draftData.job_name ?? draftData.name) !== undefined && { job_name: draftData.job_name ?? draftData.name }),
       ...(draftData.description !== undefined && { description: draftData.description }),
       ...(draftData.owner !== undefined && { owner: draftData.owner }),
-      ...(draftData.environment !== undefined && { environment: draftData.environment }),
-      ...(draftData.schedule !== undefined && { schedule: draftData.schedule }),
+      ...(draftData.environment !== undefined && { environment: normalizeEnvironment(draftData.environment) ?? draftData.environment }),
+      ...(draftData.target_environment !== undefined && { target_environment: normalizeEnvironment(draftData.target_environment) ?? draftData.target_environment }),
+      ...(draftData.data_sensitivity !== undefined && { data_sensitivity: draftData.data_sensitivity }),
+      ...((draftData.schedule ?? config.schedule) !== undefined && { schedule: draftData.schedule ?? config.schedule }),
       ...(draftData.approval_required !== undefined && { approval_required: draftData.approval_required }),
       ...(draftData.tags && Array.isArray(draftData.tags) && { tags: draftData.tags }),
       ...(draftData.run_type !== undefined && { run_type: draftData.run_type }),
     }));
     
     // Update type-specific fields
-    if (draftData.job_type === "Airflow") {
+    if (normalizedType === "Airflow") {
       setAirflowDetails((prev) => ({
         ...prev,
         ...(draftData.dag_name !== undefined && { dag_name: draftData.dag_name }),
@@ -207,7 +294,18 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
         ...(draftData.retry_policy !== undefined && { retry_policy: draftData.retry_policy }),
         ...(draftData.execution_timeout !== undefined && { execution_timeout: draftData.execution_timeout }),
       }));
-    } else if (draftData.job_type === "Excel") {
+    } else if (normalizedType === "SQL") {
+      const connector = normalizeSqlConnector(draftData.connector ?? config.connector);
+      const explicitConnectionId = draftData.connection_id ?? config.connection_id;
+      setSqlDetails((prev) => ({
+        ...prev,
+        connector,
+        connection_id: explicitConnectionId ?? defaultConnectionIdForConnector(connector),
+        ...((draftData.query ?? params.query ?? config.query) !== undefined && { query: draftData.query ?? params.query ?? config.query }),
+        ...((draftData.output_destination ?? config.output_destination) !== undefined && { output_destination: draftData.output_destination ?? config.output_destination }),
+        ...((draftData.result_limit ?? config.result_limit) !== undefined && { result_limit: String(draftData.result_limit ?? config.result_limit) }),
+      }));
+    } else if (normalizedType === "Excel") {
       setExcelDetails((prev) => ({
         ...prev,
         ...(draftData.input_data_sources !== undefined && { input_data_sources: draftData.input_data_sources }),
@@ -218,7 +316,7 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
         ...(draftData.output_file_name !== undefined && { output_file_name: draftData.output_file_name }),
         ...(draftData.file_location !== undefined && { file_location: draftData.file_location }),
       }));
-    } else if (draftData.job_type === "PowerPoint") {
+    } else if (normalizedType === "PowerPoint") {
       setPowerpointDetails((prev) => ({
         ...prev,
         ...(draftData.data_source !== undefined && { data_source: draftData.data_source }),
@@ -239,8 +337,8 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
 
   // Sync form state changes back to parent (but only when user makes changes, not when draftData is applied)
   useEffect(() => {
-    updateDraftAndParent(jobType, universal, airflowDetails, excelDetails, powerpointDetails);
-  }, [jobType, universal, airflowDetails, excelDetails, powerpointDetails, onDraftDataChange]);
+    updateDraftAndParent(jobType, universal, airflowDetails, sqlDetails, excelDetails, powerpointDetails);
+  }, [jobType, universal, airflowDetails, sqlDetails, excelDetails, powerpointDetails, onDraftDataChange]);
 
   const validateForm = (): boolean => {
     const newErrors: Record<string, string> = {};
@@ -251,12 +349,26 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
     if (!universal.owner.trim()) {
       newErrors.owner = "Owner is required";
     }
-    if (!universal.schedule.trim()) {
+    if (universal.run_type === "scheduled" && !universal.schedule.trim()) {
       newErrors.schedule = "Schedule is required";
     }
 
     if (jobType === "Airflow" && !airflowDetails.dag_name.trim()) {
       newErrors.dag_name = "DAG name is required";
+    }
+    if (jobType === "SQL") {
+      if (!sqlDetails.connector.trim()) {
+        newErrors.sql_connector = "SQL connector is required";
+      }
+      if (!sqlDetails.connection_id.trim()) {
+        newErrors.connection_id = "Connection ID is required";
+      }
+      if (!universal.target_environment.trim()) {
+        newErrors.target_environment = "Target environment is required";
+      }
+      if (!sqlDetails.query.trim()) {
+        newErrors.query = "SQL query is required";
+      }
     }
     if (jobType === "Excel" && !excelDetails.output_file_name.trim()) {
       newErrors.output_file_name = "Output file name is required";
@@ -308,10 +420,12 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
       return;
     }
 
-    let jobDetails: AirflowDetails | ExcelDetails | PowerPointDetails;
+    let jobDetails: AirflowDetails | SQLDetails | ExcelDetails | PowerPointDetails;
 
     if (jobType === "Airflow") {
       jobDetails = airflowDetails;
+    } else if (jobType === "SQL") {
+      jobDetails = sqlDetails;
     } else if (jobType === "Excel") {
       jobDetails = excelDetails;
     } else {
@@ -338,6 +452,8 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
       description: "",
       owner: "",
       environment: "dev",
+      target_environment: "dev",
+      data_sensitivity: "low",
       schedule: "",
       approval_required: false,
       tags: [],
@@ -361,6 +477,13 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
       formulas: "",
       output_file_name: "",
       file_location: "",
+    });
+    setSqlDetails({
+      connector: "sql-dab",
+      connection_id: "postgres",
+      query: "",
+      output_destination: "",
+      result_limit: "",
     });
     setPowerpointDetails({
       data_source: "",
@@ -411,6 +534,7 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
                   </Label>
                   <Input
                     id="job_name"
+                    required
                     placeholder="e.g., Monthly Sales Report"
                     value={universal.job_name}
                     onChange={(e) =>
@@ -449,6 +573,7 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
                     </Label>
                     <Input
                       id="owner"
+                      required
                       placeholder="e.g., John Doe"
                       value={universal.owner}
                       onChange={(e) =>
@@ -472,36 +597,61 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
                       <SelectTrigger id="environment" className="w-full">
                         <SelectValue />
                       </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="dev">Development</SelectItem>
+                      <SelectItem value="staging">Staging</SelectItem>
+                      <SelectItem value="prod">Production</SelectItem>
+                    </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                {/* Two-Column Responsive Layout: Target Environment & Data Sensitivity */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* Target Environment */}
+                  <div className="space-y-2">
+                    <Label htmlFor="target_environment" className="text-sm font-medium text-gray-700">
+                      Target Environment *
+                    </Label>
+                    <Select value={universal.target_environment} onValueChange={(value) =>
+                      setUniversal({ ...universal, target_environment: value })
+                    }>
+                      <SelectTrigger id="target_environment" className={`w-full ${errors.target_environment ? "border-red-500" : ""}`}>
+                        <SelectValue />
+                      </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="dev">Development</SelectItem>
                         <SelectItem value="staging">Staging</SelectItem>
-                        <SelectItem value="production">Production</SelectItem>
+                        <SelectItem value="prod">Production</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {errors.target_environment && (
+                      <p className="text-xs text-red-600">{errors.target_environment}</p>
+                    )}
+                  </div>
+
+                  {/* Data Sensitivity */}
+                  <div className="space-y-2">
+                    <Label htmlFor="data_sensitivity" className="text-sm font-medium text-gray-700">
+                      Data Sensitivity
+                    </Label>
+                    <Select value={universal.data_sensitivity} onValueChange={(value) =>
+                      setUniversal({ ...universal, data_sensitivity: value })
+                    }>
+                      <SelectTrigger id="data_sensitivity" className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="low">Low</SelectItem>
+                        <SelectItem value="medium">Medium</SelectItem>
+                        <SelectItem value="high">High</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
                 </div>
 
-                {/* Two-Column Responsive Layout: Schedule & Run Type */}
+                {/* Run Type */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {/* Schedule */}
-                  <div className="space-y-2">
-                    <Label htmlFor="schedule" className="text-sm font-medium text-gray-700">
-                      Schedule *
-                    </Label>
-                    <Input
-                      id="schedule"
-                      placeholder="e.g., Daily at 08:00 AM"
-                      value={universal.schedule}
-                      onChange={(e) =>
-                        setUniversal({ ...universal, schedule: e.target.value })
-                      }
-                      className={`w-full ${errors.schedule ? "border-red-500" : ""}`}
-                    />
-                    {errors.schedule && (
-                      <p className="text-xs text-red-600">{errors.schedule}</p>
-                    )}
-                  </div>
-
                   {/* Run Type */}
                   <div className="space-y-2">
                     <Label htmlFor="run_type" className="text-sm font-medium text-gray-700">
@@ -520,6 +670,26 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
                       </SelectContent>
                     </Select>
                   </div>
+                </div>
+
+                {/* Schedule */}
+                <div className="space-y-2">
+                  <Label htmlFor="schedule" className="text-sm font-medium text-gray-700">
+                    Schedule {universal.run_type === "scheduled" ? "*" : ""}
+                  </Label>
+                  <Input
+                    id="schedule"
+                    required={universal.run_type === "scheduled"}
+                    placeholder={universal.run_type === "manual" ? "Manual run" : "e.g., Daily at 08:00 AM"}
+                    value={universal.schedule}
+                    onChange={(e) =>
+                      setUniversal({ ...universal, schedule: e.target.value })
+                    }
+                    className={`w-full ${errors.schedule ? "border-red-500" : ""}`}
+                  />
+                  {errors.schedule && (
+                    <p className="text-xs text-red-600">{errors.schedule}</p>
+                  )}
                 </div>
 
                 {/* Approval Required */}
@@ -596,8 +766,8 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
 
                 <div className="space-y-2">
                   <Label className="text-sm font-medium text-gray-700">Job Type</Label>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    {(["Airflow", "Excel", "PowerPoint"] as const).map((type) => (
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                    {(["Airflow", "SQL", "Excel", "PowerPoint"] as const).map((type) => (
                       <button
                         key={type}
                         onClick={() => setJobType(type)}
@@ -804,6 +974,132 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
                       className="w-full"
                     />
                   </div>
+              </div>
+            )}
+
+            {/* SQL Specific Fields */}
+            {jobType === "SQL" && (
+              <div className="space-y-6 mt-6 pt-6 border-t border-gray-200">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-2">
+                    <Label htmlFor="sql_connector" className="text-sm font-medium text-gray-700">
+                      SQL Connector *
+                    </Label>
+                    <Select
+                      value={sqlDetails.connector}
+                      onValueChange={(value) => {
+                        const previousDefault = defaultConnectionIdForConnector(sqlDetails.connector);
+                        const nextDefault = defaultConnectionIdForConnector(value);
+                        setSqlDetails({
+                          ...sqlDetails,
+                          connector: value,
+                          connection_id:
+                            !sqlDetails.connection_id || sqlDetails.connection_id === previousDefault
+                              ? nextDefault
+                              : sqlDetails.connection_id,
+                        });
+                      }}
+                    >
+                      <SelectTrigger id="sql_connector" className={`w-full ${errors.sql_connector ? "border-red-500" : ""}`}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="sql-dab">Control Center Dev Database</SelectItem>
+                        <SelectItem value="sql-dab-analytics">Analytics Reporting Database</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {errors.sql_connector && (
+                      <p className="text-xs text-red-600">{errors.sql_connector}</p>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="connection_id" className="text-sm font-medium text-gray-700">
+                      Connection ID *
+                    </Label>
+                    <Input
+                      id="connection_id"
+                      required
+                      placeholder="e.g., sql-dab"
+                      value={sqlDetails.connection_id}
+                      onChange={(e) =>
+                        setSqlDetails({
+                          ...sqlDetails,
+                          connection_id: e.target.value,
+                        })
+                      }
+                      className={`w-full ${errors.connection_id ? "border-red-500" : ""}`}
+                    />
+                    {errors.connection_id && (
+                      <p className="text-xs text-red-600">{errors.connection_id}</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="sql_query" className="text-sm font-medium text-gray-700">
+                    SQL Query *
+                  </Label>
+                  <textarea
+                    id="sql_query"
+                    required
+                    placeholder="select id, email, role from users order by id"
+                    value={sqlDetails.query}
+                    onChange={(e) =>
+                      setSqlDetails({
+                        ...sqlDetails,
+                        query: e.target.value,
+                      })
+                    }
+                    className={`w-full px-3 py-2 border rounded-md text-sm font-mono placeholder-gray-500 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923] ${
+                      errors.query ? "border-red-500" : "border-gray-300"
+                    }`}
+                    rows={7}
+                  />
+                  {errors.query && (
+                    <p className="text-xs text-red-600">{errors.query}</p>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-2">
+                    <Label htmlFor="output_destination" className="text-sm font-medium text-gray-700">
+                      Output Destination
+                    </Label>
+                    <Input
+                      id="output_destination"
+                      placeholder="e.g., Control Center run result"
+                      value={sqlDetails.output_destination}
+                      onChange={(e) =>
+                        setSqlDetails({
+                          ...sqlDetails,
+                          output_destination: e.target.value,
+                        })
+                      }
+                      className="w-full"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="result_limit" className="text-sm font-medium text-gray-700">
+                      Result Limit
+                    </Label>
+                    <Input
+                      id="result_limit"
+                      type="number"
+                      min="1"
+                      placeholder="e.g., 100"
+                      value={sqlDetails.result_limit}
+                      onChange={(e) =>
+                        setSqlDetails({
+                          ...sqlDetails,
+                          result_limit: e.target.value,
+                        })
+                      }
+                      className="w-full"
+                    />
+                  </div>
+                </div>
               </div>
             )}
 
@@ -1115,6 +1411,7 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
       </div>
 
       {/* Action Buttons - Sticky Footer */}
+      {!hideFooter && (
       <div className="flex-shrink-0 border-t border-gray-200 bg-white px-4 py-4 sm:px-6 lg:px-8 flex gap-3">
         <Button
           variant="outline"
@@ -1130,6 +1427,7 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
           Create Job
         </Button>
       </div>
+      )}
     </div>
   );
 }

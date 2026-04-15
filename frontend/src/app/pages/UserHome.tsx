@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -31,7 +31,9 @@ import ExcelReportForm from "../components/user/ExcelReportForm";
 import SQLJobForm from "../components/user/SQLJobForm";
 import PowerPointForm from "../components/user/PowerPointForm";
 import { useCalendarOverlay } from "../contexts/CalendarContext";
-import { createJobFromForm, getCalendarEvents, getDraftForms, getMyJobs, getPendingPromotionResources, getSavedTemplates, mapJobToPendingPromotionResource, saveDraft, saveTemplate, subscribeToUserDashboardStore } from "../lib/userDashboardStore";
+import { useJobRuns } from "../contexts/JobRunContext";
+import { createResource, createResourceRun, getRunLogs, type ResourceCreatePayload, type ResourceRecord, type RunCreatePayload, type RunLogEntry, type RunRecord } from "../lib/controlCenterApi";
+import { createJobFromForm, getDraftForms, getPendingPromotionResources, getSavedTemplates, mapJobToPendingPromotionResource, saveDraft, saveTemplate, subscribeToUserDashboardStore } from "../lib/userDashboardStore";
 import type { Job as StoredJob } from "./resourcesData";
 import {
   mockReadyForPromotion,
@@ -56,19 +58,13 @@ const kpis = [
   { label: "Saved Jobs", value: 27, hint: "5 updated recently", tone: "text-[#ed0923]" },
 ];
 
-const recentJobs = [
-  { name: "Monthly Dealer KPI Deck", type: "PowerPoint", schedule: "Monthly, day 1", status: "Healthy" },
-  { name: "Warranty Claims Rollup", type: "Excel", schedule: "Weekly, Mon 08:00", status: "Running" },
-  { name: "Customer Churn Analysis", type: "SQL", schedule: "Daily, 06:00", status: "Needs Attention" },
-  { name: "Quarterly Revenue Report", type: "PowerPoint", schedule: "Quarterly, day 1", status: "Healthy" },
-];
-
 type DashboardJobListItem = {
   id: string;
   name: string;
   type: string;
   schedule: string;
-  status: "Healthy" | "Running" | "Needs Attention";
+  status: "Ready" | "Healthy" | "Running" | "Needs Attention";
+  updatedAt: string;
   payload?: WorkspaceJobPayload;
 };
 
@@ -76,12 +72,6 @@ const draftJobs = [
   { id: "draft-001", name: "Customer Retention Workflow", type: "Workflow", lastEdited: "1 hour ago" },
   { id: "draft-002", name: "Dealer Forecast Pipeline", type: "SQL", lastEdited: "3 hours ago" },
   { id: "draft-003", name: "Revenue Summary Agent", type: "AI Agent", lastEdited: "Yesterday" },
-];
-
-const retiredJobs = [
-  { id: "retired-001", name: "Legacy Revenue Dashboard", type: "Dashboard", retiredDate: "Feb 15, 2026" },
-  { id: "retired-002", name: "Old Churn Monitor", type: "Python Script", retiredDate: "Jan 30, 2026" },
-  { id: "retired-003", name: "Archive Claims Summary", type: "Excel", retiredDate: "Jan 20, 2026" },
 ];
 
 const activityTimeline = [
@@ -96,62 +86,11 @@ const activityTimeline = [
 interface RunItem {
   id: string;
   jobName: string;
-  jobType: "PowerPoint" | "Excel" | "SQL" | "Custom";
+  jobType: string;
   status: "scheduled" | "running" | "completed" | "failed";
   scheduledTime: Date;
   completedTime?: Date;
 }
-
-const mockUpcomingRuns: RunItem[] = [
-  {
-    id: "run-001",
-    jobName: "Monthly Dealer KPI Deck",
-    jobType: "PowerPoint",
-    status: "scheduled",
-    scheduledTime: new Date(Date.now() + 24 * 60 * 60 * 1000), // Tomorrow 8:00 AM
-  },
-  {
-    id: "run-002",
-    jobName: "Customer Churn Analysis",
-    jobType: "SQL",
-    status: "scheduled",
-    scheduledTime: new Date(Date.now() + 18 * 60 * 60 * 1000), // Today 6:00 PM
-  },
-  {
-    id: "run-003",
-    jobName: "Quarterly Revenue Report",
-    jobType: "PowerPoint",
-    status: "scheduled",
-    scheduledTime: new Date(Date.now() + 22 * 24 * 60 * 60 * 1000), // Apr 1, 9:00 AM
-  },
-];
-
-const mockRecentRuns: RunItem[] = [
-  {
-    id: "run-004",
-    jobName: "Warranty Claims Rollup",
-    jobType: "Excel",
-    status: "completed",
-    scheduledTime: new Date(Date.now() - 30 * 60 * 1000), // 30 minutes ago
-    completedTime: new Date(Date.now() - 10 * 60 * 1000), // 10 minutes ago
-  },
-  {
-    id: "run-005",
-    jobName: "Customer Churn Analysis",
-    jobType: "SQL",
-    status: "failed",
-    scheduledTime: new Date(Date.now() - 90 * 60 * 1000), // 90 minutes ago
-    completedTime: new Date(Date.now() - 60 * 60 * 1000), // 1 hour ago
-  },
-  {
-    id: "run-006",
-    jobName: "Monthly Dealer KPI Deck",
-    jobType: "PowerPoint",
-    status: "completed",
-    scheduledTime: new Date(Date.now() - 24 * 60 * 60 * 1000 - 2 * 60 * 60 * 1000), // Yesterday 2 hours earlier
-    completedTime: new Date(Date.now() - 24 * 60 * 60 * 1000), // Yesterday
-  },
-];
 
 const formatRunTime = (date: Date): string => {
   const now = new Date();
@@ -335,6 +274,100 @@ const mapStoredJobToWorkspaceType = (type: StoredJob["type"]): "PowerPoint" | "E
   return "SQL";
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const getString = (value: unknown): string | null =>
+  typeof value === "string" && value.trim() ? value.trim() : null;
+
+const titleCase = (value: string) =>
+  value
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+
+const normalizeResourceType = (type?: string | null) => {
+  const normalized = type?.toLowerCase();
+  if (normalized === "powerpoint" || normalized === "powerpoint deck") return "PowerPoint";
+  if (normalized === "excel" || normalized === "excel report") return "Excel";
+  if (normalized === "sql" || normalized === "sql query") return "SQL";
+  if (normalized === "mcp") return "MCP";
+  if (normalized === "research") return "Research";
+  return type ? titleCase(type) : "Custom";
+};
+
+const getNestedRecord = (record: Record<string, unknown> | null | undefined, key: string) => {
+  const value = record?.[key];
+  return isRecord(value) ? value : null;
+};
+
+const getRunMetadata = (run: RunRecord) => {
+  const submitted = isRecord(run.submitted_config_json) ? run.submitted_config_json : null;
+  const resolved = isRecord(run.resolved_job_spec_json) ? run.resolved_job_spec_json : null;
+  const draft = getNestedRecord(submitted, "draft");
+  const jobConfig = getNestedRecord(submitted, "job_config");
+  const metadata = getNestedRecord(jobConfig, "metadata");
+
+  return { submitted, resolved, draft, jobConfig, metadata };
+};
+
+const resolveRunJobName = (run: RunRecord, resource?: ResourceRecord) => {
+  const { resolved, draft, metadata } = getRunMetadata(run);
+  return (
+    getString(resource?.name) ||
+    getString(resolved?.name) ||
+    getString(draft?.name) ||
+    getString(metadata?.name) ||
+    getString(metadata?.job_name) ||
+    `Run ${run.id}`
+  );
+};
+
+const resolveRunJobType = (run: RunRecord, resource?: ResourceRecord) => {
+  const { draft, metadata } = getRunMetadata(run);
+  return normalizeResourceType(
+    getString(resource?.type) ||
+      getString(draft?.jobType) ||
+      getString(metadata?.job_type) ||
+      getString(run.execution_backend) ||
+      "Custom"
+  );
+};
+
+const resolveRunSchedule = (run: RunRecord, resource?: ResourceRecord) => {
+  const { resolved, jobConfig } = getRunMetadata(run);
+  const resourceConfig = isRecord(resource?.config) ? resource.config : null;
+  return (
+    getString(resolved?.schedule) ||
+    getString(jobConfig?.schedule) ||
+    getString(resourceConfig?.schedule) ||
+    (run.trigger_source === "schedule" ? "Scheduled run" : "On demand")
+  );
+};
+
+const mapRunStatusToDashboardStatus = (status: string): DashboardJobListItem["status"] => {
+  const normalized = status.toLowerCase();
+  if (["queued", "running", "executing", "in_progress"].includes(normalized)) return "Running";
+  if (["failed", "stopped", "cancelled", "canceled", "blocked", "requires_approval"].includes(normalized)) {
+    return "Needs Attention";
+  }
+  return "Healthy";
+};
+
+const mapRunStatusToRunItemStatus = (status: string): RunItem["status"] => {
+  const normalized = status.toLowerCase();
+  if (["queued", "scheduled", "pending"].includes(normalized)) return "scheduled";
+  if (["running", "executing", "in_progress"].includes(normalized)) return "running";
+  if (["failed", "stopped", "cancelled", "canceled", "blocked"].includes(normalized)) return "failed";
+  return "completed";
+};
+
+const getDashboardJobStatusClasses = (status: DashboardJobListItem["status"]) => {
+  if (status === "Ready") return "bg-amber-100 text-amber-700";
+  if (status === "Healthy") return "bg-green-100 text-green-700";
+  if (status === "Running") return "bg-blue-100 text-blue-700";
+  return "bg-red-100 text-red-700";
+};
+
 const createWorkspaceJobPayloadFromStoredJob = (job: StoredJob): WorkspaceJobPayload => {
   const scheduleMessage =
     job.logs?.find((entry) => entry.message.toLowerCase().includes("runs "))?.message ?? "Manual schedule";
@@ -368,60 +401,137 @@ const createWorkspaceJobPayloadFromStoredJob = (job: StoredJob): WorkspaceJobPay
   };
 };
 
-const createDashboardJobs = (): DashboardJobListItem[] => {
-  const storedJobs = getMyJobs().map((job) => ({
-    id: job.id,
-    name: job.name,
-    type: mapStoredJobTypeToDashboardType(job.type),
-    schedule:
-      job.logs?.find((entry) => entry.message.toLowerCase().includes("runs "))?.message ?? "Manual schedule",
-    status: mapStoredJobStatusToDashboardStatus(job.status),
-    payload: createWorkspaceJobPayloadFromStoredJob(job),
-  }));
+const createWorkspaceJobPayloadFromRun = (run: RunRecord, resource?: ResourceRecord): WorkspaceJobPayload => {
+  const name = resolveRunJobName(run, resource);
+  const type = resolveRunJobType(run, resource);
+  const schedule = resolveRunSchedule(run, resource);
+  const status = mapRunStatusToDashboardStatus(run.status);
+  const { resolved } = getRunMetadata(run);
+  const tasks = Array.isArray(resolved?.tasks) ? resolved.tasks : [];
 
-  const fallbackJobs = recentJobs
-    .filter((job) => !storedJobs.some((storedJob) => storedJob.name === job.name))
-    .map((job, index) => ({
-      id: `fallback-job-${index + 1}`,
-      ...job,
-      payload: mockJobSpecs[job.name],
-    }));
-
-  return [...storedJobs, ...fallbackJobs];
+  return {
+    job_id: resource?.id ?? run.resource_id,
+    name,
+    type: type as WorkspaceJobPayload["type"],
+    schedule,
+    status,
+    description:
+      getString(resolved?.description) ||
+      getString(resolved?.intent) ||
+      `Latest database run ${run.id} for ${name}.`,
+    inputs: [
+      `Resource ID: ${run.resource_id}`,
+      `Environment: ${run.target_environment}`,
+      `Action: ${run.action}`,
+    ],
+    outputs: [
+      run.connector_run_id ? `Connector run: ${run.connector_run_id}` : "Control Center run record",
+      run.workflow_url ? `Workflow: ${run.workflow_url}` : "Execution metadata",
+    ],
+    steps:
+      tasks.length > 0
+        ? tasks.map((task, index) => ({
+            id: `task-${index + 1}`,
+            name: String(task),
+            action: "Run task from resolved job spec",
+          }))
+        : [
+            { id: "step-1", name: "Create run", action: `Submitted by ${run.requested_by}` },
+            { id: "step-2", name: "Evaluate risk", action: `${run.risk_level} risk, score ${run.risk_score}` },
+            { id: "step-3", name: "Execute", action: run.error || `Current status: ${run.status}` },
+          ],
+  };
 };
 
-const mapCalendarEventTypeToRunType = (jobType?: string): RunItem["jobType"] => {
-  if (jobType === "PowerPoint Deck") return "PowerPoint";
-  if (jobType === "Excel Report") return "Excel";
-  if (jobType === "Custom Job") return "Custom";
-  return "SQL";
+const createWorkspaceJobPayloadFromResource = (resource: ResourceRecord): WorkspaceJobPayload => {
+  const config = resource.config ?? {};
+  const schedule = getString(config.schedule) || "Manual run";
+  const type = normalizeResourceType(resource.type);
+
+  return {
+    job_id: resource.id,
+    name: resource.name,
+    type: type as WorkspaceJobPayload["type"],
+    schedule,
+    status: "Healthy",
+    description: getString(config.description) || `Registered ${type} resource ready to run.`,
+    inputs: [
+      `Resource ID: ${resource.id}`,
+      `Environment: ${resource.environment}`,
+      `Connector: ${resource.connector}`,
+    ],
+    outputs: ["Control Center run record", "Execution metadata"],
+    steps: [
+      { id: "step-1", name: "Registered", action: "Saved in the Control Center resources table" },
+      { id: "step-2", name: "Ready", action: "Available for manual or chatbot-triggered runs" },
+    ],
+  };
 };
 
-const createDashboardRuns = () => {
-  const calendarEvents = getCalendarEvents();
-  const mappedRuns = calendarEvents.map((event) => ({
-    id: event.id,
-    jobName: event.title,
-    jobType: mapCalendarEventTypeToRunType(event.jobType),
-    status: event.kind === "past" ? "completed" : "scheduled",
-    scheduledTime: new Date(`${event.date}T${event.time}:00`),
-  }));
+const createDashboardJobs = (runs: RunRecord[], resources: ResourceRecord[]): DashboardJobListItem[] => {
+  const resourceById = new Map(resources.map((resource) => [resource.id, resource]));
+  const latestRunByResource = new Map<string, RunRecord>();
 
-  const upcomingRuns = [
-    ...mappedRuns.filter((run) => run.status === "scheduled"),
-    ...mockUpcomingRuns,
-  ]
-    .sort((a, b) => a.scheduledTime.getTime() - b.scheduledTime.getTime())
-    .filter((run, index, array) => array.findIndex((candidate) => candidate.jobName === run.jobName && candidate.status === run.status) === index);
+  [...runs]
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+    .forEach((run) => {
+      if (!latestRunByResource.has(run.resource_id)) {
+        latestRunByResource.set(run.resource_id, run);
+      }
+    });
 
-  const recentRuns = [
-    ...mappedRuns
-      .filter((run) => run.status === "completed")
-      .map((run) => ({ ...run, completedTime: run.scheduledTime })),
-    ...mockRecentRuns,
-  ]
-    .sort((a, b) => (b.completedTime?.getTime() ?? b.scheduledTime.getTime()) - (a.completedTime?.getTime() ?? a.scheduledTime.getTime()))
-    .filter((run, index, array) => array.findIndex((candidate) => candidate.jobName === run.jobName && candidate.status === run.status) === index);
+  return resources.map((resource) => {
+    const run = latestRunByResource.get(resource.id);
+    if (!run) {
+      const payload = createWorkspaceJobPayloadFromResource(resource);
+      return {
+        id: resource.id,
+        name: resource.name,
+        type: payload.type,
+        schedule: payload.schedule,
+        status: "Ready" as const,
+        updatedAt: resource.updated_at,
+        payload,
+      };
+    }
+
+    const resolvedResource = resourceById.get(run.resource_id);
+    const payload = createWorkspaceJobPayloadFromRun(run, resolvedResource);
+    return {
+      id: run.resource_id,
+      name: payload.name,
+      type: payload.type,
+      schedule: payload.schedule,
+      status: payload.status as DashboardJobListItem["status"],
+      updatedAt: run.updated_at,
+      payload,
+    };
+  });
+};
+
+const createDashboardRuns = (runs: RunRecord[], resources: ResourceRecord[]) => {
+  const resourceById = new Map(resources.map((resource) => [resource.id, resource]));
+  const mappedRuns = runs.map((run) => {
+    const resource = resourceById.get(run.resource_id);
+    const status = mapRunStatusToRunItemStatus(run.status);
+    const scheduledTime = new Date(run.created_at);
+    return {
+      id: run.id,
+      jobName: resolveRunJobName(run, resource),
+      jobType: resolveRunJobType(run, resource),
+      status,
+      scheduledTime,
+      completedTime: status === "scheduled" || status === "running" ? undefined : new Date(run.updated_at),
+    };
+  });
+
+  const upcomingRuns = mappedRuns
+    .filter((run) => run.status === "scheduled" || run.status === "running")
+    .sort((a, b) => a.scheduledTime.getTime() - b.scheduledTime.getTime());
+
+  const recentRuns = mappedRuns
+    .filter((run) => run.status === "completed" || run.status === "failed")
+    .sort((a, b) => (b.completedTime?.getTime() ?? b.scheduledTime.getTime()) - (a.completedTime?.getTime() ?? a.scheduledTime.getTime()));
 
   return { upcomingRuns, recentRuns };
 };
@@ -521,7 +631,7 @@ interface JobStep {
 interface JobSpec {
   job_id: string;
   name: string;
-  type: "PowerPoint" | "Excel" | "SQL" | "Script" | "API";
+  type: string;
   schedule: string;
   status: "Healthy" | "Running" | "Needs Attention" | "Failed";
   inputs: string[];
@@ -663,8 +773,17 @@ interface WorkspaceState {
 
 export default function UserHome() {
   const navigate = useNavigate();
+  const {
+    resources,
+    runs,
+    loading: jobRunsLoading,
+    error: jobRunsError,
+    refresh: refreshJobRuns,
+  } = useJobRuns();
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [activePanelId, setActivePanelId] = useState<string | null>(null);
+  const [selectedResourceId, setSelectedResourceId] = useState<string | null>(null);
+  const [jobDetailTab, setJobDetailTab] = useState<"overview" | "runs" | "settings">("overview");
   
   // Panel resize state
   const [jobsPanelWidth, setJobsPanelWidth] = useState(280);
@@ -689,6 +808,9 @@ export default function UserHome() {
   
   // Job draft state - holds data being created via chat
   const [jobDraft, setJobDraft] = useState<Record<string, any>>({});
+  const [isRegisteringJob, setIsRegisteringJob] = useState(false);
+  const [chatAssistantNotices, setChatAssistantNotices] = useState<Array<{ id: string; content: string }>>([]);
+  const autoRegisteredDraftKeyRef = useRef<string | null>(null);
   
   // Console events for live job creation workflow tracking
   interface ConsoleEvent {
@@ -706,9 +828,8 @@ export default function UserHome() {
   const [templateSearch, setTemplateSearch] = useState("");
   const [jobSearch, setJobSearch] = useState("");
   const [jobSort, setJobSort] = useState<"name" | "status" | "type" | "recently-updated">("name");
-  const [jobFilter, setJobFilter] = useState<"all" | "PowerPoint" | "Excel" | "SQL" | "Healthy" | "Running" | "Needs Attention">("all");
-  const [isDraftsExpanded, setIsDraftsExpanded] = useState(true);
-  const [isRetiredJobsExpanded, setIsRetiredJobsExpanded] = useState(false);
+  const [jobFilter, setJobFilter] = useState<string>("all");
+  const [runningJobIds, setRunningJobIds] = useState<string[]>([]);
   const [templateSort, setTemplateSort] = useState<"name" | "category" | "recently-used" | "recommended">("name");
   const [templateFilter, setTemplateFilter] = useState<"all" | "PowerPoint" | "Excel" | "SQL" | "Workflow" | "Form" | "Dashboard">("all");
   const [selectedPromotions, setSelectedPromotions] = useState<string[]>([]);
@@ -719,6 +840,8 @@ export default function UserHome() {
   const [submittedPromotions, setSubmittedPromotions] = useState(() => getPendingPromotionResources());
   const [consoleHeight, setConsoleHeight] = useState(50);
   const [consoleActiveTab, setConsoleActiveTab] = useState<"json" | "logs" | "events">("json");
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [runLogs, setRunLogs] = useState<RunLogEntry[]>([]);
   const [expandedActionId, setExpandedActionId] = useState<string | null>(null);
   const [isResizingConsole, setIsResizingConsole] = useState(false);
   const lastResizeY = useRef<number>(0);
@@ -747,8 +870,29 @@ export default function UserHome() {
     },
   ]);
   const [aiInput, setAiInput] = useState("");
-  const [dashboardJobs, setDashboardJobs] = useState<DashboardJobListItem[]>(() => createDashboardJobs());
-  const [dashboardRuns, setDashboardRuns] = useState(() => createDashboardRuns());
+  const baseDashboardJobs = useMemo(() => createDashboardJobs(runs, resources), [runs, resources]);
+  const dashboardJobs = useMemo(
+    () =>
+      baseDashboardJobs.map((job) =>
+        runningJobIds.includes(job.id)
+          ? {
+              ...job,
+              status: "Running" as const,
+            }
+          : job,
+      ),
+    [baseDashboardJobs, runningJobIds],
+  );
+  const dashboardRuns = useMemo(() => createDashboardRuns(runs, resources), [runs, resources]);
+  const filteredDashboardRuns = useMemo(() => {
+    if (!selectedResourceId) return dashboardRuns;
+    const filtered = runs.filter((r) => r.resource_id === selectedResourceId);
+    return createDashboardRuns(filtered, resources);
+  }, [runs, resources, selectedResourceId, dashboardRuns]);
+  const selectedResourceName = useMemo(
+    () => resources.find((r) => r.id === selectedResourceId)?.name ?? null,
+    [resources, selectedResourceId]
+  );
   const [customFormBuilder, setCustomFormBuilder] = useState<CustomFormBuilderState>({
     formName: "",
     purpose: "",
@@ -770,12 +914,8 @@ export default function UserHome() {
   const customFormDraftPayload = createCustomFormDraftPayload(customFormBuilder);
 
   useEffect(() => {
-    setDashboardJobs(createDashboardJobs());
-    setDashboardRuns(createDashboardRuns());
     setSubmittedPromotions(getPendingPromotionResources());
     return subscribeToUserDashboardStore(() => {
-      setDashboardJobs(createDashboardJobs());
-      setDashboardRuns(createDashboardRuns());
       setSubmittedPromotions(getPendingPromotionResources());
     });
   }, []);
@@ -900,25 +1040,23 @@ export default function UserHome() {
   };
 
   const getConsoleLogs = () => {
-    // If there are console events, show them as logs
+    // Prefer real run logs when available
+    if (runLogs.length > 0) {
+      return runLogs.map((log) => ({
+        time: (() => { try { return new Date(log.timestamp).toLocaleTimeString(); } catch { return log.timestamp; } })(),
+        message: log.message,
+        level: log.level,
+      }));
+    }
+    // Fall back to workflow console events
     if (consoleEvents.length > 0) {
       return consoleEvents.map((event) => ({
         time: formatConsoleTime(event.timestamp),
         message: event.message,
-        type: event.type,
+        level: "INFO",
       }));
     }
-
-    // Otherwise show default execution logs
-    return [
-      { time: "09:04:02", message: "Job execution started" },
-      { time: "09:04:05", message: "Extracting data from source systems" },
-      { time: "09:04:12", message: "Processing records: 15,240 rows" },
-      { time: "09:04:18", message: "Validation: 99.8% data quality" },
-      { time: "09:04:25", message: "Generating outputs: 3 files" },
-      { time: "09:04:28", message: "Distribution: sent to 5 recipients" },
-      { time: "09:04:30", message: "Job execution completed successfully" },
-    ];
+    return [];
   };
 
   const getConsoleEvents = () => {
@@ -942,6 +1080,30 @@ export default function UserHome() {
       { action: "System backed up job configuration", timestamp: "3 hours ago" },
     ];
   };
+
+  // Fetch run logs whenever activeRunId changes, polling until the run reaches a terminal state
+  useEffect(() => {
+    if (!activeRunId) return;
+    let stopped = false;
+
+    const fetchLogs = async () => {
+      try {
+        const result = await getRunLogs(activeRunId, getAuthToken());
+        if (!stopped) {
+          setRunLogs(result.logs);
+          // Stop polling once the run is in a terminal state
+          const terminal = ["completed", "failed", "stopped", "cancelled", "canceled"];
+          if (terminal.includes(result.status.toLowerCase())) stopped = true;
+        }
+      } catch {
+        // ignore fetch errors silently
+      }
+    };
+
+    void fetchLogs();
+    const interval = setInterval(() => { if (!stopped) void fetchLogs(); }, 2500);
+    return () => { stopped = true; clearInterval(interval); };
+  }, [activeRunId]);
 
   const CONSOLE_COLLAPSED_HEIGHT = 50;
   const CONSOLE_EXPANDED_HEIGHT = 300;
@@ -1043,10 +1205,10 @@ export default function UserHome() {
         case "type":
           return a.type.localeCompare(b.type);
         case "status":
-          const statusOrder = { "Healthy": 0, "Running": 1, "Needs Attention": 2 };
-          return (statusOrder[a.status as keyof typeof statusOrder] || 3) - (statusOrder[b.status as keyof typeof statusOrder] || 3);
+          const statusOrder = { "Ready": 0, "Healthy": 1, "Running": 2, "Needs Attention": 3 };
+          return (statusOrder[a.status as keyof typeof statusOrder] || 4) - (statusOrder[b.status as keyof typeof statusOrder] || 4);
         case "recently-updated":
-          return 0; // Would require timestamp data
+          return b.updatedAt.localeCompare(a.updatedAt);
         default:
           return 0;
       }
@@ -1558,6 +1720,290 @@ export default function UserHome() {
       setAiMessages((prev) => [...prev, assistantResponse]);
     }, 1000);
   };
+
+  const normalizeExtractedJobFields = (fields: Record<string, any>) => {
+    const config = typeof fields.config === "object" && fields.config !== null ? fields.config : {};
+    const params = typeof fields.params === "object" && fields.params !== null ? fields.params : {};
+    const normalizeEnv = (value: any) => {
+      if (typeof value !== "string") return value;
+      const normalized = value.trim().toLowerCase();
+      return normalized === "production" ? "prod" : normalized;
+    };
+    const sqlConnectors = ["sql-dab", "sql-dab-analytics"];
+    const defaultConnectionIdForConnector = (connector: string) => {
+      if (connector === "sql-dab") return "postgres";
+      if (connector === "sql-dab-analytics") return "analytics";
+      return "";
+    };
+    const normalizeConnector = (connector: any) => {
+      const normalized = typeof connector === "string" ? connector.trim().toLowerCase() : "";
+      return sqlConnectors.includes(normalized) ? normalized : "sql-dab";
+    };
+    const normalizedType = String(fields.job_type ?? fields.type ?? "").trim().toLowerCase();
+    const isSql =
+      normalizedType === "sql" ||
+      normalizedType === "query" ||
+      Boolean(fields.query || config.query || params.query || fields.connection_id || config.connection_id);
+
+    const normalized: Record<string, any> = {
+      ...fields,
+      ...(fields.name && !fields.job_name ? { job_name: fields.name } : {}),
+      ...(fields.environment !== undefined ? { environment: normalizeEnv(fields.environment) } : {}),
+      ...(fields.target_environment !== undefined ? { target_environment: normalizeEnv(fields.target_environment) } : {}),
+      ...(fields.schedule === undefined && config.schedule !== undefined ? { schedule: config.schedule } : {}),
+    };
+
+    if (isSql) {
+      const connector = normalizeConnector(fields.connector ?? config.connector);
+      const explicitConnectionId = fields.connection_id ?? config.connection_id;
+      normalized.job_type = "SQL";
+      normalized.kind = fields.kind ?? "runtime";
+      normalized.type = "sql";
+      normalized.data_sensitivity = fields.data_sensitivity ?? "low";
+      normalized.connector = connector;
+      normalized.connection_id = explicitConnectionId ?? defaultConnectionIdForConnector(connector);
+      normalized.target_environment = normalized.target_environment ?? normalized.environment ?? "dev";
+      normalized.query = fields.query ?? params.query ?? config.query ?? "";
+      normalized.output_destination = fields.output_destination ?? config.output_destination ?? "";
+      normalized.result_limit = fields.result_limit ?? config.result_limit ?? "";
+      normalized.config = {
+        ...config,
+        connection_id: normalized.connection_id,
+        query: normalized.query,
+        schedule: normalized.schedule,
+        target_environment: normalized.target_environment,
+        output_destination: normalized.output_destination,
+        result_limit: normalized.result_limit,
+      };
+      normalized.params = {
+        ...params,
+        query: normalized.query,
+        connection_id: normalized.connection_id,
+      };
+    }
+
+    return normalized;
+  };
+
+  const handleChatFieldsExtracted = (fields: Record<string, any>) => {
+    const normalized = normalizeExtractedJobFields(fields);
+    const shouldOpenCreateJob =
+      normalized.job_type === "SQL" ||
+      normalized.job_name ||
+      normalized.query ||
+      normalized.connector ||
+      normalized.connection_id;
+
+    if (shouldOpenCreateJob) {
+      handleOpenTabInPane({ type: "create-job", id: "create-job", name: "Create Job" }, "primary");
+    }
+
+    setJobDraft((prev) => ({ ...prev, ...normalized }));
+  };
+
+  const isCreateJobDraftComplete = (draft: Record<string, any>) => {
+    const hasUniversalRequiredFields = Boolean(
+      String(draft.job_name ?? draft.name ?? "").trim() &&
+        String(draft.owner ?? "").trim()
+    );
+
+    if (!hasUniversalRequiredFields) {
+      return false;
+    }
+
+    if (draft.job_type === "SQL") {
+      return Boolean(
+        String(draft.connector ?? "").trim() &&
+          String(draft.connection_id ?? draft.config?.connection_id ?? "").trim() &&
+          String(draft.query ?? draft.config?.query ?? draft.params?.query ?? "").trim() &&
+          String(draft.target_environment ?? draft.config?.target_environment ?? draft.environment ?? "").trim() &&
+          (draft.run_type !== "scheduled" || String(draft.schedule ?? draft.config?.schedule ?? "").trim())
+      );
+    }
+
+    return Boolean(draft.job_type);
+  };
+
+  const isCreateJobDisabled =
+    workspace.primary.tabs.some((tab) => tab.type === "create-job") && !isCreateJobDraftComplete(jobDraft);
+
+  const getAuthToken = () => {
+    if (typeof window === "undefined") return "u_analyst";
+    return window.localStorage.getItem("control-center-auth-token") ?? "u_analyst";
+  };
+
+  const normalizeSqlConnectorForResource = (connector: unknown) => {
+    const normalized = typeof connector === "string" ? connector.trim().toLowerCase() : "";
+    if (normalized === "sql-dab" || normalized === "control center dev database" || normalized === "control-center dev database") {
+      return "sql-dab";
+    }
+    if (normalized === "sql-dab-analytics" || normalized === "analytics reporting database") {
+      return "sql-dab-analytics";
+    }
+    return "sql-dab";
+  };
+
+  const buildResourcePayloadFromDraft = (draft: Record<string, any>): ResourceCreatePayload => {
+    if (draft.job_type !== "SQL") {
+      throw new Error("Only SQL job creation is wired to the Control Center registry right now.");
+    }
+
+    const connector = normalizeSqlConnectorForResource(draft.connector);
+    const connectionId = String(draft.connection_id ?? draft.config?.connection_id ?? (connector === "sql-dab" ? "postgres" : "analytics")).trim();
+    const query = String(draft.query ?? draft.config?.query ?? draft.params?.query ?? "").trim();
+    const schedule = draft.run_type === "scheduled" ? String(draft.schedule ?? draft.config?.schedule ?? "").trim() : "";
+
+    return {
+      name: String(draft.job_name ?? draft.name ?? "").trim(),
+      kind: "runtime",
+      type: "sql",
+      connector,
+      environment: String(draft.environment ?? "dev"),
+      data_sensitivity: String(draft.data_sensitivity ?? "low"),
+      tags: Array.isArray(draft.tags) ? draft.tags : [],
+      config: {
+        connection_id: connectionId,
+        query,
+        ...(schedule ? { schedule } : {}),
+      },
+    };
+  };
+
+  const registerJobResourceFromDraft = async (options: { askToRun?: boolean; closeTabId?: string } = {}) => {
+    if (!isCreateJobDraftComplete(jobDraft)) {
+      throw new Error("Fill the required SQL job fields before creating the job.");
+    }
+
+    const payload = buildResourcePayloadFromDraft(jobDraft);
+    const existingResource = resources.find(
+      (resource) => resource.name === payload.name && resource.type === payload.type && resource.connector === payload.connector
+    );
+
+    setIsRegisteringJob(true);
+    try {
+      const resource = existingResource ?? await createResource(payload, getAuthToken());
+      setJobDraft((prev) => ({
+        ...prev,
+        resource_id: resource.id,
+        name: resource.name,
+        connector: resource.connector,
+        connection_id: resource.config?.connection_id ?? prev.connection_id,
+        query: resource.config?.query ?? prev.query,
+        target_environment: prev.target_environment ?? prev.environment ?? "dev",
+        config: {
+          ...(prev.config ?? {}),
+          ...(resource.config ?? {}),
+        },
+      }));
+      await refreshJobRuns();
+      emitConsoleEvent("draft_updated", `Registered SQL resource ${resource.name}`, {
+        resource_id: resource.id,
+        name: resource.name,
+        connector: resource.connector,
+      });
+
+      if (options.askToRun) {
+        setChatAssistantNotices((prev) => [
+          ...prev,
+          {
+            id: `resource-created-${resource.id}-${Date.now()}`,
+            content: `Created SQL job \`${resource.name}\` and saved it as a Control Center resource. Do you want me to run it now?`,
+          },
+        ]);
+      }
+
+      if (options.closeTabId) {
+        handleCloseTabInPane(options.closeTabId, "primary");
+      }
+
+      return resource;
+    } finally {
+      setIsRegisteringJob(false);
+    }
+  };
+
+  const buildRunPayloadFromResource = (resource: ResourceRecord): RunCreatePayload => {
+    const config = resource.config ?? {};
+    return {
+      action: "run",
+      target_environment: resource.environment || "dev",
+      params: {
+        ...(config.query ? { query: config.query } : {}),
+        ...(config.connection_id ? { connection_id: config.connection_id } : {}),
+      },
+      job_config: {
+        intent: "run",
+        schedule: typeof config.schedule === "string" ? config.schedule : null,
+        metadata: {
+          created_via: "user_home",
+          job_type: resource.type,
+        },
+      },
+      mcp_config: {
+        server_names: resource.connector ? [resource.connector] : [],
+        allow_auto_selection: false,
+      },
+    };
+  };
+
+  const runResourceFromUi = async (resourceId: string) => {
+    const resource = resources.find((item) => item.id === resourceId);
+    if (!resource) {
+      emitConsoleEvent("missing_fields_identified", "Unable to run job because the resource was not found", { resource_id: resourceId });
+      return;
+    }
+
+    setRunningJobIds((current) => Array.from(new Set([...current, resourceId])));
+    emitConsoleEvent("draft_updated", `Started run for ${resource.name}`, { resource_id: resource.id });
+
+    try {
+      const run = await createResourceRun(resource.id, buildRunPayloadFromResource(resource), getAuthToken());
+      setActiveRunId(run.id);
+      setRunLogs([]);
+      setConsoleActiveTab("logs");
+      setConsoleHeight(300);
+      await refreshJobRuns();
+    } catch (err) {
+      emitConsoleEvent("missing_fields_identified", `Unable to run ${resource.name}`, {
+        resource_id: resource.id,
+        error: err instanceof Error ? err.message : "Unknown error",
+      });
+    } finally {
+      setRunningJobIds((current) => current.filter((id) => id !== resourceId));
+    }
+  };
+
+  useEffect(() => {
+    if (
+      jobDraft.job_type !== "SQL" ||
+      !jobDraft.creation_requested ||
+      !isCreateJobDraftComplete(jobDraft) ||
+      jobDraft.resource_id ||
+      isRegisteringJob
+    ) {
+      return;
+    }
+
+    const payload = buildResourcePayloadFromDraft(jobDraft);
+    const draftKey = JSON.stringify({
+      name: payload.name,
+      connector: payload.connector,
+      connection_id: payload.config.connection_id,
+      query: payload.config.query,
+      target_environment: jobDraft.target_environment ?? jobDraft.environment ?? "dev",
+    });
+
+    if (autoRegisteredDraftKeyRef.current === draftKey) {
+      return;
+    }
+    autoRegisteredDraftKeyRef.current = draftKey;
+    void registerJobResourceFromDraft({ askToRun: true }).catch((err) => {
+      emitConsoleEvent("missing_fields_identified", "Unable to register SQL resource", {
+        error: err instanceof Error ? err.message : "Unknown error",
+      });
+      autoRegisteredDraftKeyRef.current = null;
+    });
+  }, [jobDraft, isRegisteringJob, resources]);
 
   // Render tab content - shared across all panes
   const renderTabContent = (tab: WorkspaceTab | undefined) => {
@@ -2139,18 +2585,8 @@ export default function UserHome() {
           <CreateJobForm
             draftData={jobDraft}
             onDraftDataChange={setJobDraft}
-            onSubmit={(jobData) => {
-              // Log the job data to console for now
-              console.log("New job created:", jobData);
-              
-              // In a real app, you would send this to the backend API here
-              // Example: 
-              // await api.createJob(jobData)
-              
-              // Show a success toast/notification
-              // You can add a toast notification here using a toast library
-              
-              // Reset the form state is handled by CreateJobForm
+            onSubmit={() => {
+              void registerJobResourceFromDraft({ askToRun: true, closeTabId: tab.id });
             }}
             onCancel={() => handleCloseTabInPane(tab.id, "primary")}
           />
@@ -2181,82 +2617,175 @@ export default function UserHome() {
               {/* Tabs */}
               <div className="border-b border-gray-200">
                 <div className="flex gap-8">
-                  <button className="px-0 py-3 text-sm font-medium text-gray-900 border-b-2 border-[#ed0923]">
-                    Overview
-                  </button>
-                  <button className="px-0 py-3 text-sm font-medium text-gray-600 hover:text-gray-900 transition">
-                    Runs
-                  </button>
-                  <button className="px-0 py-3 text-sm font-medium text-gray-600 hover:text-gray-900 transition">
-                    Preview
-                  </button>
-                  <button className="px-0 py-3 text-sm font-medium text-gray-600 hover:text-gray-900 transition">
-                    Settings
-                  </button>
+                  {(["overview", "runs", "settings"] as const).map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => setJobDetailTab(t)}
+                      className={`px-0 py-3 text-sm font-medium capitalize transition ${
+                        jobDetailTab === t
+                          ? "text-gray-900 border-b-2 border-[#ed0923]"
+                          : "text-gray-500 hover:text-gray-900"
+                      }`}
+                    >
+                      {t.charAt(0).toUpperCase() + t.slice(1)}
+                    </button>
+                  ))}
                 </div>
               </div>
 
-              {/* Configuration Card */}
-              <div className="rounded-xl border border-gray-200 bg-white p-6">
-                <h2 className="text-lg font-semibold text-gray-900 mb-4">Job Configuration</h2>
-                <div className="space-y-6">
-                  <div className="grid grid-cols-3 gap-4">
-                    <div>
-                      <p className="text-xs font-semibold text-gray-500 uppercase">Type</p>
-                      <p className="text-sm text-gray-900 mt-1">{currentJobSpec.type}</p>
+              {/* Tab Content */}
+              {jobDetailTab === "overview" && (
+                <div className="rounded-xl border border-gray-200 bg-white p-6">
+                  <h2 className="text-lg font-semibold text-gray-900 mb-4">Job Configuration</h2>
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-3 gap-4">
+                      <div>
+                        <p className="text-xs font-semibold text-gray-500 uppercase">Type</p>
+                        <p className="text-sm text-gray-900 mt-1">{currentJobSpec.type}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-gray-500 uppercase">Schedule</p>
+                        <p className="text-sm text-gray-900 mt-1">{currentJobSpec.schedule}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-gray-500 uppercase">Status</p>
+                        <p className="text-sm text-gray-900 mt-1">{currentJobSpec.status}</p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-xs font-semibold text-gray-500 uppercase">Schedule</p>
-                      <p className="text-sm text-gray-900 mt-1">{currentJobSpec.schedule}</p>
+
+                    <div className="border-t border-gray-200 pt-6">
+                      <p className="text-sm font-semibold text-gray-900 mb-3">Inputs</p>
+                      <ul className="space-y-2">
+                        {currentJobSpec.inputs.map((input, idx) => (
+                          <li key={idx} className="text-sm text-gray-700 flex items-center gap-2">
+                            <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
+                            {input}
+                          </li>
+                        ))}
+                      </ul>
                     </div>
-                    <div>
-                      <p className="text-xs font-semibold text-gray-500 uppercase">Status</p>
-                      <p className="text-sm text-gray-900 mt-1">{currentJobSpec.status}</p>
+
+                    <div className="border-t border-gray-200 pt-6">
+                      <p className="text-sm font-semibold text-gray-900 mb-3">Outputs</p>
+                      <ul className="space-y-2">
+                        {currentJobSpec.outputs.map((output, idx) => (
+                          <li key={idx} className="text-sm text-gray-700 flex items-center gap-2">
+                            <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+                            {output}
+                          </li>
+                        ))}
+                      </ul>
                     </div>
-                  </div>
 
-                  <div className="border-t border-gray-200 pt-6">
-                    <p className="text-sm font-semibold text-gray-900 mb-3">Inputs</p>
-                    <ul className="space-y-2">
-                      {currentJobSpec.inputs.map((input, idx) => (
-                        <li key={idx} className="text-sm text-gray-700 flex items-center gap-2">
-                          <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
-                          {input}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  <div className="border-t border-gray-200 pt-6">
-                    <p className="text-sm font-semibold text-gray-900 mb-3">Outputs</p>
-                    <ul className="space-y-2">
-                      {currentJobSpec.outputs.map((output, idx) => (
-                        <li key={idx} className="text-sm text-gray-700 flex items-center gap-2">
-                          <span className="w-2 h-2 bg-green-500 rounded-full"></span>
-                          {output}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  <div className="border-t border-gray-200 pt-6">
-                    <p className="text-sm font-semibold text-gray-900 mb-3">Execution Steps</p>
-                    <ul className="space-y-3">
-                      {currentJobSpec.steps.map((step, idx) => (
-                        <li key={step.id} className="flex gap-3 pb-3 border-b border-gray-100 last:border-0">
-                          <span className="flex items-center justify-center w-6 h-6 rounded-full bg-gray-100 text-xs font-semibold text-gray-700 flex-shrink-0">
-                            {idx + 1}
-                          </span>
-                          <div>
-                            <p className="text-sm font-medium text-gray-900">{step.name}</p>
-                            <p className="text-xs text-gray-600">{step.action}</p>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
+                    <div className="border-t border-gray-200 pt-6">
+                      <p className="text-sm font-semibold text-gray-900 mb-3">Execution Steps</p>
+                      <ul className="space-y-3">
+                        {currentJobSpec.steps.map((step, idx) => (
+                          <li key={step.id} className="flex gap-3 pb-3 border-b border-gray-100 last:border-0">
+                            <span className="flex items-center justify-center w-6 h-6 rounded-full bg-gray-100 text-xs font-semibold text-gray-700 flex-shrink-0">
+                              {idx + 1}
+                            </span>
+                            <div>
+                              <p className="text-sm font-medium text-gray-900">{step.name}</p>
+                              <p className="text-xs text-gray-600">{step.action}</p>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
+
+              {jobDetailTab === "runs" && (() => {
+                const resourceId = tab.payload?.job_id as string | undefined;
+                const jobRuns = resourceId
+                  ? [...runs]
+                      .filter((r) => r.resource_id === resourceId)
+                      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+                  : [];
+
+                const statusBadgeClass = (status: string) => {
+                  const s = status.toLowerCase();
+                  if (["running", "executing", "in_progress"].includes(s)) return "bg-blue-100 text-blue-700";
+                  if (["failed", "stopped", "cancelled", "canceled", "blocked"].includes(s)) return "bg-red-100 text-red-700";
+                  if (["queued", "pending", "scheduled"].includes(s)) return "bg-amber-100 text-amber-700";
+                  return "bg-green-100 text-green-700";
+                };
+
+                return (
+                  <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+                    <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+                      <h2 className="text-lg font-semibold text-gray-900">
+                        Run History
+                      </h2>
+                      <span className="text-xs text-gray-500">{jobRuns.length} run{jobRuns.length !== 1 ? "s" : ""}</span>
+                    </div>
+                    {jobRuns.length === 0 ? (
+                      <div className="px-6 py-12 text-center">
+                        <p className="text-sm font-medium text-gray-500">No runs found for this job</p>
+                        <p className="text-xs text-gray-400 mt-1">Runs will appear here once the job has been executed</p>
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-gray-50 text-left">
+                              <th className="px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+                              <th className="px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Run ID</th>
+                              <th className="px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Action</th>
+                              <th className="px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Environment</th>
+                              <th className="px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Trigger</th>
+                              <th className="px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Started</th>
+                              <th className="px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Updated</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-100">
+                            {jobRuns.map((run) => (
+                              <tr key={run.id} className="hover:bg-gray-50 transition">
+                                <td className="px-6 py-3">
+                                  <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${statusBadgeClass(run.status)}`}>
+                                    {run.status}
+                                  </span>
+                                </td>
+                                <td className="px-6 py-3 font-mono text-xs text-gray-600">{run.id.slice(0, 8)}</td>
+                                <td className="px-6 py-3 text-gray-700">{run.action}</td>
+                                <td className="px-6 py-3 text-gray-600">{run.target_environment}</td>
+                                <td className="px-6 py-3 text-gray-600 capitalize">{run.trigger_source ?? "manual"}</td>
+                                <td className="px-6 py-3 text-gray-500 whitespace-nowrap">
+                                  {new Date(run.created_at).toLocaleString()}
+                                </td>
+                                <td className="px-6 py-3 text-gray-500 whitespace-nowrap">
+                                  {run.error
+                                    ? <span className="text-red-600 font-mono text-xs" title={run.error}>{new Date(run.updated_at).toLocaleString()} — {run.error.slice(0, 60)}{run.error.length > 60 ? "…" : ""}</span>
+                                    : new Date(run.updated_at).toLocaleString()
+                                  }
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {jobDetailTab === "settings" && (
+                <div className="rounded-xl border border-gray-200 bg-white p-6">
+                  <h2 className="text-lg font-semibold text-gray-900 mb-4">Settings</h2>
+                  <div className="space-y-4">
+                    <div>
+                      <p className="text-xs font-semibold text-gray-500 uppercase">Resource ID</p>
+                      <p className="text-sm font-mono text-gray-800 mt-1">{tab.payload?.job_id ?? "—"}</p>
+                    </div>
+                    <div className="border-t border-gray-100 pt-4">
+                      <p className="text-xs font-semibold text-gray-500 uppercase">Description</p>
+                      <p className="text-sm text-gray-700 mt-1">{currentJobSpec.description ?? "No description provided."}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         ) : tab.type === "required-action" && tab.payload ? (
@@ -2881,13 +3410,7 @@ export default function UserHome() {
                       </div>
                       <div className="flex items-center gap-2">
                         <span
-                          className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
-                            job.status === "Healthy"
-                              ? "bg-green-100 text-green-700"
-                              : job.status === "Running"
-                                ? "bg-blue-100 text-blue-700"
-                                : "bg-red-100 text-red-700"
-                          }`}
+                          className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getDashboardJobStatusClasses(job.status)}`}
                         >
                           {job.status}
                         </span>
@@ -3000,14 +3523,26 @@ export default function UserHome() {
                 <div className="rounded-lg border border-gray-200 bg-white p-4">
                   <h3 className="text-sm font-semibold text-gray-900 mb-3">Recent Jobs</h3>
                   <div className="space-y-2">
-                    {recentJobs.slice(0, 3).map((job) => (
-                      <div key={job.name} className="p-2 bg-gray-50 rounded text-left hover:bg-gray-100 cursor-pointer transition text-xs">
+                    {dashboardJobs.slice(0, 3).map((job) => (
+                      <button
+                        key={job.id}
+                        onClick={() =>
+                          handleOpenTabInPane(
+                            { type: "job", name: job.name, id: job.id, payload: job.payload },
+                            "primary"
+                          )
+                        }
+                        className="w-full p-2 bg-gray-50 rounded text-left hover:bg-gray-100 cursor-pointer transition text-xs"
+                      >
                         <p className="font-medium text-gray-900 truncate">{job.name}</p>
-                        <span className={`inline-block mt-1 rounded px-2 py-0.5 text-[9px] font-semibold ${job.status === "Healthy" ? "bg-green-100 text-green-700" : job.status === "Running" ? "bg-blue-100 text-blue-700" : "bg-red-100 text-red-700"}`}>
+                        <span className={`inline-block mt-1 rounded px-2 py-0.5 text-[9px] font-semibold ${getDashboardJobStatusClasses(job.status)}`}>
                           {job.status}
                         </span>
-                      </div>
+                      </button>
                     ))}
+                    {dashboardJobs.length === 0 && (
+                      <p className="p-2 text-xs text-gray-500">No jobs found in the runs table</p>
+                    )}
                   </div>
                 </div>
 
@@ -3106,18 +3641,29 @@ export default function UserHome() {
     switch (activePanelId) {
       case "jobs":
         const filteredAndSortedJobs = getFilteredAndSortedJobs();
-        const jobTypeLists = {
-          PowerPoint: dashboardJobs.filter(j => j.type === "PowerPoint").length,
-          Excel: dashboardJobs.filter(j => j.type === "Excel").length,
-          SQL: dashboardJobs.filter(j => j.type === "SQL").length,
-        };
-        const jobStatusLists = {
-          Healthy: dashboardJobs.filter(j => j.status === "Healthy").length,
-          Running: dashboardJobs.filter(j => j.status === "Running").length,
-          "Needs Attention": dashboardJobs.filter(j => j.status === "Needs Attention").length,
-        };
+        const readyJobs = filteredAndSortedJobs.filter((job) => job.status === "Ready");
+        const currentJobs = filteredAndSortedJobs.filter((job) => job.status !== "Ready");
+        const jobTypeFilters = Array.from(new Set(dashboardJobs.map((job) => job.type))).sort();
         return (
           <div className="p-4 space-y-3 flex flex-col h-full">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Runs Table</p>
+                <p className="text-xs text-gray-500">{runs.length} database runs loaded</p>
+              </div>
+              <button
+                onClick={() => void refreshJobRuns()}
+                className="rounded-md border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Refresh
+              </button>
+            </div>
+            {jobRunsError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                {jobRunsError}
+              </div>
+            )}
+
             {/* Search Input */}
             <div>
               <input
@@ -3148,7 +3694,7 @@ export default function UserHome() {
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-gray-600">Filter:</label>
               <div className="flex flex-wrap gap-1.5">
-                {["all", "PowerPoint", "Excel", "SQL"].map((filterOption) => (
+                {["all", ...jobTypeFilters].map((filterOption) => (
                   <button
                     key={filterOption}
                     onClick={() => setJobFilter(filterOption as any)}
@@ -3163,7 +3709,7 @@ export default function UserHome() {
                 ))}
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {["Healthy", "Running", "Needs Attention"].map((filterOption) => (
+                {["Ready", "Healthy", "Running", "Needs Attention"].map((filterOption) => (
                   <button
                     key={filterOption}
                     onClick={() => setJobFilter(filterOption as any)}
@@ -3179,11 +3725,64 @@ export default function UserHome() {
               </div>
             </div>
 
+            {/* Ready Jobs Section */}
+            <div className="border-t border-gray-200 pt-3 mt-2">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-bold text-gray-900 uppercase tracking-wide">
+                  Ready ({readyJobs.length})
+                </h3>
+              </div>
+              <div className="space-y-1.5">
+                {readyJobs.map((job) => (
+                  <div
+                    key={job.id}
+                    className={`w-full p-3 rounded-lg text-left border ${
+                      activeJobName === job.name
+                        ? "bg-[#ed0923]/10 border-[#ed0923]"
+                        : "bg-amber-50 border-amber-100"
+                    }`}
+                  >
+                    <button
+                      draggable
+                      onDragStart={(e) => handleJobDragStart(e, job.name)}
+                      onClick={() => {
+                        setSelectedResourceId(job.id);
+                        handleOpenTabInPane(
+                          { type: "job", name: job.name, id: job.id, payload: job.payload },
+                          "primary"
+                        );
+                      }}
+                      className="w-full cursor-move text-left"
+                    >
+                      <p className="text-sm font-medium text-gray-900">{job.name}</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-xs text-gray-500">{job.type}</span>
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${getDashboardJobStatusClasses(job.status)}`}>
+                          {job.status}
+                        </span>
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => void runResourceFromUi(job.id)}
+                      className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-[#ed0923] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#d10820] disabled:cursor-not-allowed disabled:bg-gray-300"
+                      disabled={runningJobIds.includes(job.id)}
+                    >
+                      <PlayCircle className="h-3.5 w-3.5" />
+                      {runningJobIds.includes(job.id) ? "Running..." : "Run manually"}
+                    </button>
+                  </div>
+                ))}
+                {readyJobs.length === 0 && (
+                  <p className="rounded-lg bg-gray-50 px-3 py-4 text-center text-sm text-gray-500">No ready jobs</p>
+                )}
+              </div>
+            </div>
+
             {/* Current Jobs Section - Always visible and prioritized */}
             <div className="border-t border-gray-200 pt-3 mt-2">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-xs font-bold text-gray-900 uppercase tracking-wide">
-                  My Current Jobs ({filteredAndSortedJobs.length})
+                  My Current Jobs ({currentJobs.length})
                 </h3>
                 <button
                   onClick={() => handleOpenTabInPane({ type: "create-job", id: "create-job", name: "Create Job" }, "primary")}
@@ -3195,18 +3794,23 @@ export default function UserHome() {
                 </button>
               </div>
               <div className="flex-1 overflow-y-auto space-y-1.5">
-                {filteredAndSortedJobs.length > 0 ? (
-                  filteredAndSortedJobs.map((job) => (
+                {jobRunsLoading && dashboardJobs.length === 0 ? (
+                  <div className="text-center py-8">
+                    <p className="text-sm text-gray-500">Loading runs from Control Center...</p>
+                  </div>
+                ) : currentJobs.length > 0 ? (
+                  currentJobs.map((job) => (
                     <button
                       key={job.id}
                       draggable
                       onDragStart={(e) => handleJobDragStart(e, job.name)}
-                      onClick={() =>
+                      onClick={() => {
+                        setSelectedResourceId(job.id);
                         handleOpenTabInPane(
                           { type: "job", name: job.name, id: job.id, payload: job.payload },
                           "primary"
-                        )
-                      }
+                        );
+                      }}
                       className={`w-full p-3 rounded-lg transition text-left cursor-move ${
                         activeJobName === job.name
                           ? "bg-[#ed0923]/10 border border-[#ed0923]"
@@ -3217,13 +3821,7 @@ export default function UserHome() {
                       <div className="flex items-center gap-2 mt-1">
                         <span className="text-xs text-gray-500">{job.type}</span>
                         <span
-                          className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                            job.status === "Healthy"
-                              ? "bg-green-100 text-green-700"
-                              : job.status === "Running"
-                                ? "bg-blue-100 text-blue-700"
-                                : "bg-red-100 text-red-700"
-                          }`}
+                          className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${getDashboardJobStatusClasses(job.status)}`}
                         >
                           {job.status}
                         </span>
@@ -3232,111 +3830,61 @@ export default function UserHome() {
                   ))
                 ) : (
                   <div className="text-center py-8">
-                    <p className="text-sm text-gray-500">No jobs match your search</p>
+                    <p className="text-sm text-gray-500">
+                      {dashboardJobs.length === 0 ? "No jobs found in the runs table" : "No jobs match your search"}
+                    </p>
                   </div>
                 )}
               </div>
-            </div>
-
-            {/* Drafts Section - Collapsible, expanded by default */}
-            <div className="border-t border-gray-200 pt-3">
-              <button
-                onClick={() => setIsDraftsExpanded(!isDraftsExpanded)}
-                className="w-full flex items-center justify-between hover:bg-gray-50 px-1 py-1.5 rounded transition"
-              >
-                <div className="flex items-center gap-2">
-                  {isDraftsExpanded ? (
-                    <ChevronDown className="h-4 w-4 text-gray-600" />
-                  ) : (
-                    <ChevronRight className="h-4 w-4 text-gray-600" />
-                  )}
-                  <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">Drafts</h3>
-                </div>
-                <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded font-medium">
-                  {draftJobs.length}
-                </span>
-              </button>
-              {isDraftsExpanded && (
-                <div className="space-y-1.5 mt-2">
-                  {draftJobs.map((draft) => (
-                    <button
-                      key={draft.id}
-                      onClick={() => handleOpenTabInPane({ type: "job", name: draft.name, id: draft.name }, "primary")}
-                      className="w-full p-3 rounded-lg transition text-left bg-amber-50 hover:bg-amber-100 border border-amber-200"
-                    >
-                      <p className="text-sm font-medium text-gray-900">{draft.name}</p>
-                      <div className="flex items-center gap-2 mt-2">
-                        <span className={`text-xs font-medium ${getJobTypeColor(draft.type)}`}>{draft.type}</span>
-                        <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold bg-amber-100 text-amber-700">
-                          Draft
-                        </span>
-                        <span className="text-xs text-gray-500">{draft.lastEdited}</span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Retired Jobs Section - Collapsible, collapsed by default */}
-            <div className="border-t border-gray-200 pt-3">
-              <button
-                onClick={() => setIsRetiredJobsExpanded(!isRetiredJobsExpanded)}
-                className="w-full flex items-center justify-between hover:bg-gray-50 px-1 py-1.5 rounded transition"
-              >
-                <div className="flex items-center gap-2">
-                  {isRetiredJobsExpanded ? (
-                    <ChevronDown className="h-4 w-4 text-gray-600" />
-                  ) : (
-                    <ChevronRight className="h-4 w-4 text-gray-600" />
-                  )}
-                  <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">Retired Jobs</h3>
-                </div>
-                <span className="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded font-medium">
-                  {retiredJobs.length}
-                </span>
-              </button>
-              {isRetiredJobsExpanded && (
-                <div className="space-y-1.5 mt-2">
-                  {retiredJobs.map((retired) => (
-                    <button
-                      key={retired.id}
-                      onClick={() => handleOpenTabInPane({ type: "job", name: retired.name, id: retired.name }, "primary")}
-                      className="w-full p-3 rounded-lg transition text-left bg-gray-50 hover:bg-gray-100 border border-gray-300 opacity-75"
-                    >
-                      <p className="text-sm font-medium text-gray-900">{retired.name}</p>
-                      <div className="flex items-center gap-2 mt-2">
-                        <span className="text-xs font-medium text-gray-600">{retired.type}</span>
-                        <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold bg-gray-200 text-gray-700">
-                          Retired
-                        </span>
-                        <span className="text-xs text-gray-500">{retired.retiredDate}</span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
             </div>
           </div>
         );
       case "runs":
         return (
           <div className="p-4 space-y-3 flex flex-col h-full overflow-y-auto">
+            {/* Filter header */}
+            {selectedResourceName ? (
+              <div className="flex items-center justify-between gap-2 rounded-lg bg-[#ed0923]/5 border border-[#ed0923]/20 px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-[#ed0923]">Filtered by job</p>
+                  <p className="text-xs font-medium text-gray-800 truncate">{selectedResourceName}</p>
+                </div>
+                <button
+                  onClick={() => setSelectedResourceId(null)}
+                  className="shrink-0 text-[10px] font-medium text-gray-500 hover:text-gray-800 underline"
+                >
+                  Show all
+                </button>
+              </div>
+            ) : (
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">All Runs</p>
+                <p className="text-[10px] text-gray-400">Click a job to filter</p>
+              </div>
+            )}
+
             {/* Upcoming Runs */}
             <div className="space-y-2">
               <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">Upcoming Runs</h3>
               <div className="space-y-1.5">
-                {dashboardRuns.upcomingRuns.map((run) => (
-                  <div key={run.id} className="p-2 rounded-lg bg-gray-50 border border-gray-200 text-left hover:bg-gray-100 transition cursor-pointer">
-                    <p className="text-sm font-medium text-gray-900 truncate">{run.jobName}</p>
-                    <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                      <span className={`inline-flex text-[10px] font-semibold rounded px-1.5 py-0.5 ${getJobTypeColor(run.jobType)}`}>
-                        {run.jobType}
-                      </span>
-                      <span className="text-xs text-gray-500">{formatScheduledTime(run.scheduledTime)}</span>
+                {filteredDashboardRuns.upcomingRuns.length > 0 ? (
+                  filteredDashboardRuns.upcomingRuns.map((run) => (
+                    <div key={run.id} className="p-2 rounded-lg bg-gray-50 border border-gray-200 text-left hover:bg-gray-100 transition cursor-pointer">
+                      <p className="text-sm font-medium text-gray-900 truncate">{run.jobName}</p>
+                      <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                        <span className={`inline-flex text-[10px] font-semibold rounded px-1.5 py-0.5 ${getJobTypeColor(run.jobType)}`}>
+                          {run.jobType}
+                        </span>
+                        <span className={`inline-flex text-[10px] font-semibold rounded px-1.5 py-0.5 ${getRunStatusColor(run.status)}`}>
+                          {run.status === "running" ? "Running" : "Scheduled"}
+                        </span>
+                        <span className="text-xs text-gray-500">{formatScheduledTime(run.scheduledTime)}</span>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))
+                ) : (
+                  <p className="text-xs text-gray-400 py-2 text-center">No upcoming runs</p>
+                )}
               </div>
             </div>
 
@@ -3347,28 +3895,31 @@ export default function UserHome() {
             <div className="space-y-2">
               <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">Recent Runs</h3>
               <div className="space-y-1.5">
-                {dashboardRuns.recentRuns.map((run) => (
-                  <button
-                    key={run.id}
-                    onClick={() => handleOpenTabInPane({ type: "job", name: run.jobName, id: run.jobName }, "primary")}
-                    className="w-full p-2 rounded-lg bg-gray-50 border border-gray-200 text-left hover:bg-gray-100 transition"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-gray-900 truncate">{run.jobName}</p>
-                        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                          <span className={`inline-flex text-[10px] font-semibold rounded px-1.5 py-0.5 ${getJobTypeColor(run.jobType)}`}>
-                            {run.jobType}
-                          </span>
-                          <span className={`inline-flex text-[10px] font-semibold rounded px-1.5 py-0.5 ${getRunStatusColor(run.status)}`}>
-                            {run.status === "completed" ? "✓ Completed" : run.status === "failed" ? "✗ Failed" : "..."}
-                          </span>
+                {filteredDashboardRuns.recentRuns.length > 0 ? (
+                  filteredDashboardRuns.recentRuns.map((run) => (
+                    <div
+                      key={run.id}
+                      className="w-full p-2 rounded-lg bg-gray-50 border border-gray-200 text-left"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-900 truncate">{run.jobName}</p>
+                          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                            <span className={`inline-flex text-[10px] font-semibold rounded px-1.5 py-0.5 ${getJobTypeColor(run.jobType)}`}>
+                              {run.jobType}
+                            </span>
+                            <span className={`inline-flex text-[10px] font-semibold rounded px-1.5 py-0.5 ${getRunStatusColor(run.status)}`}>
+                              {run.status === "completed" ? "✓ Completed" : run.status === "failed" ? "✗ Failed" : "..."}
+                            </span>
+                          </div>
                         </div>
+                        <span className="text-xs text-gray-500 whitespace-nowrap">{formatRunTime(run.completedTime || run.scheduledTime)}</span>
                       </div>
-                      <span className="text-xs text-gray-500 whitespace-nowrap">{formatRunTime(run.completedTime || new Date())}</span>
                     </div>
-                  </button>
-                ))}
+                  ))
+                ) : (
+                  <p className="text-xs text-gray-400 py-2 text-center">No recent runs</p>
+                )}
               </div>
             </div>
 
@@ -3980,8 +4531,8 @@ export default function UserHome() {
                           hideFooter={true}
                           draftData={jobDraft}
                           onDraftDataChange={setJobDraft}
-                          onSubmit={(jobData) => {
-                            console.log("New job created:", jobData);
+                          onSubmit={() => {
+                            void registerJobResourceFromDraft({ askToRun: true });
                           }}
                           onCancel={() => handleCloseTabInPane(activeTab.id, "primary")}
                         />
@@ -3998,68 +4549,14 @@ export default function UserHome() {
                             Cancel
                           </Button>
                           <Button
+                            disabled={isCreateJobDisabled || isRegisteringJob}
+                            title={isCreateJobDisabled ? "Fill the required SQL job fields before creating the job" : undefined}
                             onClick={() => {
-                              // Get current form data from jobDraft
-                              const currentTab = workspace.primary.tabs.find(t => t.id === activeTab.id);
-                              if (currentTab && jobDraft.job_type) {
-                                const payload: any = {
-                                  universal: {
-                                    job_name: jobDraft.job_name || "",
-                                    description: jobDraft.description || "",
-                                    owner: jobDraft.owner || "",
-                                    environment: jobDraft.environment || "dev",
-                                    schedule: jobDraft.schedule || "",
-                                    approval_required: jobDraft.approval_required || false,
-                                    tags: jobDraft.tags || [],
-                                    run_type: jobDraft.run_type || "manual",
-                                  },
-                                  job_type: jobDraft.job_type,
-                                  job_details: {},
-                                };
-                                
-                                // Map type-specific fields based on job type
-                                if (jobDraft.job_type === "Airflow") {
-                                  payload.job_details = {
-                                    dag_name: jobDraft.dag_name || "",
-                                    tasks: jobDraft.tasks || [],
-                                    dependencies_between_tasks: jobDraft.dependencies_between_tasks || "",
-                                    scripts_sql: jobDraft.scripts_sql || "",
-                                    data_sources: jobDraft.data_sources || "",
-                                    data_destinations: jobDraft.data_destinations || "",
-                                    retry_policy: jobDraft.retry_policy || "",
-                                    execution_timeout: jobDraft.execution_timeout || "",
-                                  };
-                                } else if (jobDraft.job_type === "Excel") {
-                                  payload.job_details = {
-                                    input_data_sources: jobDraft.input_data_sources || "",
-                                    transformations: jobDraft.transformations || "",
-                                    filters: jobDraft.filters || "",
-                                    pivot_tables: jobDraft.pivot_tables || false,
-                                    formulas: jobDraft.formulas || "",
-                                    output_file_name: jobDraft.output_file_name || "",
-                                    file_location: jobDraft.file_location || "",
-                                  };
-                                } else if (jobDraft.job_type === "PowerPoint") {
-                                  payload.job_details = {
-                                    data_source: jobDraft.data_source || "",
-                                    slide_template: jobDraft.slide_template || "",
-                                    metrics_to_include: jobDraft.metrics_to_include || "",
-                                    charts: jobDraft.charts || "",
-                                    text_summary_placeholder: jobDraft.text_summary || "[AI will generate text summary here]",
-                                    branding_theme: jobDraft.branding_theme || "",
-                                    output_location: jobDraft.output_location || "",
-                                  };
-                                }
-                                
-                                console.log("New job created:", payload);
-                                // Reset and close
-                                setJobDraft({});
-                                handleCloseTabInPane(activeTab.id, "primary");
-                              }
+                              void registerJobResourceFromDraft({ askToRun: true, closeTabId: activeTab.id });
                             }}
-                            className="flex-1 bg-[#ed0923] hover:bg-[#d10820] text-white"
+                            className="flex-1 bg-[#ed0923] hover:bg-[#d10820] text-white disabled:cursor-not-allowed disabled:bg-gray-300"
                           >
-                            Create Job
+                            {isRegisteringJob ? "Creating..." : "Create Job"}
                           </Button>
                         </div>
                       </div>
@@ -4174,12 +4671,21 @@ export default function UserHome() {
                           </div>
                         )}
                         {consoleActiveTab === "logs" && (
-                          <div className="bg-white rounded border border-gray-200 p-3 space-y-1">
-                            {getConsoleLogs().map((log, idx) => (
-                              <div key={idx} className="text-gray-700 text-xs">
-                                <span className="text-gray-500">{log.time}</span> <span className="text-gray-800">{log.message}</span>
+                          <div className="bg-white rounded border border-gray-200 p-3 space-y-1 font-mono">
+                            {getConsoleLogs().length > 0 ? getConsoleLogs().map((log, idx) => (
+                              <div key={idx} className="flex gap-2 text-xs leading-relaxed">
+                                <span className="text-gray-400 shrink-0">{log.time}</span>
+                                <span className={`shrink-0 font-semibold w-16 ${
+                                  (log as any).level === "ERROR" ? "text-red-600" :
+                                  (log as any).level === "WARNING" ? "text-amber-600" :
+                                  (log as any).level === "DEBUG" ? "text-gray-400" :
+                                  "text-blue-600"
+                                }`}>{(log as any).level ?? "INFO"}</span>
+                                <span className="text-gray-800 break-all">{log.message}</span>
                               </div>
-                            ))}
+                            )) : (
+                              <p className="text-xs text-gray-400 py-2">No logs yet — run a job to see live output here.</p>
+                            )}
                           </div>
                         )}
                         {consoleActiveTab === "events" && (
@@ -4506,12 +5012,21 @@ export default function UserHome() {
                           </div>
                         )}
                         {consoleActiveTab === "logs" && (
-                          <div className="bg-white rounded border border-gray-200 p-3 space-y-1">
-                            {getConsoleLogs().map((log, idx) => (
-                              <div key={idx} className="text-gray-700 text-xs">
-                                <span className="text-gray-500">{log.time}</span> <span className="text-gray-800">{log.message}</span>
+                          <div className="bg-white rounded border border-gray-200 p-3 space-y-1 font-mono">
+                            {getConsoleLogs().length > 0 ? getConsoleLogs().map((log, idx) => (
+                              <div key={idx} className="flex gap-2 text-xs leading-relaxed">
+                                <span className="text-gray-400 shrink-0">{log.time}</span>
+                                <span className={`shrink-0 font-semibold w-16 ${
+                                  (log as any).level === "ERROR" ? "text-red-600" :
+                                  (log as any).level === "WARNING" ? "text-amber-600" :
+                                  (log as any).level === "DEBUG" ? "text-gray-400" :
+                                  "text-blue-600"
+                                }`}>{(log as any).level ?? "INFO"}</span>
+                                <span className="text-gray-800 break-all">{log.message}</span>
                               </div>
-                            ))}
+                            )) : (
+                              <p className="text-xs text-gray-400 py-2">No logs yet — run a job to see live output here.</p>
+                            )}
                           </div>
                         )}
                         {consoleActiveTab === "events" && (
@@ -4545,16 +5060,25 @@ export default function UserHome() {
         {/* Chat Panel - Right Side (Part of Flex Layout) */}
         {isChatPanelOpen && (
           <div style={{ width: `${chatPanelWidth}px`, flexShrink: 0 }}>
-            <ChatPanel 
-              isOpen={isChatPanelOpen} 
-              onClose={() => setIsChatPanelOpen(false)} 
+            <ChatPanel
+              isOpen={isChatPanelOpen}
+              onClose={() => setIsChatPanelOpen(false)}
               onJobCreationIntent={() => {
                 handleOpenTabInPane({ type: "create-job", id: "create-job", name: "Create Job" }, "primary");
-                setJobDraft({});
+                setJobDraft((prev) => (Object.keys(prev).length > 0 ? prev : {}));
               }}
-              onFieldsExtracted={(fields) => setJobDraft((prev) => ({ ...prev, ...fields }))}
+              onFieldsExtracted={handleChatFieldsExtracted}
               currentDraftData={jobDraft}
+              assistantNotices={chatAssistantNotices}
               onConsoleEvent={emitConsoleEvent}
+              resources={resources.map((r) => ({ id: r.id, name: r.name, type: r.type ?? "Custom" }))}
+              onRunStarted={(runId) => {
+                setActiveRunId(runId);
+                setRunLogs([]);
+                setConsoleActiveTab("logs");
+                setConsoleHeight(300);
+                void refreshJobRuns();
+              }}
             />
           </div>
         )}

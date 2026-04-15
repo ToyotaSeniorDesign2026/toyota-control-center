@@ -96,9 +96,15 @@ INSTRUCTIONS:
 6. Return response as valid JSON only, no other text
 
 IMPORTANT:
-- When extracting job_type, recognize variations like "powerpoint", "PowerPoint", "ppt" → "PowerPoint", "excel", "Excel", "xls" → "Excel", "airflow", "Airflow", "dag" → "Airflow"
+- When extracting job_type, recognize variations like "sql", "SQL", "query" → "SQL", "powerpoint", "PowerPoint", "ppt" → "PowerPoint", "excel", "Excel", "xls" → "Excel", "airflow", "Airflow", "dag" → "Airflow"
 - When extracting owner, recognize patterns like "I'm the owner", "I am the owner", "im the owner" → extract user as owner or use literal email if provided
 - For schedule, accept natural language like "daily", "weekly monday", "every monday at 3am"
+- For SQL resources, prefer backend-aligned fields when possible:
+  - name, kind, type, connector, environment, data_sensitivity, tags
+  - config.query, config.connection_id, config.schedule
+  - action, target_environment, params.query for run-specific overrides
+- For the local Control Center database, use connector "sql-dab" and connection_id "postgres" unless the user says otherwise
+- If the user says the job should run manually, extract run_type as "manual" and do not invent a schedule
 
 SUPPORTED FIELDS:
 
@@ -111,7 +117,24 @@ Universal Fields:
 - approval_required (boolean: true/false)
 - tags (array of strings)
 - run_type (string: manual, scheduled, triggered)
-- job_type (string: "Airflow", "Excel", "PowerPoint")
+- job_type (string: "SQL", "Airflow", "Excel", "PowerPoint")
+- action (string: usually "run")
+- target_environment (string: dev, staging, prod, production)
+
+Backend resource fields:
+- name (string)
+- kind (string: "runtime" or "artifact")
+- type (string: "sql", "research", "agent", "airflow_dag", "dbt_job", "pipeline", "bi_task", "powerbi_report", "excel_task", "powerpoint_task", "report")
+- connector (string)
+- data_sensitivity (string: low, medium, high, public, internal, confidential)
+- config (object)
+- params (object)
+
+SQL-specific backend fields:
+- query (string)
+- connection_id (string)
+- output_destination (string)
+- result_limit (string or number)
 
 Airflow-specific:
 - dag_name (string)
@@ -144,6 +167,20 @@ PowerPoint-specific:
 EXTRACTION EXAMPLES:
 - User: "Create a PowerPoint named Revenue Dashboard"
   → {{"job_name": "Revenue Dashboard", "job_type": "PowerPoint"}}
+- User: "Create a SQL resource called Dealer Sales Summary in dev using Snowflake"
+  → {{"job_type": "SQL", "name": "Dealer Sales Summary", "kind": "runtime", "type": "sql", "environment": "dev", "connector": "snowflake"}}
+- User: "Use this query as the default query and schedule it daily at 6am"
+  → {{"config": {{"query": "USER_PROVIDED_QUERY", "schedule": "daily at 6am"}}}}
+- User: "For this run, override the query to only pull yesterday's rows"
+  → {{"action": "run", "params": {{"query": "QUERY_OVERRIDE_FOR_THIS_RUN"}}}}
+- User: "Run the registered SQL resource dealer_sales_summary"
+  → {{"job_type": "SQL", "action": "run", "name": "dealer_sales_summary"}}
+- User: "Run dealer_sales_summary with query select * from sales limit 10"
+  → {{"job_type": "SQL", "action": "run", "name": "dealer_sales_summary", "query": "select * from sales limit 10"}}
+- User: "I want to get all the runs from the control-center database"
+  → {{"job_type": "SQL", "connector": "sql-dab", "connection_id": "postgres", "query": "SELECT * FROM runs"}}
+- User: "please run it manually"
+  → {{"run_type": "manual"}}
 - User: "Extract data from Snowflake table customers"
   → {{"data_sources": ["Snowflake table customers"]}}
 - User: "Im the owner and schedule it for monday at 3am"
@@ -154,7 +191,13 @@ EXTRACTION EXAMPLES:
 USER MESSAGE:
 "{user_message}"{current_state}
 
-Extract fields as JSON. Return ONLY valid JSON, no markdown, no explanation. Use normalize field names like "PowerPoint" (not "powerpoint"), and convert schedule descriptions to schedule field."""
+Extract fields as JSON. Return ONLY valid JSON, no markdown, no explanation.
+
+For SQL resource setup, prefer backend-aligned shapes such as:
+- {{"name": "...", "kind": "runtime", "type": "sql", "connector": "...", "environment": "dev", "config": {{"query": "...", "connection_id": "...", "schedule": "..."}}}}
+- use params.query only when the user clearly means a run-specific override rather than the resource default.
+
+Use normalized field names like "SQL", "PowerPoint", and convert schedule descriptions to the schedule field."""
 
     def _parse_extraction_response(self, response_text: str) -> dict[str, Any]:
         """Parse the JSON extraction response from LLM."""
