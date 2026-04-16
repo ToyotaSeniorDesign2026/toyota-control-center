@@ -10,6 +10,7 @@ from app.api.deps import get_db
 from app.services.chat_service import get_chat_service
 from app.services.field_extraction_service import get_field_extraction_service
 from app.services.chat_job_service import maybe_run_sql_job_from_chat, run_resource_by_id
+from app.services.chat_mcp_service import run_prompt_native_mcp, should_run_prompt_native_mcp
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -111,6 +112,9 @@ class ChatResponse(BaseModel):
     run_id: Optional[str] = None
     run_status: Optional[str] = None
     sql_job_executed: Optional[bool] = None
+    mcp_tool_executed: Optional[bool] = None
+    mcp_servers: Optional[list[str]] = None
+    mcp_tool_executions: Optional[list[dict[str, Any]]] = None
 
 
 @router.post("/send", response_model=ChatResponse)
@@ -148,6 +152,21 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                 run_id=preflight_sql_job_result.run_id,
                 run_status=preflight_sql_job_result.run_status,
                 sql_job_executed=preflight_sql_job_result.executed,
+            )
+
+        if should_run_prompt_native_mcp(request.message, request.current_draft_data):
+            mcp_result = await run_prompt_native_mcp(
+                message=request.message,
+                environment=str((request.current_draft_data or {}).get("target_environment") or (request.current_draft_data or {}).get("environment") or "dev"),
+                model=request.model,
+            )
+            return ChatResponse(
+                response=mcp_result.response,
+                job_creation_intent=False,
+                extracted_fields=None,
+                mcp_tool_executed=True,
+                mcp_servers=mcp_result.server_names,
+                mcp_tool_executions=mcp_result.tool_executions,
             )
         
         # Convert conversation history to dict format if provided
