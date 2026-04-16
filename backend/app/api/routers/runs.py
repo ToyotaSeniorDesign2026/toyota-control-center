@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_current_user, get_db
@@ -16,8 +16,16 @@ from app.services.run_service import (
     retry_run,
     stop_run,
 )
+from app.services.scheduler_service import run_due_scheduled_jobs
 
 router = APIRouter()
+
+
+@router.post("/scheduler/tick")
+def run_scheduler_tick(db=Depends(get_db), user=Depends(get_current_user)):
+    if user.role not in {"root", "domain_admin"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Scheduler tick requires root or domain admin")
+    return {"fired": run_due_scheduled_jobs(db)}
 
 
 @router.get("/{run_id}", response_model=RunOut)

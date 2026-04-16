@@ -190,10 +190,14 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
     powerpoint: PowerPointDetails
   ) => {
     if (!onDraftDataChange || isApplyingDraftDataRef.current) return;
+    const resolvedUniversal = {
+      ...uni,
+      run_type: uni.schedule.trim() && uni.run_type !== "scheduled" ? "scheduled" : uni.run_type,
+    };
 
     const draft: Record<string, any> = {
       job_type: type,
-      ...uni,
+      ...resolvedUniversal,
     };
 
     if (type === "Airflow") {
@@ -214,12 +218,12 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
       draft.result_limit = sql.result_limit;
       draft.kind = "runtime";
       draft.type = "sql";
-      draft.target_environment = uni.target_environment;
-      draft.data_sensitivity = uni.data_sensitivity;
+      draft.target_environment = resolvedUniversal.target_environment;
+      draft.data_sensitivity = resolvedUniversal.data_sensitivity;
       draft.config = {
         connection_id: sql.connection_id,
         query: sql.query,
-        schedule: uni.schedule,
+        schedule: resolvedUniversal.schedule,
         output_destination: sql.output_destination,
         result_limit: sql.result_limit,
       };
@@ -257,6 +261,7 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
     // Update job_type if provided
     const config = isRecord(draftData.config) ? draftData.config : {};
     const params = isRecord(draftData.params) ? draftData.params : {};
+    const incomingSchedule = draftData.schedule ?? config.schedule;
     const normalizedType =
       normalizeJobType(draftData.job_type) ||
       normalizeJobType(draftData.type) ||
@@ -275,10 +280,14 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
       ...(draftData.environment !== undefined && { environment: normalizeEnvironment(draftData.environment) ?? draftData.environment }),
       ...(draftData.target_environment !== undefined && { target_environment: normalizeEnvironment(draftData.target_environment) ?? draftData.target_environment }),
       ...(draftData.data_sensitivity !== undefined && { data_sensitivity: draftData.data_sensitivity }),
-      ...((draftData.schedule ?? config.schedule) !== undefined && { schedule: draftData.schedule ?? config.schedule }),
+      ...(incomingSchedule !== undefined && { schedule: incomingSchedule }),
       ...(draftData.approval_required !== undefined && { approval_required: draftData.approval_required }),
       ...(draftData.tags && Array.isArray(draftData.tags) && { tags: draftData.tags }),
-      ...(draftData.run_type !== undefined && { run_type: draftData.run_type }),
+      ...(draftData.run_type !== undefined
+        ? { run_type: draftData.run_type }
+        : typeof incomingSchedule === "string" && incomingSchedule.trim()
+          ? { run_type: "scheduled" }
+          : {}),
     }));
     
     // Update type-specific fields

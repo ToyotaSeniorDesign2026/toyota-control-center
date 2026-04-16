@@ -44,6 +44,13 @@ SQL MCP connector vars:
 - `SQL_ANALYTICS_MCP_SERVER_URL`
 - `SQL_ANALYTICS_MCP_SERVER_BEARER_TOKEN`
 
+Scheduled job vars:
+- `JOB_SCHEDULER_ENABLED` default: `true`
+- `JOB_SCHEDULER_INTERVAL_SECONDS` default: `60`
+- `JOB_SCHEDULER_TIMEZONE` default: `America/Chicago`
+
+The in-process scheduler polls runtime resources with `config.schedule`, creates due runs through the same execution path as manual runs, and marks those runs with `trigger_source = "schedule"`. For local testing, root/domain-admin users can call `POST /runs/scheduler/tick` to run one scheduler pass immediately.
+
 MCP agent LLM vars:
 - `CONTROL_CENTER_MCP_MODEL` optional; defaults to `OPENAI_MODEL`
 - `CONTROL_CENTER_MCP_INSTRUCTOR_MODEL` optional; defaults to `openai/{OPENAI_MODEL}`

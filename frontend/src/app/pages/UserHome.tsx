@@ -33,6 +33,7 @@ import PowerPointForm from "../components/user/PowerPointForm";
 import { useCalendarOverlay } from "../contexts/CalendarContext";
 import { useJobRuns } from "../contexts/JobRunContext";
 import { createResource, createResourceRun, getRunLogs, type ResourceCreatePayload, type ResourceRecord, type RunCreatePayload, type RunLogEntry, type RunRecord } from "../lib/controlCenterApi";
+import { createScheduledRunProjections, type ScheduledOccurrence } from "../lib/scheduleOccurrences";
 import { createJobFromForm, getDraftForms, getPendingPromotionResources, getSavedTemplates, mapJobToPendingPromotionResource, saveDraft, saveTemplate, subscribeToUserDashboardStore } from "../lib/userDashboardStore";
 import type { Job as StoredJob } from "./resourcesData";
 import {
@@ -51,12 +52,14 @@ import {
   getUrgencyLabel,
 } from "./requiredActionsData";
 
-const kpis = [
-  { label: "My Active Jobs", value: 12, hint: "+2 this week", tone: "text-green-600" },
-  { label: "Pending Approvals", value: 3, hint: "2 high priority", tone: "text-amber-600" },
-  { label: "Failed Runs (24h)", value: 1, hint: "Investigate before noon", tone: "text-red-600" },
-  { label: "Saved Jobs", value: 27, hint: "5 updated recently", tone: "text-[#ed0923]" },
-];
+const MS_IN_24_HOURS = 24 * 60 * 60 * 1000;
+const RESOURCE_SCHEDULES_UPDATED_EVENT = "control-center-resource-schedules-updated";
+
+const isWithinLast24Hours = (date?: Date) => {
+  if (!date) return false;
+  const ageMs = Date.now() - date.getTime();
+  return ageMs >= 0 && ageMs <= MS_IN_24_HOURS;
+};
 
 type DashboardJobListItem = {
   id: string;
@@ -85,6 +88,7 @@ const activityTimeline = [
 // Mock run data for Runs/Calendar panel
 interface RunItem {
   id: string;
+  resourceId?: string;
   jobName: string;
   jobType: string;
   status: "scheduled" | "running" | "completed" | "failed";
@@ -509,7 +513,7 @@ const createDashboardJobs = (runs: RunRecord[], resources: ResourceRecord[]): Da
   });
 };
 
-const createDashboardRuns = (runs: RunRecord[], resources: ResourceRecord[]) => {
+const createDashboardRuns = (runs: RunRecord[], resources: ResourceRecord[], scheduledOccurrences: ScheduledOccurrence[] = []) => {
   const resourceById = new Map(resources.map((resource) => [resource.id, resource]));
   const mappedRuns = runs.map((run) => {
     const resource = resourceById.get(run.resource_id);
@@ -517,6 +521,7 @@ const createDashboardRuns = (runs: RunRecord[], resources: ResourceRecord[]) => 
     const scheduledTime = new Date(run.created_at);
     return {
       id: run.id,
+      resourceId: run.resource_id,
       jobName: resolveRunJobName(run, resource),
       jobType: resolveRunJobType(run, resource),
       status,
@@ -524,8 +529,16 @@ const createDashboardRuns = (runs: RunRecord[], resources: ResourceRecord[]) => 
       completedTime: status === "scheduled" || status === "running" ? undefined : new Date(run.updated_at),
     };
   });
+  const projectedRuns = scheduledOccurrences.map((occurrence) => ({
+    id: occurrence.id,
+    resourceId: occurrence.resourceId,
+    jobName: occurrence.jobName,
+    jobType: occurrence.jobType,
+    status: "scheduled" as const,
+    scheduledTime: occurrence.scheduledTime,
+  }));
 
-  const upcomingRuns = mappedRuns
+  const upcomingRuns = [...mappedRuns, ...projectedRuns]
     .filter((run) => run.status === "scheduled" || run.status === "running")
     .sort((a, b) => a.scheduledTime.getTime() - b.scheduledTime.getTime());
 
@@ -883,12 +896,78 @@ export default function UserHome() {
       ),
     [baseDashboardJobs, runningJobIds],
   );
-  const dashboardRuns = useMemo(() => createDashboardRuns(runs, resources), [runs, resources]);
+  const scheduledRunProjections = useMemo(() => createScheduledRunProjections(resources), [resources]);
+  const dashboardRuns = useMemo(() => createDashboardRuns(runs, resources, scheduledRunProjections), [runs, resources, scheduledRunProjections]);
+  const activeDashboardJobs = useMemo(
+    () => dashboardJobs.filter((job) => job.status === "Running" || job.status === "Healthy"),
+    [dashboardJobs],
+  );
+  const runningDashboardJobs = useMemo(
+    () => dashboardJobs.filter((job) => job.status === "Running"),
+    [dashboardJobs],
+  );
+  const failedRunsLast24h = useMemo(
+    () =>
+      dashboardRuns.recentRuns.filter(
+        (run) => run.status === "failed" && isWithinLast24Hours(run.completedTime ?? run.scheduledTime),
+      ),
+    [dashboardRuns.recentRuns],
+  );
+  const pendingApprovalPromotions = useMemo(
+    () => [...submittedPromotions, ...pendingPromotionsState],
+    [submittedPromotions, pendingPromotionsState],
+  );
+  const promotionQueueCounts = useMemo(
+    () => ({
+      ready: mockReadyForPromotion.length,
+      pending: pendingApprovalPromotions.length,
+      needsRevision: rejectedPromotionsState.length,
+    }),
+    [pendingApprovalPromotions.length, rejectedPromotionsState.length],
+  );
+  const urgentActionCount = useMemo(
+    () => requiredActionItems.filter((action) => action.urgency === "urgent").length,
+    [],
+  );
+  const dashboardKpis = useMemo(
+    () => [
+      {
+        label: "My Active Jobs",
+        value: activeDashboardJobs.length,
+        hint: `${runningDashboardJobs.length} running, ${activeDashboardJobs.length - runningDashboardJobs.length} healthy`,
+        tone: "text-green-600",
+        tabType: "active-jobs" as const,
+      },
+      {
+        label: "Pending Approvals",
+        value: pendingApprovalPromotions.length,
+        hint: `${pendingApprovalPromotions.length === 1 ? "1 request" : `${pendingApprovalPromotions.length} requests`} waiting`,
+        tone: "text-amber-600",
+        tabType: "pending-approvals" as const,
+      },
+      {
+        label: "Failed Runs (24h)",
+        value: failedRunsLast24h.length,
+        hint: failedRunsLast24h.length === 0 ? "No failures in view" : "Needs review",
+        tone: "text-red-600",
+        tabType: "failed-runs" as const,
+      },
+      {
+        label: "Saved Jobs",
+        value: dashboardJobs.length,
+        hint: `${dashboardJobs.filter((job) => job.status === "Ready").length} ready to run`,
+        tone: "text-[#ed0923]",
+        tabType: "saved-jobs" as const,
+      },
+    ],
+    [activeDashboardJobs, dashboardJobs, failedRunsLast24h.length, pendingApprovalPromotions.length, runningDashboardJobs.length],
+  );
   const filteredDashboardRuns = useMemo(() => {
     if (!selectedResourceId) return dashboardRuns;
     const filtered = runs.filter((r) => r.resource_id === selectedResourceId);
-    return createDashboardRuns(filtered, resources);
-  }, [runs, resources, selectedResourceId, dashboardRuns]);
+    const projected = scheduledRunProjections.filter((run) => run.resourceId === selectedResourceId);
+    return createDashboardRuns(filtered, resources, projected);
+  }, [runs, resources, selectedResourceId, dashboardRuns, scheduledRunProjections]);
   const selectedResourceName = useMemo(
     () => resources.find((r) => r.id === selectedResourceId)?.name ?? null,
     [resources, selectedResourceId]
@@ -1752,6 +1831,10 @@ export default function UserHome() {
       ...(fields.target_environment !== undefined ? { target_environment: normalizeEnv(fields.target_environment) } : {}),
       ...(fields.schedule === undefined && config.schedule !== undefined ? { schedule: config.schedule } : {}),
     };
+    const normalizedSchedule = typeof normalized.schedule === "string" ? normalized.schedule.trim() : "";
+    if (normalizedSchedule && normalized.run_type !== "scheduled") {
+      normalized.run_type = "scheduled";
+    }
 
     if (isSql) {
       const connector = normalizeConnector(fields.connector ?? config.connector);
@@ -1802,6 +1885,8 @@ export default function UserHome() {
   };
 
   const isCreateJobDraftComplete = (draft: Record<string, any>) => {
+    const jobType = String(draft.job_type ?? draft.type ?? "").trim();
+    const schedule = String(draft.schedule ?? draft.config?.schedule ?? "").trim();
     const hasUniversalRequiredFields = Boolean(
       String(draft.job_name ?? draft.name ?? "").trim() &&
         String(draft.owner ?? "").trim()
@@ -1811,17 +1896,32 @@ export default function UserHome() {
       return false;
     }
 
-    if (draft.job_type === "SQL") {
+    if (draft.run_type === "scheduled" && !schedule) {
+      return false;
+    }
+
+    if (jobType === "SQL") {
       return Boolean(
         String(draft.connector ?? "").trim() &&
           String(draft.connection_id ?? draft.config?.connection_id ?? "").trim() &&
           String(draft.query ?? draft.config?.query ?? draft.params?.query ?? "").trim() &&
-          String(draft.target_environment ?? draft.config?.target_environment ?? draft.environment ?? "").trim() &&
-          (draft.run_type !== "scheduled" || String(draft.schedule ?? draft.config?.schedule ?? "").trim())
+          String(draft.target_environment ?? draft.config?.target_environment ?? draft.environment ?? "").trim()
       );
     }
 
-    return Boolean(draft.job_type);
+    if (jobType === "Airflow") {
+      return Boolean(String(draft.dag_name ?? draft.config?.dag_id ?? "").trim());
+    }
+
+    if (jobType === "Excel") {
+      return Boolean(String(draft.output_file_name ?? "").trim());
+    }
+
+    if (jobType === "PowerPoint") {
+      return Boolean(String(draft.slide_template ?? "").trim());
+    }
+
+    return Boolean(jobType);
   };
 
   const isCreateJobDisabled =
@@ -1844,29 +1944,77 @@ export default function UserHome() {
   };
 
   const buildResourcePayloadFromDraft = (draft: Record<string, any>): ResourceCreatePayload => {
-    if (draft.job_type !== "SQL") {
-      throw new Error("Only SQL job creation is wired to the Control Center registry right now.");
-    }
-
-    const connector = normalizeSqlConnectorForResource(draft.connector);
-    const connectionId = String(draft.connection_id ?? draft.config?.connection_id ?? (connector === "sql-dab" ? "postgres" : "analytics")).trim();
-    const query = String(draft.query ?? draft.config?.query ?? draft.params?.query ?? "").trim();
-    const schedule = draft.run_type === "scheduled" ? String(draft.schedule ?? draft.config?.schedule ?? "").trim() : "";
-
-    return {
+    const jobType = String(draft.job_type ?? "").trim();
+    const schedule = String(draft.schedule ?? draft.config?.schedule ?? "").trim();
+    const timezone = typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "America/Chicago";
+    const scheduleConfig = {
+      ...(schedule ? { schedule } : {}),
+      ...(schedule ? { timezone } : {}),
+    };
+    const basePayload = {
       name: String(draft.job_name ?? draft.name ?? "").trim(),
-      kind: "runtime",
-      type: "sql",
-      connector,
-      environment: String(draft.environment ?? "dev"),
+      kind: "runtime" as const,
+      environment: String(draft.target_environment ?? draft.environment ?? "dev"),
       data_sensitivity: String(draft.data_sensitivity ?? "low"),
       tags: Array.isArray(draft.tags) ? draft.tags : [],
-      config: {
-        connection_id: connectionId,
-        query,
-        ...(schedule ? { schedule } : {}),
-      },
     };
+
+    if (jobType === "SQL") {
+      const connector = normalizeSqlConnectorForResource(draft.connector);
+      const connectionId = String(draft.connection_id ?? draft.config?.connection_id ?? (connector === "sql-dab" ? "postgres" : "analytics")).trim();
+      const query = String(draft.query ?? draft.config?.query ?? draft.params?.query ?? "").trim();
+      return {
+        ...basePayload,
+        type: "sql",
+        connector,
+        config: {
+          connection_id: connectionId,
+          query,
+          ...scheduleConfig,
+        },
+      };
+    }
+
+    if (jobType === "Excel") {
+      return {
+        ...basePayload,
+        type: "excel",
+        connector: String(draft.connector ?? draft.config?.connection_id ?? "filesystem"),
+        config: {
+          brief: String(draft.description ?? draft.input_data_sources ?? "Excel job").trim(),
+          connection_id: String(draft.connection_id ?? draft.config?.connection_id ?? "filesystem"),
+          ...scheduleConfig,
+        },
+      };
+    }
+
+    if (jobType === "PowerPoint") {
+      return {
+        ...basePayload,
+        type: "powerpoint",
+        connector: String(draft.connector ?? draft.config?.connection_id ?? "filesystem"),
+        config: {
+          brief: String(draft.description ?? draft.slide_template ?? "PowerPoint job").trim(),
+          connection_id: String(draft.connection_id ?? draft.config?.connection_id ?? "filesystem"),
+          ...scheduleConfig,
+        },
+      };
+    }
+
+    if (jobType === "Airflow") {
+      return {
+        ...basePayload,
+        type: "airflow_dag",
+        connector: String(draft.connector ?? "airflow"),
+        config: {
+          dag_id: String(draft.dag_name ?? draft.config?.dag_id ?? "").trim(),
+          api_base_url: String(draft.api_base_url ?? draft.config?.api_base_url ?? "http://localhost:8080"),
+          ...scheduleConfig,
+        },
+      };
+    }
+
+    throw new Error(`Job type '${jobType || "unknown"}' is not supported yet.`);
   };
 
   const registerJobResourceFromDraft = async (options: { askToRun?: boolean; closeTabId?: string } = {}) => {
@@ -1896,7 +2044,10 @@ export default function UserHome() {
         },
       }));
       await refreshJobRuns();
-      emitConsoleEvent("draft_updated", `Registered SQL resource ${resource.name}`, {
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event(RESOURCE_SCHEDULES_UPDATED_EVENT));
+      }
+      emitConsoleEvent("draft_updated", `Registered ${resource.type} resource ${resource.name}`, {
         resource_id: resource.id,
         name: resource.name,
         connector: resource.connector,
@@ -1907,7 +2058,7 @@ export default function UserHome() {
           ...prev,
           {
             id: `resource-created-${resource.id}-${Date.now()}`,
-            content: `Created SQL job \`${resource.name}\` and saved it as a Control Center resource. Do you want me to run it now?`,
+            content: `Created ${resource.type.toUpperCase()} job \`${resource.name}\` and saved it as a Control Center resource. Do you want me to run it now?`,
           },
         ]);
       }
@@ -2013,6 +2164,9 @@ export default function UserHome() {
     const currentJobName = tab.type === "job" ? tab.jobName : null;
     const currentJobSpec = tab.type === "job"
       ? ((tab.payload as WorkspaceJobPayload | undefined) ?? (currentJobName ? mockJobSpecs[currentJobName] : null))
+      : null;
+    const currentJobResource = currentJobSpec
+      ? resources.find((resource) => resource.id === currentJobSpec.job_id || resource.id === tab.id)
       : null;
     
     // Get template if needed
@@ -2595,23 +2749,38 @@ export default function UserHome() {
           <div className="mx-auto max-w-[1600px] px-6 py-8">
             <div className="space-y-6">
               {/* Job Header */}
-              <div>
-                <h1 className="text-3xl font-bold text-gray-900">{currentJobSpec.name}</h1>
-                <div className="flex items-center gap-3 mt-3">
-                  <span className="rounded-lg bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700">{currentJobSpec.type}</span>
-                  <span className="text-sm text-gray-600">Schedule: {currentJobSpec.schedule}</span>
-                  <span
-                    className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
-                      currentJobSpec.status === "Healthy"
-                        ? "bg-green-100 text-green-700"
-                        : currentJobSpec.status === "Running"
-                          ? "bg-blue-100 text-blue-700"
-                          : "bg-red-100 text-red-700"
-                    }`}
-                  >
-                    {currentJobSpec.status}
-                  </span>
+              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <h1 className="text-3xl font-bold text-gray-900">{currentJobSpec.name}</h1>
+                  <div className="flex items-center gap-3 mt-3">
+                    <span className="rounded-lg bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700">{currentJobSpec.type}</span>
+                    <span className="text-sm text-gray-600">Schedule: {currentJobSpec.schedule}</span>
+                    <span
+                      className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
+                        currentJobSpec.status === "Healthy"
+                          ? "bg-green-100 text-green-700"
+                          : currentJobSpec.status === "Running"
+                            ? "bg-blue-100 text-blue-700"
+                            : "bg-red-100 text-red-700"
+                      }`}
+                    >
+                      {currentJobSpec.status}
+                    </span>
+                  </div>
                 </div>
+                <button
+                  onClick={() => {
+                    if (currentJobResource) {
+                      void runResourceFromUi(currentJobResource.id);
+                    }
+                  }}
+                  disabled={!currentJobResource || runningJobIds.includes(currentJobResource.id)}
+                  className="inline-flex items-center justify-center gap-2 rounded-md bg-[#ed0923] px-4 py-2 text-sm font-semibold text-white hover:bg-[#d10820] disabled:cursor-not-allowed disabled:bg-gray-300"
+                  title={currentJobResource ? "Run this job manually" : "This job is not linked to a saved Control Center resource"}
+                >
+                  <PlayCircle className="h-4 w-4" />
+                  {currentJobResource && runningJobIds.includes(currentJobResource.id) ? "Running..." : "Run Job"}
+                </button>
               </div>
 
               {/* Tabs */}
@@ -3245,47 +3414,45 @@ export default function UserHome() {
             <div className="space-y-6">
               <div>
                 <h1 className="text-3xl font-bold text-gray-900">My Active Jobs</h1>
-                <p className="mt-2 text-sm text-gray-600">Jobs currently running or scheduled</p>
+                <p className="mt-2 text-sm text-gray-600">Jobs currently running or healthy</p>
               </div>
 
               <div className="rounded-xl border border-gray-200 bg-white p-6">
                 <div className="space-y-4">
-                  {dashboardJobs
-                    .filter((job) => job.status === "Running" || job.status === "Healthy")
-                    .map((job) => (
-                      <div key={job.id} className="flex items-start justify-between p-4 border border-gray-100 rounded-lg hover:bg-gray-50 transition">
-                        <div className="flex-1">
-                          <p className="font-medium text-gray-900">{job.name}</p>
-                          <div className="flex items-center gap-2 mt-2">
-                            <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded">{job.type}</span>
-                            <span className="text-xs text-gray-500">Schedule: {job.schedule}</span>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
-                              job.status === "Healthy"
-                                ? "bg-green-100 text-green-700"
-                                : "bg-blue-100 text-blue-700"
-                            }`}
-                          >
-                            {job.status}
-                          </span>
-                          <button
-                            onClick={() =>
-                              handleOpenTabInPane(
-                                { type: "job", name: job.name, id: job.id, payload: job.payload },
-                                "primary"
-                              )
-                            }
-                            className="px-3 py-1 text-xs text-[#ed0923] hover:bg-red-50 rounded transition"
-                          >
-                            View
-                          </button>
+                  {activeDashboardJobs.map((job) => (
+                    <div key={job.id} className="flex items-start justify-between p-4 border border-gray-100 rounded-lg hover:bg-gray-50 transition">
+                      <div className="flex-1">
+                        <p className="font-medium text-gray-900">{job.name}</p>
+                        <div className="flex items-center gap-2 mt-2">
+                          <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded">{job.type}</span>
+                          <span className="text-xs text-gray-500">Schedule: {job.schedule}</span>
                         </div>
                       </div>
-                    ))}
-                  {dashboardJobs.filter((job) => job.status === "Running" || job.status === "Healthy").length === 0 && (
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
+                            job.status === "Healthy"
+                              ? "bg-green-100 text-green-700"
+                              : "bg-blue-100 text-blue-700"
+                          }`}
+                        >
+                          {job.status}
+                        </span>
+                        <button
+                          onClick={() =>
+                            handleOpenTabInPane(
+                              { type: "job", name: job.name, id: job.id, payload: job.payload },
+                              "primary"
+                            )
+                          }
+                          className="px-3 py-1 text-xs text-[#ed0923] hover:bg-red-50 rounded transition"
+                        >
+                          View
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {activeDashboardJobs.length === 0 && (
                     <div className="text-center py-8 text-gray-500">No active jobs at the moment</div>
                   )}
                 </div>
@@ -3303,7 +3470,7 @@ export default function UserHome() {
 
               <div className="rounded-xl border border-gray-200 bg-white p-6">
                 <div className="space-y-4">
-                  {pendingPromotionsState.map((promotion) => (
+                  {pendingApprovalPromotions.map((promotion) => (
                     <div key={promotion.id} className="flex items-start justify-between p-4 border border-amber-200 bg-amber-50 rounded-lg">
                       <div className="flex-1">
                         <p className="font-medium text-gray-900">{promotion.name}</p>
@@ -3332,7 +3499,7 @@ export default function UserHome() {
                       </div>
                     </div>
                   ))}
-                  {pendingPromotionsState.length === 0 && (
+                  {pendingApprovalPromotions.length === 0 && (
                     <div className="text-center py-8 text-gray-500">No pending approvals</div>
                   )}
                 </div>
@@ -3350,38 +3517,36 @@ export default function UserHome() {
 
               <div className="rounded-xl border border-gray-200 bg-white p-6">
                 <div className="space-y-4">
-                  {dashboardRuns.recentRuns
-                    .filter((run) => run.status === "failed")
-                    .map((run) => (
-                      <div key={run.id} className="flex items-start justify-between p-4 border border-red-200 bg-red-50 rounded-lg">
-                        <div className="flex-1">
-                          <p className="font-medium text-gray-900">{run.jobName}</p>
-                          <div className="flex items-center gap-2 mt-2">
-                            <span className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded">{run.jobType}</span>
-                            <span className="text-xs text-gray-500">
-                              Failed {formatRunTime(run.scheduledTime)}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="inline-flex rounded-full px-3 py-1 text-xs font-semibold bg-red-100 text-red-700">
-                            Failed
+                  {failedRunsLast24h.map((run) => (
+                    <div key={run.id} className="flex items-start justify-between p-4 border border-red-200 bg-red-50 rounded-lg">
+                      <div className="flex-1">
+                        <p className="font-medium text-gray-900">{run.jobName}</p>
+                        <div className="flex items-center gap-2 mt-2">
+                          <span className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded">{run.jobType}</span>
+                          <span className="text-xs text-gray-500">
+                            Failed {formatRunTime(run.completedTime ?? run.scheduledTime)}
                           </span>
-                          <button
-                            onClick={() =>
-                              handleOpenTabInPane(
-                                { type: "job", name: run.jobName, id: run.jobName },
-                                "primary"
-                              )
-                            }
-                            className="px-3 py-1 text-xs text-[#ed0923] hover:bg-red-100 rounded transition"
-                          >
-                            Details
-                          </button>
                         </div>
                       </div>
-                    ))}
-                  {dashboardRuns.recentRuns.filter((run) => run.status === "failed").length === 0 && (
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex rounded-full px-3 py-1 text-xs font-semibold bg-red-100 text-red-700">
+                          Failed
+                        </span>
+                        <button
+                          onClick={() =>
+                            handleOpenTabInPane(
+                              { type: "job", name: run.jobName, id: run.jobName },
+                              "primary"
+                            )
+                          }
+                          className="px-3 py-1 text-xs text-[#ed0923] hover:bg-red-100 rounded transition"
+                        >
+                          Details
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {failedRunsLast24h.length === 0 && (
                     <div className="text-center py-8 text-gray-500">No failed runs in the last 24 hours</div>
                   )}
                 </div>
@@ -3450,25 +3615,12 @@ export default function UserHome() {
 
               {/* KPIs */}
               <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-                {kpis.map((kpi, idx) => {
-                  // Map KPI label to dashboard tab type
-                  const getTabType = () => {
-                    if (kpi.label === "My Active Jobs") return "active-jobs";
-                    if (kpi.label === "Pending Approvals") return "pending-approvals";
-                    if (kpi.label === "Failed Runs (24h)") return "failed-runs";
-                    if (kpi.label === "Saved Jobs") return "saved-jobs";
-                    return null;
-                  };
-                  
-                  const tabType = getTabType();
-                  
+                {dashboardKpis.map((kpi) => {
                   return (
                     <button
-                      key={idx}
+                      key={kpi.tabType}
                       onClick={() => {
-                        if (tabType) {
-                          handleOpenTabInPane({ type: tabType, name: kpi.label, id: tabType }, "primary");
-                        }
+                        handleOpenTabInPane({ type: kpi.tabType, name: kpi.label, id: kpi.tabType }, "primary");
                       }}
                       className="rounded-xl border border-gray-200 bg-white p-6 hover:border-[#ed0923] hover:shadow-lg transition cursor-pointer"
                     >
@@ -3489,29 +3641,29 @@ export default function UserHome() {
                   <div className="flex items-center gap-3">
                     <AlertTriangle className="h-5 w-5 text-red-500" />
                     <div>
-                      <p className="text-2xl font-bold text-gray-900">1</p>
-                      <p className="text-xs text-gray-600">Urgent action</p>
+                      <p className="text-2xl font-bold text-gray-900">{urgentActionCount}</p>
+                      <p className="text-xs text-gray-600">{urgentActionCount === 1 ? "Urgent action" : "Urgent actions"}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
                     <PlayCircle className="h-5 w-5 text-blue-500" />
                     <div>
-                      <p className="text-2xl font-bold text-gray-900">2</p>
-                      <p className="text-xs text-gray-600">Running jobs</p>
+                      <p className="text-2xl font-bold text-gray-900">{runningDashboardJobs.length}</p>
+                      <p className="text-xs text-gray-600">{runningDashboardJobs.length === 1 ? "Running job" : "Running jobs"}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
                     <Sparkles className="h-5 w-5 text-amber-500" />
                     <div>
-                      <p className="text-2xl font-bold text-gray-900">3</p>
-                      <p className="text-xs text-gray-600">Drafts pending</p>
+                      <p className="text-2xl font-bold text-gray-900">{draftJobs.length}</p>
+                      <p className="text-xs text-gray-600">{draftJobs.length === 1 ? "Draft pending" : "Drafts pending"}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
                     <CheckCircle2 className="h-5 w-5 text-green-500" />
                     <div>
-                      <p className="text-2xl font-bold text-gray-900">2</p>
-                      <p className="text-xs text-gray-600">Promotions ready</p>
+                      <p className="text-2xl font-bold text-gray-900">{promotionQueueCounts.ready}</p>
+                      <p className="text-xs text-gray-600">{promotionQueueCounts.ready === 1 ? "Promotion ready" : "Promotions ready"}</p>
                     </div>
                   </div>
                 </div>
@@ -3541,7 +3693,7 @@ export default function UserHome() {
                       </button>
                     ))}
                     {dashboardJobs.length === 0 && (
-                      <p className="p-2 text-xs text-gray-500">No jobs found in the runs table</p>
+                      <p className="p-2 text-xs text-gray-500">No saved jobs found</p>
                     )}
                   </div>
                 </div>
@@ -3566,15 +3718,15 @@ export default function UserHome() {
                   <div className="space-y-1 text-xs">
                     <div className="flex items-center justify-between p-2 bg-blue-50 rounded">
                       <span className="text-gray-700">Ready</span>
-                      <span className="font-bold text-blue-700">2</span>
+                      <span className="font-bold text-blue-700">{promotionQueueCounts.ready}</span>
                     </div>
                     <div className="flex items-center justify-between p-2 bg-yellow-50 rounded">
                       <span className="text-gray-700">Pending</span>
-                      <span className="font-bold text-yellow-700">1</span>
+                      <span className="font-bold text-yellow-700">{promotionQueueCounts.pending}</span>
                     </div>
                     <div className="flex items-center justify-between p-2 bg-red-50 rounded">
                       <span className="text-gray-700">Needs Revision</span>
-                      <span className="font-bold text-red-700">1</span>
+                      <span className="font-bold text-red-700">{promotionQueueCounts.needsRevision}</span>
                     </div>
                   </div>
                 </div>
@@ -3800,33 +3952,47 @@ export default function UserHome() {
                   </div>
                 ) : currentJobs.length > 0 ? (
                   currentJobs.map((job) => (
-                    <button
+                    <div
                       key={job.id}
                       draggable
                       onDragStart={(e) => handleJobDragStart(e, job.name)}
-                      onClick={() => {
-                        setSelectedResourceId(job.id);
-                        handleOpenTabInPane(
-                          { type: "job", name: job.name, id: job.id, payload: job.payload },
-                          "primary"
-                        );
-                      }}
-                      className={`w-full p-3 rounded-lg transition text-left cursor-move ${
+                      className={`w-full p-3 rounded-lg transition text-left ${
                         activeJobName === job.name
                           ? "bg-[#ed0923]/10 border border-[#ed0923]"
                           : "bg-gray-50 hover:bg-gray-100 border border-transparent"
                       }`}
                     >
-                      <p className="text-sm font-medium text-gray-900">{job.name}</p>
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className="text-xs text-gray-500">{job.type}</span>
-                        <span
-                          className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${getDashboardJobStatusClasses(job.status)}`}
+                      <button
+                        onClick={() => {
+                          setSelectedResourceId(job.id);
+                          handleOpenTabInPane(
+                            { type: "job", name: job.name, id: job.id, payload: job.payload },
+                            "primary"
+                          );
+                        }}
+                        className="w-full cursor-move text-left"
+                      >
+                        <p className="text-sm font-medium text-gray-900">{job.name}</p>
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className="text-xs text-gray-500">{job.type}</span>
+                          <span
+                            className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${getDashboardJobStatusClasses(job.status)}`}
+                          >
+                            {job.status}
+                          </span>
+                        </div>
+                      </button>
+                      <div className="mt-3 flex items-center gap-2">
+                        <button
+                          onClick={() => void runResourceFromUi(job.id)}
+                          className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md bg-[#ed0923] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#d10820] disabled:cursor-not-allowed disabled:bg-gray-300"
+                          disabled={runningJobIds.includes(job.id)}
                         >
-                          {job.status}
-                        </span>
+                          <PlayCircle className="h-3.5 w-3.5" />
+                          {runningJobIds.includes(job.id) ? "Running..." : "Run manually"}
+                        </button>
                       </div>
-                    </button>
+                    </div>
                   ))
                 ) : (
                   <div className="text-center py-8">

@@ -56,6 +56,9 @@ class Settings:
     db_max_overflow: int = _as_int(os.getenv("DB_MAX_OVERFLOW"), default=20)
     db_pool_recycle: int = _as_int(os.getenv("DB_POOL_RECYCLE"), default=1800)
     db_pool_pre_ping: bool = _as_bool(os.getenv("DB_POOL_PRE_PING"), default=True)
+    job_scheduler_enabled: bool = _as_bool(os.getenv("JOB_SCHEDULER_ENABLED"), default=True)
+    job_scheduler_interval_seconds: int = _as_int(os.getenv("JOB_SCHEDULER_INTERVAL_SECONDS"), default=60)
+    job_scheduler_timezone: str = os.getenv("JOB_SCHEDULER_TIMEZONE", "America/Chicago")
 
     # OpenAI Configuration
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")

@@ -114,7 +114,7 @@ def _run_to_out(run: Run) -> dict:
     }
 
 
-def create_run_and_maybe_execute(db: Session, user, payload: RunCreate):
+def create_run_and_maybe_execute(db: Session, user, payload: RunCreate, trigger_source: str = "api"):
     resource = db.get(Resource, payload.resource_id)
     if not resource:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
@@ -198,7 +198,7 @@ def create_run_and_maybe_execute(db: Session, user, payload: RunCreate):
         run_id=run.id,
         resource=resource,
         payload=payload,
-        trigger_source="api",
+        trigger_source=trigger_source,
     )
     run.trigger_source = execution_request.trigger_source
     run.execution_backend = execution_request.execution_backend
