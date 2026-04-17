@@ -4,11 +4,13 @@ from app.api.deps import get_db, require_any_user, require_domain_admin
 from app.schemas.integrations import (
     GithubActionsWebhookPayload,
     GithubWebhookAck,
+    MCPConnectionBundleListResponse,
     MCPServerListResponse,
     OpenAIChatRequest,
     OpenAIChatResponse,
 )
 from app.services.github_actions_service import handle_github_actions_webhook
+from app.services.integration_catalog_service import list_repo_connection_bundles
 from app.services.openai_chat_service import request_openai_chat
 
 router = APIRouter()
@@ -56,3 +58,11 @@ def list_mcp_servers(user=Depends(require_any_user)):
         for name, server in manager.get_available_servers().items()
     ]
     return {"items": sorted(items, key=lambda item: item["name"])}
+
+
+@router.get("/mcp/repo-bundles", response_model=MCPConnectionBundleListResponse)
+def list_mcp_repo_bundles(
+    environment: str = "dev",
+    user=Depends(require_any_user),
+):
+    return list_repo_connection_bundles(environment=environment)

@@ -98,6 +98,7 @@ class ChatService:
             - Airflow
             - Excel
             - PowerPoint
+            - GitHub repo connections
 
             UNIVERSAL FIELDS:
             - job_name
@@ -164,6 +165,14 @@ class ChatService:
             - branding_theme
             - output_location
 
+            GITHUB REPO CONNECTION FIELDS:
+            - repo
+            - ref
+            - path
+            - provider
+            - installation_owner
+            - server_names
+
             BEHAVIOR RULES:
             - Speak naturally to the user
             - Extract only fields the user clearly states or strongly implies
@@ -184,6 +193,8 @@ class ChatService:
             - Ask for only one missing required SQL field per response.
             - If the user says to run it manually, set run_type to manual and do not ask for a schedule.
             - Treat the job name as the SQL resource name unless the user explicitly gives a different resource name.
+            - If the user wants to connect a GitHub repository, help them capture the repo slug first, then optional branch/ref and subpath.
+            - Treat saved repo connections as reusable MCP-ready resources, not runnable jobs.
 
             IMPORTANT:
             The UI may display your extracted field updates in a separate console, artifact panel, or live form.

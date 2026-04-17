@@ -62,6 +62,15 @@
       "config_path": "configs/fastmcp-docs.json",
       "active": true
     },
+    "github": {
+      "description": "GitHub MCP server for repository, branch, issue, and pull request workflows.",
+      "display_name": "GitHub Repositories",
+      "allowed_environments": ["dev", "staging", "prod"],
+      "config_path": "configs/github.json",
+      "version": "1.0",
+      "tags": ["github", "repo", "source-control", "mcp"],
+      "active": true
+    },
     "wordsmith-mcp": {
       "description": "Query and inspect English words using tools tailored to writers.",
       "allowed_environments": ["dev", "staging", "prod"],

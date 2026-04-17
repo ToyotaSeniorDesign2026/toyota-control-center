@@ -32,7 +32,20 @@ import SQLJobForm from "../components/user/SQLJobForm";
 import PowerPointForm from "../components/user/PowerPointForm";
 import { useCalendarOverlay } from "../contexts/CalendarContext";
 import { useJobRuns } from "../contexts/JobRunContext";
-import { createResource, createResourceRun, getRunLogs, type ResourceCreatePayload, type ResourceRecord, type RunCreatePayload, type RunLogEntry, type RunRecord } from "../lib/controlCenterApi";
+import {
+  createResource,
+  createResourceRun,
+  getRunLogs,
+  listMcpRepoBundles,
+  listMcpServers,
+  type MCPConnectionBundleSummary,
+  type MCPServerSummary,
+  type ResourceCreatePayload,
+  type ResourceRecord,
+  type RunCreatePayload,
+  type RunLogEntry,
+  type RunRecord,
+} from "../lib/controlCenterApi";
 import { createScheduledRunProjections, type ScheduledOccurrence } from "../lib/scheduleOccurrences";
 import { createJobFromForm, getDraftForms, getPendingPromotionResources, getSavedTemplates, mapJobToPendingPromotionResource, saveDraft, saveTemplate, subscribeToUserDashboardStore } from "../lib/userDashboardStore";
 import type { Job as StoredJob } from "./resourcesData";
@@ -473,7 +486,8 @@ const createWorkspaceJobPayloadFromResource = (resource: ResourceRecord): Worksp
 };
 
 const createDashboardJobs = (runs: RunRecord[], resources: ResourceRecord[]): DashboardJobListItem[] => {
-  const resourceById = new Map(resources.map((resource) => [resource.id, resource]));
+  const jobResources = resources.filter((resource) => resource.type !== "repo_connection");
+  const resourceById = new Map(jobResources.map((resource) => [resource.id, resource]));
   const latestRunByResource = new Map<string, RunRecord>();
 
   [...runs]
@@ -484,7 +498,7 @@ const createDashboardJobs = (runs: RunRecord[], resources: ResourceRecord[]): Da
       }
     });
 
-  return resources.map((resource) => {
+  return jobResources.map((resource) => {
     const run = latestRunByResource.get(resource.id);
     if (!run) {
       const payload = createWorkspaceJobPayloadFromResource(resource);
@@ -511,6 +525,44 @@ const createDashboardJobs = (runs: RunRecord[], resources: ResourceRecord[]): Da
       payload,
     };
   });
+};
+
+type RepoConnectionFormState = {
+  repo: string;
+  ref: string;
+  path: string;
+  displayName: string;
+  description: string;
+};
+
+const DEFAULT_REPO_CONNECTION_FORM: RepoConnectionFormState = {
+  repo: "",
+  ref: "",
+  path: "",
+  displayName: "",
+  description: "",
+};
+
+const normalizeGithubRepoInput = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+
+  const httpsMatch = trimmed.match(/github\.com\/([^/\s]+\/[^/\s#?]+?)(?:\.git)?(?:[#?].*)?$/i);
+  if (httpsMatch) return httpsMatch[1].replace(/\/+$/, "");
+
+  const sshMatch = trimmed.match(/github\.com:([^/\s]+\/[^/\s]+?)(?:\.git)?$/i);
+  if (sshMatch) return sshMatch[1].replace(/\/+$/, "");
+
+  return trimmed.replace(/^(https?:\/\/)?github\.com\//i, "").replace(/\.git$/i, "").replace(/^\/+|\/+$/g, "");
+};
+
+const isValidGithubRepoSlug = (value: string): boolean => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value);
+
+const getRepoConnectionName = (repoSlug: string, explicitName?: string): string => {
+  const preferredName = explicitName.trim();
+  if (preferredName) return preferredName;
+  const repoName = repoSlug.split("/")[1] ?? repoSlug;
+  return `${repoName}-repo`;
 };
 
 const createDashboardRuns = (runs: RunRecord[], resources: ResourceRecord[], scheduledOccurrences: ScheduledOccurrence[] = []) => {
@@ -851,6 +903,12 @@ export default function UserHome() {
   const [rejectedPromotionsState, setRejectedPromotionsState] = useState(mockRejectedPromotions);
   const [pendingPromotionsState, setPendingPromotionsState] = useState(mockPendingPromotions);
   const [submittedPromotions, setSubmittedPromotions] = useState(() => getPendingPromotionResources());
+  const [availableMcpServers, setAvailableMcpServers] = useState<MCPServerSummary[]>([]);
+  const [repoConnectionBundles, setRepoConnectionBundles] = useState<MCPConnectionBundleSummary[]>([]);
+  const [repoConnectionForm, setRepoConnectionForm] = useState<RepoConnectionFormState>(DEFAULT_REPO_CONNECTION_FORM);
+  const [repoConnectionError, setRepoConnectionError] = useState<string | null>(null);
+  const [repoConnectionSuccess, setRepoConnectionSuccess] = useState<string | null>(null);
+  const [isSavingRepoConnection, setIsSavingRepoConnection] = useState(false);
   const [consoleHeight, setConsoleHeight] = useState(50);
   const [consoleActiveTab, setConsoleActiveTab] = useState<"json" | "logs" | "events">("json");
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
@@ -884,6 +942,10 @@ export default function UserHome() {
   ]);
   const [aiInput, setAiInput] = useState("");
   const baseDashboardJobs = useMemo(() => createDashboardJobs(runs, resources), [runs, resources]);
+  const connectedRepoResources = useMemo(
+    () => resources.filter((resource) => resource.type === "repo_connection"),
+    [resources],
+  );
   const dashboardJobs = useMemo(
     () =>
       baseDashboardJobs.map((job) =>
@@ -905,6 +967,14 @@ export default function UserHome() {
   const runningDashboardJobs = useMemo(
     () => dashboardJobs.filter((job) => job.status === "Running"),
     [dashboardJobs],
+  );
+  const githubMcpServer = useMemo(
+    () => availableMcpServers.find((server) => server.name === "github") ?? null,
+    [availableMcpServers],
+  );
+  const preferredRepoBundle = useMemo(
+    () => repoConnectionBundles.find((bundle) => bundle.primary_server === "github") ?? null,
+    [repoConnectionBundles],
   );
   const failedRunsLast24h = useMemo(
     () =>
@@ -996,6 +1066,17 @@ export default function UserHome() {
     setSubmittedPromotions(getPendingPromotionResources());
     return subscribeToUserDashboardStore(() => {
       setSubmittedPromotions(getPendingPromotionResources());
+    });
+  }, []);
+
+  useEffect(() => {
+    const token = getAuthToken();
+    void Promise.all([
+      listMcpServers(token).catch(() => ({ items: [] as MCPServerSummary[] })),
+      listMcpRepoBundles("dev", token).catch(() => ({ items: [] as MCPConnectionBundleSummary[] })),
+    ]).then(([serversResponse, bundlesResponse]) => {
+      setAvailableMcpServers(serversResponse.items);
+      setRepoConnectionBundles(bundlesResponse.items);
     });
   }, []);
 
@@ -1870,6 +1951,33 @@ export default function UserHome() {
 
   const handleChatFieldsExtracted = (fields: Record<string, any>) => {
     const normalized = normalizeExtractedJobFields(fields);
+    const isRepoConnectionDraft =
+      normalized.connection_intent === "connect_repo" ||
+      normalized.type === "repo_connection" ||
+      normalized.connector === "github" ||
+      Boolean(normalized.repo);
+
+    if (isRepoConnectionDraft) {
+      applyRepoConnectionFields(normalized);
+      if (normalizeGithubRepoInput(String(normalized.repo ?? ""))) {
+        void registerRepoConnection(
+          {
+            repo: String(normalized.repo ?? ""),
+            ref: String(normalized.ref ?? ""),
+            path: String(normalized.path ?? ""),
+            displayName: String(normalized.name ?? ""),
+            description: String(normalized.description ?? ""),
+          },
+          "chat",
+        ).catch((error) => {
+          setRepoConnectionError(error instanceof Error ? error.message : "Unable to connect the GitHub repo.");
+        });
+      } else {
+        setRepoConnectionError("Chat started a GitHub repo connection, but I still need the repo slug.");
+      }
+      return;
+    }
+
     const shouldOpenCreateJob =
       normalized.job_type === "SQL" ||
       normalized.job_name ||
@@ -1930,6 +2038,104 @@ export default function UserHome() {
   const getAuthToken = () => {
     if (typeof window === "undefined") return "u_analyst";
     return window.localStorage.getItem("control-center-auth-token") ?? "u_analyst";
+  };
+
+  const applyRepoConnectionFields = (fields: Record<string, any>) => {
+    const repo = normalizeGithubRepoInput(String(fields.repo ?? fields.config?.repo ?? ""));
+    const ref = String(fields.ref ?? fields.config?.ref ?? "").trim();
+    const path = String(fields.path ?? fields.config?.path ?? "").trim();
+    const displayName = String(fields.name ?? "").trim();
+    const description = String(fields.description ?? fields.config?.description ?? "").trim();
+
+    setRepoConnectionError(null);
+    setRepoConnectionSuccess(null);
+    setRepoConnectionForm((prev) => ({
+      repo: repo || prev.repo,
+      ref: ref || prev.ref,
+      path: path || prev.path,
+      displayName: displayName || prev.displayName,
+      description: description || prev.description,
+    }));
+  };
+
+  const buildRepoConnectionPayload = (form: RepoConnectionFormState): ResourceCreatePayload => {
+    const repo = normalizeGithubRepoInput(form.repo);
+    if (!isValidGithubRepoSlug(repo)) {
+      throw new Error("Enter a GitHub repo as owner/repo or a full GitHub URL.");
+    }
+
+    const bundleServerNames = preferredRepoBundle?.server_names?.length ? preferredRepoBundle.server_names : ["github"];
+    const companionServers = preferredRepoBundle?.companion_servers ?? [];
+
+    return {
+      name: getRepoConnectionName(repo, form.displayName),
+      kind: "runtime",
+      type: "repo_connection",
+      connector: "github",
+      environment: "dev",
+      data_sensitivity: "low",
+      tags: ["github", "repo-connection", "mcp"],
+      config: {
+        repo,
+        provider: "github",
+        ...(form.ref.trim() ? { ref: form.ref.trim(), default_branch: form.ref.trim() } : {}),
+        ...(form.path.trim() ? { path: form.path.trim() } : {}),
+        ...(form.description.trim() ? { description: form.description.trim() } : {}),
+        server_names: bundleServerNames,
+        primary_server: "github",
+        companion_servers: companionServers,
+        connection_mode: "manual_or_chat",
+      },
+    };
+  };
+
+  const registerRepoConnection = async (form: RepoConnectionFormState, source: "manual" | "chat" = "manual") => {
+    const payload = buildRepoConnectionPayload(form);
+    const repo = String(payload.config.repo);
+    const ref = String(payload.config.ref ?? "");
+    const existing = connectedRepoResources.find((resource) => {
+      const config = resource.config ?? {};
+      return normalizeGithubRepoInput(String(config.repo ?? "")) === repo && String(config.ref ?? "") === ref;
+    });
+
+    setIsSavingRepoConnection(true);
+    setRepoConnectionError(null);
+    setRepoConnectionSuccess(null);
+
+    try {
+      const resource = existing ?? await createResource(payload, getAuthToken());
+      await refreshJobRuns();
+      setRepoConnectionForm((prev) => ({
+        ...DEFAULT_REPO_CONNECTION_FORM,
+        repo,
+        ref,
+        path: String(resource.config?.path ?? prev.path ?? ""),
+        displayName: resource.name,
+        description: String(resource.config?.description ?? prev.description ?? ""),
+      }));
+      setRepoConnectionSuccess(
+        existing
+          ? `Repo ${repo}${ref ? ` @ ${ref}` : ""} is already connected and ready for MCP workflows.`
+          : `Connected ${repo}${ref ? ` @ ${ref}` : ""} for ${source === "chat" ? "chat and" : ""} future MCP workflows.`,
+      );
+      emitConsoleEvent("draft_updated", `Connected GitHub repo ${repo}`, {
+        resource_id: resource.id,
+        repo,
+        server_names: resource.config?.server_names ?? ["github"],
+        source,
+      });
+      return resource;
+    } finally {
+      setIsSavingRepoConnection(false);
+    }
+  };
+
+  const handleManualRepoConnection = async () => {
+    try {
+      await registerRepoConnection(repoConnectionForm, "manual");
+    } catch (error) {
+      setRepoConnectionError(error instanceof Error ? error.message : "Unable to connect the GitHub repo.");
+    }
   };
 
   const normalizeSqlConnectorForResource = (connector: unknown) => {
@@ -3666,6 +3872,168 @@ export default function UserHome() {
                       <p className="text-xs text-gray-600">{promotionQueueCounts.ready === 1 ? "Promotion ready" : "Promotions ready"}</p>
                     </div>
                   </div>
+                </div>
+              </div>
+
+              <div className="grid gap-6 lg:grid-cols-[1.3fr_0.9fr]">
+                <div className="rounded-xl border border-gray-200 bg-white p-6">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <h2 className="text-lg font-semibold text-gray-900">Connect a GitHub Repo</h2>
+                      <p className="mt-1 text-sm text-gray-600">
+                        Save a repo once on the dashboard so chat and future multi-MCP workflows can reuse it.
+                      </p>
+                    </div>
+                    <div className="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600">
+                      {githubMcpServer ? "GitHub MCP server available" : "GitHub MCP server not currently available"}
+                    </div>
+                  </div>
+
+                  <div className="mt-5 grid gap-4 md:grid-cols-2">
+                    <div className="md:col-span-2">
+                      <label className="mb-2 block text-sm font-medium text-gray-900">GitHub repo</label>
+                      <input
+                        value={repoConnectionForm.repo}
+                        onChange={(e) => {
+                          setRepoConnectionError(null);
+                          setRepoConnectionSuccess(null);
+                          setRepoConnectionForm((prev) => ({ ...prev, repo: e.target.value }));
+                        }}
+                        placeholder="owner/repo or https://github.com/owner/repo"
+                        className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-900">Default branch or ref</label>
+                      <input
+                        value={repoConnectionForm.ref}
+                        onChange={(e) => setRepoConnectionForm((prev) => ({ ...prev, ref: e.target.value }))}
+                        placeholder="main"
+                        className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-900">Optional subpath</label>
+                      <input
+                        value={repoConnectionForm.path}
+                        onChange={(e) => setRepoConnectionForm((prev) => ({ ...prev, path: e.target.value }))}
+                        placeholder="models/marts"
+                        className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-900">Display name</label>
+                      <input
+                        value={repoConnectionForm.displayName}
+                        onChange={(e) => setRepoConnectionForm((prev) => ({ ...prev, displayName: e.target.value }))}
+                        placeholder="dbt-core repo"
+                        className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-900">Description</label>
+                      <input
+                        value={repoConnectionForm.description}
+                        onChange={(e) => setRepoConnectionForm((prev) => ({ ...prev, description: e.target.value }))}
+                        placeholder="Used for dbt model work"
+                        className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                      />
+                    </div>
+                  </div>
+
+                  {repoConnectionError && (
+                    <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                      {repoConnectionError}
+                    </div>
+                  )}
+                  {repoConnectionSuccess && (
+                    <div className="mt-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+                      {repoConnectionSuccess}
+                    </div>
+                  )}
+
+                  <div className="mt-5 flex flex-wrap items-center gap-3">
+                    <button
+                      onClick={() => void handleManualRepoConnection()}
+                      disabled={isSavingRepoConnection || !githubMcpServer}
+                      className="rounded-lg bg-[#ed0923] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#d10820] disabled:cursor-not-allowed disabled:bg-gray-300"
+                    >
+                      {isSavingRepoConnection ? "Connecting..." : "Connect Repo"}
+                    </button>
+                    <button
+                      onClick={() => setIsChatPanelOpen(true)}
+                      className="rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
+                    >
+                      Open Chat to Connect
+                    </button>
+                  </div>
+
+                  <div className="mt-5 rounded-xl border border-dashed border-gray-200 bg-gray-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Chat Shortcut</p>
+                    <p className="mt-2 text-sm text-gray-700">
+                      Try: "Connect the GitHub repo <span className="font-mono">toyota-data/dbt-core</span> on branch <span className="font-mono">develop</span>."
+                    </p>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-gray-200 bg-white p-6">
+                  <h2 className="text-lg font-semibold text-gray-900">Connected Repo Context</h2>
+                  <p className="mt-1 text-sm text-gray-600">
+                    Connected repos become reusable MCP-aware resources instead of one-off chat state.
+                  </p>
+
+                  <div className="mt-4 space-y-3">
+                    {connectedRepoResources.length === 0 ? (
+                      <div className="rounded-lg bg-gray-50 px-4 py-5 text-sm text-gray-500">
+                        No GitHub repos connected yet.
+                      </div>
+                    ) : (
+                      connectedRepoResources.map((resource) => {
+                        const config = resource.config ?? {};
+                        const serverNames = Array.isArray(config.server_names)
+                          ? config.server_names.map((value) => String(value))
+                          : [resource.connector];
+                        return (
+                          <div key={resource.id} className="rounded-lg border border-gray-200 p-4">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="text-sm font-semibold text-gray-900">{String(config.repo ?? resource.name)}</p>
+                                <p className="mt-1 text-xs text-gray-500">
+                                  {String(config.ref ?? "default branch")}
+                                  {config.path ? ` • ${String(config.path)}` : ""}
+                                </p>
+                              </div>
+                              <span className="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-700">
+                                {resource.status}
+                              </span>
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {serverNames.map((serverName) => (
+                                <span key={serverName} className="rounded-full bg-red-50 px-2.5 py-1 text-[11px] font-semibold text-[#ed0923]">
+                                  {serverName}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  {preferredRepoBundle && (
+                    <div className="mt-5 rounded-xl bg-[#111827] p-4 text-white">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-red-200">Recommended MCP Bundle</p>
+                      <p className="mt-2 text-sm font-semibold">{preferredRepoBundle.title}</p>
+                      <p className="mt-1 text-sm text-gray-300">{preferredRepoBundle.summary}</p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {preferredRepoBundle.server_names.map((serverName) => (
+                          <span key={serverName} className="rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-white">
+                            {serverName}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 

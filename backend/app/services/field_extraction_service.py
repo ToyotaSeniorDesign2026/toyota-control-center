@@ -105,6 +105,7 @@ IMPORTANT:
   - action, target_environment, params.query for run-specific overrides
 - For the local Control Center database, use connector "sql-dab" and connection_id "postgres" unless the user says otherwise
 - If the user says the job should run manually, extract run_type as "manual" and do not invent a schedule
+- If the user wants to connect a GitHub repo, use resource-oriented fields like type "repo_connection", connector "github", config.repo, and config.provider "github"
 
 SUPPORTED FIELDS:
 
@@ -120,6 +121,7 @@ Universal Fields:
 - job_type (string: "SQL", "Airflow", "Excel", "PowerPoint")
 - action (string: usually "run")
 - target_environment (string: dev, staging, prod, production)
+- connection_intent (string: "connect_repo")
 
 Backend resource fields:
 - name (string)
@@ -135,6 +137,14 @@ SQL-specific backend fields:
 - connection_id (string)
 - output_destination (string)
 - result_limit (string or number)
+
+Repo connection backend fields:
+- repo (string in owner/repo format)
+- ref (string)
+- path (string)
+- provider (string)
+- installation_owner (string)
+- server_names (array of strings)
 
 Airflow-specific:
 - dag_name (string)
@@ -187,6 +197,8 @@ EXTRACTION EXAMPLES:
   → {{"owner": "user", "schedule": "every Monday at 3am"}}
 - User: "Add metrics like revenue, growth, and margin"
   → {{"metrics_to_include": ["revenue", "growth", "margin"]}}
+- User: "Connect the GitHub repo toyota-data/dbt-core on branch develop"
+  → {{"connection_intent": "connect_repo", "type": "repo_connection", "kind": "runtime", "connector": "github", "repo": "toyota-data/dbt-core", "provider": "github", "ref": "develop", "server_names": ["github"]}}
 
 USER MESSAGE:
 "{user_message}"{current_state}
@@ -196,6 +208,9 @@ Extract fields as JSON. Return ONLY valid JSON, no markdown, no explanation.
 For SQL resource setup, prefer backend-aligned shapes such as:
 - {{"name": "...", "kind": "runtime", "type": "sql", "connector": "...", "environment": "dev", "config": {{"query": "...", "connection_id": "...", "schedule": "..."}}}}
 - use params.query only when the user clearly means a run-specific override rather than the resource default.
+
+For repo connection setup, prefer backend-aligned shapes such as:
+- {{"connection_intent": "connect_repo", "name": "...", "kind": "runtime", "type": "repo_connection", "connector": "github", "repo": "owner/repo", "provider": "github", "ref": "main", "server_names": ["github"]}}
 
 Use normalized field names like "SQL", "PowerPoint", and convert schedule descriptions to the schedule field."""
 

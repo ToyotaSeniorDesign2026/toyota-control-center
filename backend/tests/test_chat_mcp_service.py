@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import unittest
 
-from app.services.chat_mcp_service import should_run_prompt_native_mcp
+from unittest.mock import patch
+
+from app.services.chat_mcp_service import needs_github_personal_access_token, should_run_prompt_native_mcp
 
 
 class ChatMCPServiceTests(unittest.TestCase):
@@ -33,6 +35,21 @@ class ChatMCPServiceTests(unittest.TestCase):
 
     def test_casual_chat_does_not_use_mcp(self) -> None:
         self.assertFalse(should_run_prompt_native_mcp("Hi, what can you do?"))
+
+    def test_github_lookup_requires_token_when_not_configured(self) -> None:
+        with patch.dict("os.environ", {}, clear=False):
+            self.assertTrue(
+                needs_github_personal_access_token("List open pull requests in toyota/control-center")
+            )
+
+    def test_supplied_github_token_satisfies_live_request(self) -> None:
+        with patch.dict("os.environ", {}, clear=False):
+            self.assertFalse(
+                needs_github_personal_access_token(
+                    "List open pull requests in toyota/control-center",
+                    supplied_token="ghp_test",
+                )
+            )
 
 
 if __name__ == "__main__":

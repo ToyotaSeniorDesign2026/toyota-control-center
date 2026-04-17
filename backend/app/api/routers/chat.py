@@ -1,16 +1,22 @@
 """Chat API router for handling AI chat messages."""
 
 import logging
+import os
 import re
 from typing import Optional, Any
 from fastapi import APIRouter, HTTPException, Depends
+import httpx
 from pydantic import BaseModel
 
 from app.api.deps import get_db
 from app.services.chat_service import get_chat_service
 from app.services.field_extraction_service import get_field_extraction_service
 from app.services.chat_job_service import maybe_run_sql_job_from_chat, run_resource_by_id
-from app.services.chat_mcp_service import run_prompt_native_mcp, should_run_prompt_native_mcp
+from app.services.chat_mcp_service import (
+    needs_github_personal_access_token,
+    run_prompt_native_mcp,
+    should_run_prompt_native_mcp,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -18,6 +24,11 @@ SQL_RUN_REQUEST_PATTERN = re.compile(r"\b(run|execute|launch|trigger|start)\b", 
 RUN_JOB_MARKER_PATTERN = re.compile(r'\[RUN_JOB:([a-zA-Z0-9\-_]+)\]')
 SQL_RUN_CONTEXT_PATTERN = re.compile(r"\b(job|sql|query|resource)\b", re.IGNORECASE)
 AFFIRMATIVE_RUN_RESPONSE_PATTERN = re.compile(r"^(yes|yep|yeah|sure|please do|go ahead|run it|run now|do it)[\s.!?]*$", re.IGNORECASE)
+REPO_CONNECTION_REQUEST_PATTERN = re.compile(r"\b(connect|link|attach|add)\b.*\b(github|repo|repository)\b|\b(github|repo|repository)\b.*\b(connect|link|attach|add)\b", re.IGNORECASE)
+REPO_SLUG_PATTERN = re.compile(r"(?:github\.com[/:])?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?(?=$|[\s/#?])", re.IGNORECASE)
+REPO_REF_PATTERN = re.compile(r"\b(?:branch|ref)\s+([A-Za-z0-9._/-]+)\b", re.IGNORECASE)
+REPO_PATH_PATTERN = re.compile(r"\b(?:path|folder|directory)\s+([^\s,]+)", re.IGNORECASE)
+GITHUB_REPO_OPTIONS_LIMIT = 12
 
 
 def _should_extract_fields(request: "ChatRequest", job_creation_intent: bool) -> bool:
@@ -88,6 +99,40 @@ def _deterministic_sql_fields(request: "ChatRequest") -> dict[str, Any]:
     return fields
 
 
+def _deterministic_repo_connection_fields(request: "ChatRequest") -> dict[str, Any]:
+    message = (request.message or "").strip()
+    if not message:
+        return {}
+
+    if REPO_CONNECTION_REQUEST_PATTERN.search(message) is None:
+        return {}
+
+    repo_match = REPO_SLUG_PATTERN.search(message)
+    if repo_match is None:
+        return {"connection_intent": "connect_repo", "connector": "github", "provider": "github"}
+
+    repo = repo_match.group(1).rstrip("/")
+    ref_match = REPO_REF_PATTERN.search(message)
+    path_match = REPO_PATH_PATTERN.search(message)
+    repo_name = repo.split("/")[-1]
+
+    fields: dict[str, Any] = {
+        "connection_intent": "connect_repo",
+        "name": repo_name,
+        "kind": "runtime",
+        "type": "repo_connection",
+        "connector": "github",
+        "repo": repo,
+        "provider": "github",
+        "server_names": ["github"],
+    }
+    if ref_match is not None:
+        fields["ref"] = ref_match.group(1)
+    if path_match is not None:
+        fields["path"] = path_match.group(1)
+    return fields
+
+
 class ChatMessage(BaseModel):
     """A single chat message."""
     role: str  # "user" or "assistant"
@@ -101,6 +146,21 @@ class ChatRequest(BaseModel):
     model: Optional[str] = None
     current_draft_data: Optional[dict[str, Any]] = None  # Current job draft state
     available_resources: Optional[list[dict[str, Any]]] = None
+    github_personal_access_token: Optional[str] = None
+
+
+class SecretRequest(BaseModel):
+    kind: str
+    prompt: str
+    submit_label: Optional[str] = None
+
+
+class RepositoryOption(BaseModel):
+    full_name: str
+    owner: str
+    name: str
+    default_branch: str | None = None
+    private: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -115,6 +175,48 @@ class ChatResponse(BaseModel):
     mcp_tool_executed: Optional[bool] = None
     mcp_servers: Optional[list[str]] = None
     mcp_tool_executions: Optional[list[dict[str, Any]]] = None
+    secret_request: Optional[SecretRequest] = None
+    repository_options: Optional[list[RepositoryOption]] = None
+
+
+async def _list_github_repository_options(personal_access_token: str) -> list[RepositoryOption]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {personal_access_token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    params = {
+        "sort": "updated",
+        "per_page": str(GITHUB_REPO_OPTIONS_LIMIT),
+        "affiliation": "owner,collaborator,organization_member",
+    }
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.get("https://api.github.com/user/repos", headers=headers, params=params)
+        response.raise_for_status()
+        payload = response.json()
+
+    if not isinstance(payload, list):
+        return []
+
+    options: list[RepositoryOption] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        full_name = str(item.get("full_name") or "").strip()
+        owner = str((item.get("owner") or {}).get("login") or "").strip()
+        name = str(item.get("name") or "").strip()
+        if not full_name or not owner or not name:
+            continue
+        options.append(
+            RepositoryOption(
+                full_name=full_name,
+                owner=owner,
+                name=name,
+                default_branch=str(item.get("default_branch") or "").strip() or None,
+                private=bool(item.get("private", False)),
+            )
+        )
+    return options
 
 
 @router.post("/send", response_model=ChatResponse)
@@ -134,6 +236,47 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
         
         # Detect job creation intent from user message
         job_creation_intent = detect_job_creation_intent(request.message)
+        deterministic_repo_fields = _deterministic_repo_connection_fields(request)
+        github_token = request.github_personal_access_token or os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
+
+        if deterministic_repo_fields.get("connection_intent") == "connect_repo" and not github_token:
+            return ChatResponse(
+                response=(
+                    "I can help connect a GitHub repository, but I need a GitHub personal access token "
+                    "for this live MCP session first."
+                ),
+                job_creation_intent=True,
+                extracted_fields=None,
+                secret_request=SecretRequest(
+                    kind="github_personal_access_token",
+                    prompt="Enter a GitHub personal access token to browse and connect repositories for this session.",
+                    submit_label="Use token",
+                ),
+            )
+
+        if (
+            deterministic_repo_fields.get("connection_intent") == "connect_repo"
+            and not deterministic_repo_fields.get("repo")
+            and github_token
+        ):
+            try:
+                repository_options = await _list_github_repository_options(github_token)
+            except httpx.HTTPError as exc:
+                logger.warning("Unable to list GitHub repositories for chat repo connection: %s", exc)
+                raise HTTPException(
+                    status_code=502,
+                    detail="Unable to load repositories from GitHub with the provided token.",
+                ) from exc
+
+            return ChatResponse(
+                response=(
+                    "I found repositories available through that token. Choose one below and I’ll connect it "
+                    "as a reusable GitHub repo resource."
+                ),
+                job_creation_intent=True,
+                extracted_fields=None,
+                repository_options=repository_options,
+            )
 
         preflight_sql_job_result = None
         if _is_explicit_sql_run_request(request):
@@ -155,10 +298,38 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
             )
 
         if should_run_prompt_native_mcp(request.message, request.current_draft_data):
+            if needs_github_personal_access_token(
+                request.message,
+                request.current_draft_data,
+                supplied_token=request.github_personal_access_token,
+            ):
+                return ChatResponse(
+                    response=(
+                        "I can do that, but I need a GitHub personal access token for this live "
+                        "GitHub MCP session. Enter it in the secure token field and I will use "
+                        "it only for this request."
+                    ),
+                    job_creation_intent=False,
+                    extracted_fields=None,
+                    secret_request=SecretRequest(
+                        kind="github_personal_access_token",
+                        prompt="Enter a GitHub personal access token for this live MCP session.",
+                        submit_label="Use token",
+                    ),
+                )
+
+            server_env_overrides = None
+            if request.github_personal_access_token:
+                server_env_overrides = {
+                    "github": {
+                        "GITHUB_PERSONAL_ACCESS_TOKEN": request.github_personal_access_token,
+                    }
+                }
             mcp_result = await run_prompt_native_mcp(
                 message=request.message,
                 environment=str((request.current_draft_data or {}).get("target_environment") or (request.current_draft_data or {}).get("environment") or "dev"),
                 model=request.model,
+                server_env_overrides=server_env_overrides,
             )
             return ChatResponse(
                 response=mcp_result.response,
@@ -202,7 +373,10 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
 
         # Extract job fields unless this is only a generic create-job opener with no
         # concrete details yet. SQL/run-style chat requests still need extraction.
-        extracted_fields = _deterministic_sql_fields(request)
+        extracted_fields = {
+            **deterministic_repo_fields,
+            **_deterministic_sql_fields(request),
+        }
         if _should_extract_fields(request, job_creation_intent):
             extraction_service = get_field_extraction_service()
             llm_fields = await extraction_service.extract_fields(

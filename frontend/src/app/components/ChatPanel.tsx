@@ -49,6 +49,20 @@ interface ResourceSummary {
   type: string;
 }
 
+interface SecretRequest {
+  kind: "github_personal_access_token";
+  prompt: string;
+  submit_label?: string;
+}
+
+interface RepositoryOption {
+  full_name: string;
+  owner: string;
+  name: string;
+  default_branch?: string | null;
+  private: boolean;
+}
+
 interface ChatPanelProps {
   isOpen: boolean;
   onClose: () => void;
@@ -174,6 +188,10 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
   const [isDragOverInput, setIsDragOverInput] = useState(false);
   const [attachedItems, setAttachedItems] = useState<AttachedItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [pendingSecretRequest, setPendingSecretRequest] = useState<(SecretRequest & { originalMessage: string }) | null>(null);
+  const [secretInputValue, setSecretInputValue] = useState("");
+  const [sessionGitHubToken, setSessionGitHubToken] = useState("");
+  const [repositoryOptions, setRepositoryOptions] = useState<RepositoryOption[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const seenNoticeIdsRef = useRef<Set<string>>(new Set());
 
@@ -257,24 +275,19 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
     return false;
   };
 
-  const handleSendMessage = async () => {
-    if (!inputValue.trim() && attachedItems.length === 0) return;
-
-    const messageContent = attachedItems.length > 0
-      ? `${inputValue}\n\n[Attached: ${attachedItems.map(item => item.name).join(", ")}]`
-      : inputValue;
-
-    const newUserMessage: ChatMessage = {
-      id: Date.now().toString(),
-      role: "user",
-      content: messageContent,
-      timestamp: new Date(),
-    };
-
-    // Detect if this is a workflow-heavy message or simple chat
-    const isWorkflow = isWorkflowMessage(inputValue.trim());
+  const sendChatRequest = async ({
+    requestMessage,
+    renderedMessage,
+    includeUserMessage,
+    githubPersonalAccessToken,
+  }: {
+    requestMessage: string;
+    renderedMessage: string;
+    includeUserMessage: boolean;
+    githubPersonalAccessToken?: string;
+  }) => {
+    const isWorkflow = isWorkflowMessage(requestMessage.trim());
     
-    // Create activity message based on message type
     const activityMessageId = (Date.now() + 0.5).toString();
     
     let activityMessage: ChatMessage;
@@ -308,12 +321,19 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
       };
     }
 
-    setMessages((prev) => [...prev, newUserMessage, activityMessage]);
-    setInputValue("");
-    setAttachedItems([]);
+    if (includeUserMessage) {
+      const newUserMessage: ChatMessage = {
+        id: Date.now().toString(),
+        role: "user",
+        content: renderedMessage,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, newUserMessage, activityMessage]);
+    } else {
+      setMessages((prev) => [...prev, activityMessage]);
+    }
     setIsLoading(true);
 
-    // Simulate progress through steps
     const updateActivityStep = (stepIndex: number, newStatus: "in-progress" | "completed" | "error") => {
       setMessages((prev) =>
         prev.map((msg) =>
@@ -335,13 +355,11 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
     };
 
     try {
-      // Simulate step progression
       updateActivityStep(0, "in-progress");
       await new Promise((resolve) => setTimeout(resolve, 300));
       updateActivityStep(0, "completed");
       updateActivityStep(1, "in-progress");
 
-      // Convert messages to the format expected by the API
       const conversationHistory = messages
         .filter(msg => (msg.role === "user" || msg.role === "assistant") && msg.role !== "activity")
         .map(msg => ({
@@ -358,11 +376,12 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          message: inputValue.trim() || "Please help with the attached item",
+          message: requestMessage,
           conversation_history: conversationHistory,
           model: selectedModel,
           current_draft_data: currentDraftData,
           available_resources: resources ?? [],
+          github_personal_access_token: githubPersonalAccessToken ?? (sessionGitHubToken || undefined),
         }),
       });
 
@@ -371,6 +390,17 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
       }
 
       const data = await response.json();
+      if (data.secret_request) {
+        setPendingSecretRequest({
+          ...data.secret_request,
+          originalMessage: requestMessage,
+        });
+        setSecretInputValue("");
+      } else {
+        setPendingSecretRequest(null);
+        setSecretInputValue("");
+      }
+      setRepositoryOptions(Array.isArray(data.repository_options) ? data.repository_options : []);
       
       updateActivityStep(2, "completed");
       updateActivityStep(3, "in-progress");
@@ -404,7 +434,7 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
       if (data.job_creation_intent) {
         onConsoleEvent?.("intent_detected", "Job creation intent detected", {
           intent: "create_job",
-          message: inputValue.trim(),
+          message: requestMessage,
         });
       }
       
@@ -476,11 +506,54 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
     }
   };
 
+  const handleSendMessage = async () => {
+    if (!inputValue.trim() && attachedItems.length === 0) return;
+
+    const messageContent = attachedItems.length > 0
+      ? `${inputValue}\n\n[Attached: ${attachedItems.map(item => item.name).join(", ")}]`
+      : inputValue;
+    const requestMessage = inputValue.trim() || "Please help with the attached item";
+
+    setInputValue("");
+    setAttachedItems([]);
+    await sendChatRequest({
+      requestMessage,
+      renderedMessage: messageContent,
+      includeUserMessage: true,
+    });
+  };
+
+  const handleSubmitSecretRequest = async () => {
+    if (!pendingSecretRequest || !secretInputValue.trim()) return;
+    const token = secretInputValue.trim();
+    setSessionGitHubToken(token);
+
+    await sendChatRequest({
+      requestMessage: pendingSecretRequest.originalMessage,
+      renderedMessage: pendingSecretRequest.originalMessage,
+      includeUserMessage: false,
+      githubPersonalAccessToken: token,
+    });
+  };
+
+  const handleRepositoryOptionClick = async (repository: RepositoryOption) => {
+    const message = `Connect the GitHub repo ${repository.full_name}${repository.default_branch ? ` branch ${repository.default_branch}` : ""}`;
+    setRepositoryOptions([]);
+    await sendChatRequest({
+      requestMessage: message,
+      renderedMessage: message,
+      includeUserMessage: true,
+    });
+  };
+
   const handleNewChat = () => {
     setMessages(initialMessages);
     setInputValue("");
     setAttachedItems([]);
     setShowHistory(false);
+    setPendingSecretRequest(null);
+    setSecretInputValue("");
+    setRepositoryOptions([]);
   };
 
   const handleLoadChatThread = (thread: ChatThread) => {
@@ -743,6 +816,53 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
                 </button>
               </div>
             ))}
+          </div>
+        )}
+
+        {pendingSecretRequest && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+            <p className="text-xs font-medium text-amber-900">{pendingSecretRequest.prompt}</p>
+            <div className="mt-3 flex gap-2">
+              <input
+                type="password"
+                value={secretInputValue}
+                onChange={(e) => setSecretInputValue(e.target.value)}
+                placeholder="GitHub personal access token"
+                className="flex-1 rounded-md border border-amber-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-500 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+              />
+              <button
+                onClick={() => void handleSubmitSecretRequest()}
+                disabled={!secretInputValue.trim() || isLoading}
+                className="rounded-md bg-[#ed0923] px-3 py-2 text-xs font-medium text-white hover:bg-[#d10820] disabled:cursor-not-allowed disabled:bg-gray-300"
+              >
+                {pendingSecretRequest.submit_label ?? "Use token"}
+              </button>
+            </div>
+            <p className="mt-2 text-[11px] text-amber-800">
+              This token is sent only for the current live GitHub MCP request and is not added to the chat transcript.
+            </p>
+          </div>
+        )}
+
+        {repositoryOptions.length > 0 && (
+          <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3">
+            <p className="text-xs font-medium text-blue-900">Available repositories</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {repositoryOptions.map((repository) => (
+                <button
+                  key={repository.full_name}
+                  onClick={() => void handleRepositoryOptionClick(repository)}
+                  disabled={isLoading}
+                  className="rounded-md border border-blue-300 bg-white px-3 py-2 text-left text-xs text-blue-900 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <div className="font-medium">{repository.full_name}</div>
+                  <div className="mt-1 text-[11px] text-blue-700">
+                    {repository.private ? "Private" : "Public"}
+                    {repository.default_branch ? ` • ${repository.default_branch}` : ""}
+                  </div>
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
