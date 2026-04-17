@@ -125,7 +125,10 @@ def _infer_sql_connector(merged_fields: dict[str, Any]) -> str:
     connector = _non_empty_string(merged_fields.get("connector"))
     if connector:
         normalized_connector = connector.strip().lower()
-        return SQL_CONNECTOR_ALIASES.get(normalized_connector, normalized_connector if normalized_connector in SQL_MCP_CONNECTORS else "sql-dab")
+        return SQL_CONNECTOR_ALIASES.get(
+            normalized_connector,
+            normalized_connector if normalized_connector in SQL_MCP_CONNECTORS else normalized_connector,
+        )
 
     config = merged_fields.get("config")
     if isinstance(config, dict):
@@ -137,7 +140,7 @@ def _infer_sql_connector(merged_fields: dict[str, Any]) -> str:
     if connection_id in SQL_MCP_CONNECTORS:
         return connection_id
 
-    return "sql-dab"
+    return ""
 
 
 def _normalize_sql_resource_connector(resource: Resource | Any, fallback_fields: dict[str, Any]) -> None:
@@ -238,6 +241,9 @@ def maybe_run_sql_job_from_chat(
         current_draft.get("config") if isinstance(current_draft, dict) else None,
         extracted_fields.get("config") if isinstance(extracted_fields, dict) else None,
     )
+
+    if merged.get("creation_requested") and not _non_empty_string((current_draft or {}).get("resource_id")):
+        return None
 
     resource_name = (
         _non_empty_string(merged.get("name"))

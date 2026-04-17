@@ -3,6 +3,7 @@
 import logging
 import os
 import re
+import base64
 from typing import Optional, Any
 from fastapi import APIRouter, HTTPException, Depends
 import httpx
@@ -29,6 +30,77 @@ REPO_SLUG_PATTERN = re.compile(r"(?:github\.com[/:])?([A-Za-z0-9_.-]+/[A-Za-z0-9
 REPO_REF_PATTERN = re.compile(r"\b(?:branch|ref)\s+([A-Za-z0-9._/-]+)\b", re.IGNORECASE)
 REPO_PATH_PATTERN = re.compile(r"\b(?:path|folder|directory)\s+([^\s,]+)", re.IGNORECASE)
 GITHUB_REPO_OPTIONS_LIMIT = 12
+SQL_CONNECT_REQUEST_PATTERN = re.compile(
+    r"\b(sql|database|postgres|postgresql|mysql|snowflake|redshift|bigquery)\b.*\b(connect|connection|query|run|execute|select|insert|update|delete)\b|\b(connect|connection|query|run|execute|select|insert|update|delete)\b.*\b(sql|database|postgres|postgresql|mysql|snowflake|redshift|bigquery)\b",
+    re.IGNORECASE,
+)
+ENV_VAR_NAME_PATTERN = re.compile(r"\b[A-Z][A-Z0-9_]{2,}\b")
+REPO_ENV_DISCOVERY_FILES = [
+    ".env.example",
+    ".env",
+    "backend/.env.example",
+    "backend/.env",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "compose.yml",
+    "compose.yaml",
+    "README.md",
+]
+SQL_SESSION_ENV_FIELDS = [
+    {
+        "key": "SQL_DB_HOST",
+        "label": "Database host",
+        "placeholder": "localhost",
+        "secret": False,
+        "required": True,
+        "group": "sql_connection_string",
+    },
+    {
+        "key": "SQL_DB_PORT",
+        "label": "Database port",
+        "placeholder": "5432",
+        "secret": False,
+        "required": True,
+        "group": "sql_connection_string",
+    },
+    {
+        "key": "SQL_DB_DATABASE",
+        "label": "Database name",
+        "placeholder": "control_center",
+        "secret": False,
+        "required": True,
+        "group": "sql_connection_string",
+    },
+    {
+        "key": "SQL_DB_USERNAME",
+        "label": "Database username",
+        "placeholder": "postgres",
+        "secret": False,
+        "required": True,
+        "group": "sql_connection_string",
+    },
+    {
+        "key": "SQL_DB_PASSWORD",
+        "label": "Database password",
+        "placeholder": "Password",
+        "secret": True,
+        "required": True,
+        "group": "sql_connection_string",
+    },
+    {
+        "key": "SQL_CONNECTION_ID",
+        "label": "Connection ID",
+        "placeholder": "postgres",
+        "secret": False,
+        "required": False,
+    },
+]
+SQL_REQUIRED_JOB_FIELDS = [
+    ("job_name", "job/resource name"),
+    ("owner", "owner"),
+    ("target_environment", "target environment"),
+    ("run_type", "run type"),
+]
 
 
 def _should_extract_fields(request: "ChatRequest", job_creation_intent: bool) -> bool:
@@ -84,14 +156,17 @@ def _deterministic_sql_fields(request: "ChatRequest") -> dict[str, Any]:
         fields.update(
             {
                 "job_type": "SQL",
-                "connector": "sql-dab",
-                "connection_id": "postgres",
                 "query": "SELECT * FROM runs;",
             }
         )
 
     if "manual" in message and SQL_RUN_REQUEST_PATTERN.search(message) is not None:
         fields["run_type"] = "manual"
+
+    if "create" in message and SQL_RUN_REQUEST_PATTERN.search(message) is not None:
+        fields["creation_requested"] = True
+        fields["run_after_create"] = True
+        fields["action"] = "run"
 
     if "create" in message and "job" in message:
         fields["creation_requested"] = True
@@ -147,6 +222,7 @@ class ChatRequest(BaseModel):
     current_draft_data: Optional[dict[str, Any]] = None  # Current job draft state
     available_resources: Optional[list[dict[str, Any]]] = None
     github_personal_access_token: Optional[str] = None
+    session_env: Optional[dict[str, str]] = None
 
 
 class SecretRequest(BaseModel):
@@ -163,6 +239,23 @@ class RepositoryOption(BaseModel):
     private: bool = False
 
 
+class ConfigRequestField(BaseModel):
+    key: str
+    label: str
+    placeholder: str | None = None
+    secret: bool = False
+    required: bool = True
+    group: str | None = None
+
+
+class ConfigRequest(BaseModel):
+    kind: str
+    prompt: str
+    submit_label: Optional[str] = None
+    fields: list[ConfigRequestField]
+    repository_hints: Optional[list[str]] = None
+
+
 class ChatResponse(BaseModel):
     """Response from chat API."""
     response: str
@@ -177,6 +270,7 @@ class ChatResponse(BaseModel):
     mcp_tool_executions: Optional[list[dict[str, Any]]] = None
     secret_request: Optional[SecretRequest] = None
     repository_options: Optional[list[RepositoryOption]] = None
+    config_request: Optional[ConfigRequest] = None
 
 
 async def _list_github_repository_options(personal_access_token: str) -> list[RepositoryOption]:
@@ -219,6 +313,252 @@ async def _list_github_repository_options(personal_access_token: str) -> list[Re
     return options
 
 
+def _looks_like_sql_connect_request(request: "ChatRequest") -> bool:
+    message = request.message or ""
+    draft = request.current_draft_data or {}
+    draft_type = str(draft.get("job_type") or draft.get("type") or "").strip().lower()
+    if draft_type == "sql":
+        return True
+    return SQL_CONNECT_REQUEST_PATTERN.search(message) is not None
+
+
+def _effective_session_env(request: "ChatRequest") -> dict[str, str]:
+    session_env = request.session_env or {}
+    return {str(key): str(value) for key, value in session_env.items() if str(value).strip()}
+
+
+def _build_sql_connection_string(session_env: dict[str, str]) -> str | None:
+    host = session_env.get("SQL_DB_HOST")
+    port = session_env.get("SQL_DB_PORT")
+    database = session_env.get("SQL_DB_DATABASE")
+    username = session_env.get("SQL_DB_USERNAME")
+    password = session_env.get("SQL_DB_PASSWORD")
+    if not all([host, port, database, username, password]):
+        return None
+    return f"Host={host};Port={port};Database={database};Username={username};Password={password}"
+
+
+def _missing_sql_session_env(session_env: dict[str, str]) -> list[ConfigRequestField]:
+    missing: list[ConfigRequestField] = []
+    derived_connection_string = _build_sql_connection_string(session_env)
+    for field in SQL_SESSION_ENV_FIELDS:
+        key = field["key"]
+        if session_env.get(key):
+            continue
+        if field.get("group") == "sql_connection_string" and derived_connection_string:
+            continue
+        missing.append(ConfigRequestField(**field))
+    return missing
+
+
+def _merge_sql_fields(
+    extracted_fields: dict[str, Any] | None,
+    current_draft: dict[str, Any] | None,
+) -> dict[str, Any]:
+    draft = current_draft or {}
+    merged: dict[str, Any] = {
+        **draft,
+        **(extracted_fields or {}),
+    }
+    draft_config = draft.get("config") if isinstance(draft.get("config"), dict) else {}
+    extracted_config = extracted_fields.get("config") if isinstance((extracted_fields or {}).get("config"), dict) else {}
+    merged["config"] = {
+        **draft_config,
+        **extracted_config,
+    }
+    draft_params = draft.get("params") if isinstance(draft.get("params"), dict) else {}
+    extracted_params = extracted_fields.get("params") if isinstance((extracted_fields or {}).get("params"), dict) else {}
+    merged["params"] = {
+        **draft_params,
+        **extracted_params,
+    }
+    return merged
+
+
+def _missing_sql_job_fields(
+    extracted_fields: dict[str, Any],
+    current_draft: dict[str, Any] | None,
+) -> list[str]:
+    merged = _merge_sql_fields(extracted_fields, current_draft)
+    config = merged.get("config") if isinstance(merged.get("config"), dict) else {}
+
+    missing: list[str] = []
+    job_name = str(merged.get("job_name") or merged.get("name") or "").strip()
+    owner = str(merged.get("owner") or "").strip()
+    target_environment = str(
+        merged.get("target_environment") or merged.get("environment") or config.get("target_environment") or ""
+    ).strip()
+    run_type = str(merged.get("run_type") or "").strip().lower()
+    schedule = str(merged.get("schedule") or config.get("schedule") or "").strip()
+
+    if not job_name:
+        missing.append("job_name")
+    if not owner:
+        missing.append("owner")
+    if not target_environment:
+        missing.append("target_environment")
+    if not run_type:
+        missing.append("run_type")
+    if run_type == "scheduled" and not schedule:
+        missing.append("schedule")
+    return missing
+
+
+def _sql_followup_response(
+    request: "ChatRequest",
+    extracted_fields: dict[str, Any],
+    session_env: dict[str, str],
+) -> str | None:
+    if not _looks_like_sql_connect_request(request) or not session_env:
+        return None
+
+    derived_connection_string = _build_sql_connection_string(session_env)
+    if not derived_connection_string:
+        return None
+
+    merged = _merge_sql_fields(extracted_fields, request.current_draft_data)
+    query = (
+        str(merged.get("query") or "").strip()
+        or str((merged.get("config") or {}).get("query") or "").strip()
+        or str((merged.get("params") or {}).get("query") or "").strip()
+    )
+    connection_id = str(merged.get("connection_id") or session_env.get("SQL_CONNECTION_ID") or "").strip()
+
+    if query:
+        missing_job_fields = _missing_sql_job_fields(extracted_fields, request.current_draft_data)
+        if missing_job_fields:
+            next_field = missing_job_fields[0]
+            if next_field == "job_name":
+                return (
+                    "I have the database connection details and the SQL query for this session using `sql-dab`. "
+                    f"{'I also have connection ID `' + connection_id + '`. ' if connection_id else ''}"
+                    "Next I need the job/resource name you want to save and run this SQL job as."
+                )
+            if next_field == "owner":
+                return (
+                    "I have the SQL connection details, query, and job name. "
+                    "Next I need the owner for this SQL job."
+                )
+            if next_field == "target_environment":
+                return (
+                    "I have the SQL connection details, query, job name, and owner. "
+                    "Next I need the target environment for this job, like `dev`, `staging`, or `prod`."
+                )
+            if next_field == "run_type":
+                return (
+                    "I have the SQL connection details, query, job name, owner, and target environment. "
+                    "Should this run type be `manual`, `scheduled`, or `triggered`?"
+                )
+            if next_field == "schedule":
+                return (
+                    "This SQL job is marked as scheduled, so I also need the schedule expression or natural-language timing."
+                )
+
+        return (
+            "I have the database connection details for this session and will use the `sql-dab` connector. "
+            f"{'I also have connection ID `' + connection_id + '`. ' if connection_id else ''}"
+            "I also have the query and required job fields. Do you want me to create the job and run it now?"
+        )
+
+    return (
+        "I have the database connection details for this session and will use the `sql-dab` connector. "
+        f"{'I also have connection ID `' + connection_id + '`. ' if connection_id else ''}"
+        "The next thing I need is the SQL query you want to run."
+    )
+
+
+async def _read_github_repo_file(
+    *,
+    repo: str,
+    path: str,
+    ref: str | None,
+    personal_access_token: str,
+) -> str | None:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {personal_access_token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    params = {"ref": ref} if ref else None
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.get(
+            f"https://api.github.com/repos/{repo}/contents/{path}",
+            headers=headers,
+            params=params,
+        )
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict) or payload.get("type") != "file":
+        return None
+    encoded = payload.get("content")
+    if not isinstance(encoded, str) or not encoded.strip():
+        return None
+    try:
+        return base64.b64decode(encoded).decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+
+async def _discover_repository_env_hints(
+    available_resources: list[dict[str, Any]] | None,
+    personal_access_token: str | None,
+) -> list[str]:
+    if not personal_access_token or not available_resources:
+        return []
+
+    hints: list[str] = []
+    for resource in available_resources:
+        if not isinstance(resource, dict):
+            continue
+        resource_type = str(resource.get("type") or "").strip().lower()
+        connector = str(resource.get("connector") or "").strip().lower()
+        config = resource.get("config") if isinstance(resource.get("config"), dict) else {}
+        repo = str(config.get("repo") or "").strip()
+        if not repo or (resource_type != "repo_connection" and connector != "github"):
+            continue
+
+        ref = str(config.get("ref") or config.get("default_branch") or "").strip() or None
+        candidate_paths = list(REPO_ENV_DISCOVERY_FILES)
+        repo_path = str(config.get("path") or "").strip().strip("/")
+        if repo_path:
+            candidate_paths = [f"{repo_path}/{candidate}" for candidate in REPO_ENV_DISCOVERY_FILES] + candidate_paths
+
+        for candidate_path in candidate_paths[:8]:
+            try:
+                content = await _read_github_repo_file(
+                    repo=repo,
+                    path=candidate_path,
+                    ref=ref,
+                    personal_access_token=personal_access_token,
+                )
+            except httpx.HTTPError:
+                continue
+            if not content:
+                continue
+            env_names = {match.group(0) for match in ENV_VAR_NAME_PATTERN.finditer(content)}
+            matched = [
+                name
+                for name in [
+                    "SQL_CONNECTION_STRING",
+                    "SQL_DB_HOST",
+                    "SQL_DB_PORT",
+                    "SQL_DB_DATABASE",
+                    "SQL_DB_USERNAME",
+                    "SQL_DB_PASSWORD",
+                ]
+                if name in env_names
+            ]
+            if matched:
+                hints.append(f"{repo}:{' @ ' + ref if ref else ''} {candidate_path} includes {', '.join(matched)}")
+                break
+        if len(hints) >= 3:
+            break
+
+    return hints
+
+
 @router.post("/send", response_model=ChatResponse)
 async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatResponse:
     """
@@ -238,6 +578,30 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
         job_creation_intent = detect_job_creation_intent(request.message)
         deterministic_repo_fields = _deterministic_repo_connection_fields(request)
         github_token = request.github_personal_access_token or os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
+        session_env = _effective_session_env(request)
+
+        if _looks_like_sql_connect_request(request):
+            missing_sql_env = _missing_sql_session_env(session_env)
+            if missing_sql_env:
+                repo_hints = await _discover_repository_env_hints(request.available_resources, github_token)
+                return ChatResponse(
+                    response=(
+                        "I can help connect to a SQL database and run that query, but I first need the database "
+                        "connection details for this live session."
+                    ),
+                    job_creation_intent=True,
+                    extracted_fields=None,
+                    config_request=ConfigRequest(
+                        kind="sql_session_env",
+                        prompt=(
+                            "Enter the SQL database connection details for this session. "
+                            "The SQL MCP server itself is already configured; I only need the target database details."
+                        ),
+                        submit_label="Use SQL settings",
+                        fields=missing_sql_env,
+                        repository_hints=repo_hints or None,
+                    ),
+                )
 
         if deterministic_repo_fields.get("connection_intent") == "connect_repo" and not github_token:
             return ChatResponse(
@@ -329,6 +693,7 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                 message=request.message,
                 environment=str((request.current_draft_data or {}).get("target_environment") or (request.current_draft_data or {}).get("environment") or "dev"),
                 model=request.model,
+                server_names=["sql-dab"] if _looks_like_sql_connect_request(request) else None,
                 server_env_overrides=server_env_overrides,
             )
             return ChatResponse(
@@ -355,21 +720,24 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
         )
         
         # Handle [RUN_JOB:resource_id] marker emitted by the LLM
+        sql_flow_active = _has_sql_draft(request) or _looks_like_sql_connect_request(request)
         run_marker_match = RUN_JOB_MARKER_PATTERN.search(response)
         if run_marker_match:
             resource_id_to_run = run_marker_match.group(1)
             clean_response = RUN_JOB_MARKER_PATTERN.sub("", response).strip()
-            run_result = run_resource_by_id(db, resource_id_to_run)
-            final_response = f"{clean_response}\n\n{run_result.message}".strip()
-            return ChatResponse(
-                response=final_response,
-                job_creation_intent=job_creation_intent,
-                extracted_fields=None,
-                resource_id=run_result.resource_id,
-                run_id=run_result.run_id,
-                run_status=run_result.run_status,
-                sql_job_executed=run_result.executed,
-            )
+            if not sql_flow_active:
+                run_result = run_resource_by_id(db, resource_id_to_run)
+                final_response = f"{clean_response}\n\n{run_result.message}".strip()
+                return ChatResponse(
+                    response=final_response,
+                    job_creation_intent=job_creation_intent,
+                    extracted_fields=None,
+                    resource_id=run_result.resource_id,
+                    run_id=run_result.run_id,
+                    run_status=run_result.run_status,
+                    sql_job_executed=run_result.executed,
+                )
+            response = clean_response
 
         # Extract job fields unless this is only a generic create-job opener with no
         # concrete details yet. SQL/run-style chat requests still need extraction.
@@ -377,6 +745,53 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
             **deterministic_repo_fields,
             **_deterministic_sql_fields(request),
         }
+        if _looks_like_sql_connect_request(request) and session_env:
+            derived_connection_string = _build_sql_connection_string(session_env)
+            database_name = str(session_env.get("SQL_DB_DATABASE") or "").strip()
+            database_host = str(session_env.get("SQL_DB_HOST") or "").strip()
+            database_port = str(session_env.get("SQL_DB_PORT") or "").strip()
+            database_username = str(session_env.get("SQL_DB_USERNAME") or "").strip()
+            extracted_fields = {
+                **extracted_fields,
+                "connector": extracted_fields.get("connector") or "sql-dab",
+                "config": {
+                    **(extracted_fields.get("config") or {}),
+                    "session_env_keys": sorted(session_env.keys()),
+                },
+            }
+            explicit_connection_id = extracted_fields.get("connection_id") or session_env.get("SQL_CONNECTION_ID")
+            if explicit_connection_id:
+                extracted_fields["connection_id"] = explicit_connection_id
+                extracted_fields["config"] = {
+                    **(extracted_fields.get("config") or {}),
+                    "connection_id": explicit_connection_id,
+                }
+            if database_name:
+                extracted_fields["database"] = database_name
+                extracted_fields["config"] = {
+                    **(extracted_fields.get("config") or {}),
+                    "database": database_name,
+                }
+            if database_host:
+                extracted_fields["config"] = {
+                    **(extracted_fields.get("config") or {}),
+                    "host": database_host,
+                }
+            if database_port:
+                extracted_fields["config"] = {
+                    **(extracted_fields.get("config") or {}),
+                    "port": database_port,
+                }
+            if database_username:
+                extracted_fields["config"] = {
+                    **(extracted_fields.get("config") or {}),
+                    "username": database_username,
+                }
+            if derived_connection_string:
+                extracted_fields["config"] = {
+                    **(extracted_fields.get("config") or {}),
+                    "sql_connection_string": derived_connection_string,
+                }
         if _should_extract_fields(request, job_creation_intent):
             extraction_service = get_field_extraction_service()
             llm_fields = await extraction_service.extract_fields(
@@ -389,6 +804,15 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
             # Only include extracted_fields if there are any
             if not extracted_fields:
                 extracted_fields = None
+
+        if extracted_fields:
+            sql_followup_response = _sql_followup_response(request, extracted_fields, session_env)
+            if sql_followup_response:
+                return ChatResponse(
+                    response=sql_followup_response,
+                    job_creation_intent=True,
+                    extracted_fields=extracted_fields,
+                )
 
         sql_job_result = maybe_run_sql_job_from_chat(
             db,

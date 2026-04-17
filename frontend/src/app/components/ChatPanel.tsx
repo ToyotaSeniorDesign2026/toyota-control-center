@@ -47,6 +47,8 @@ interface ResourceSummary {
   id: string;
   name: string;
   type: string;
+  connector?: string;
+  config?: Record<string, any>;
 }
 
 interface SecretRequest {
@@ -61,6 +63,23 @@ interface RepositoryOption {
   name: string;
   default_branch?: string | null;
   private: boolean;
+}
+
+interface ConfigRequestField {
+  key: string;
+  label: string;
+  placeholder?: string | null;
+  secret: boolean;
+  required: boolean;
+  group?: string | null;
+}
+
+interface ConfigRequest {
+  kind: "sql_session_env";
+  prompt: string;
+  submit_label?: string;
+  fields: ConfigRequestField[];
+  repository_hints?: string[] | null;
 }
 
 interface ChatPanelProps {
@@ -192,6 +211,9 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
   const [secretInputValue, setSecretInputValue] = useState("");
   const [sessionGitHubToken, setSessionGitHubToken] = useState("");
   const [repositoryOptions, setRepositoryOptions] = useState<RepositoryOption[]>([]);
+  const [pendingConfigRequest, setPendingConfigRequest] = useState<(ConfigRequest & { originalMessage: string }) | null>(null);
+  const [configInputValues, setConfigInputValues] = useState<Record<string, string>>({});
+  const [sessionEnv, setSessionEnv] = useState<Record<string, string>>({});
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const seenNoticeIdsRef = useRef<Set<string>>(new Set());
 
@@ -280,11 +302,13 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
     renderedMessage,
     includeUserMessage,
     githubPersonalAccessToken,
+    sessionEnvOverride,
   }: {
     requestMessage: string;
     renderedMessage: string;
     includeUserMessage: boolean;
     githubPersonalAccessToken?: string;
+    sessionEnvOverride?: Record<string, string>;
   }) => {
     const isWorkflow = isWorkflowMessage(requestMessage.trim());
     
@@ -382,6 +406,7 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
           current_draft_data: currentDraftData,
           available_resources: resources ?? [],
           github_personal_access_token: githubPersonalAccessToken ?? (sessionGitHubToken || undefined),
+          session_env: sessionEnvOverride ?? sessionEnv,
         }),
       });
 
@@ -399,6 +424,28 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
       } else {
         setPendingSecretRequest(null);
         setSecretInputValue("");
+      }
+      if (data.config_request) {
+        setPendingConfigRequest({
+          ...data.config_request,
+          originalMessage: requestMessage,
+        });
+        setConfigInputValues((previous) => {
+          const next: Record<string, string> = {};
+          for (const field of data.config_request.fields) {
+            const existingValue =
+              previous[field.key] ??
+              (sessionEnvOverride ?? sessionEnv)[field.key] ??
+              "";
+            if (existingValue) {
+              next[field.key] = existingValue;
+            }
+          }
+          return next;
+        });
+      } else {
+        setPendingConfigRequest(null);
+        setConfigInputValues({});
       }
       setRepositoryOptions(Array.isArray(data.repository_options) ? data.repository_options : []);
       
@@ -458,16 +505,14 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
       if (data.extracted_fields && onFieldsExtracted) {
         // Emit extracted fields event
         onConsoleEvent?.("extracted_fields", "Fields extracted from user message", data.extracted_fields);
-        
-        setTimeout(() => {
-          onFieldsExtracted(data.extracted_fields);
-          
-          // Emit draft updated event
-          onConsoleEvent?.("draft_updated", `Draft updated with ${Object.keys(data.extracted_fields).length} field(s)`, {
-            updated_fields: Object.keys(data.extracted_fields),
-            values: data.extracted_fields,
-          });
-        }, 300);
+
+        onFieldsExtracted(data.extracted_fields);
+
+        // Emit draft updated event
+        onConsoleEvent?.("draft_updated", `Draft updated with ${Object.keys(data.extracted_fields).length} field(s)`, {
+          updated_fields: Object.keys(data.extracted_fields),
+          values: data.extracted_fields,
+        });
       }
     } catch (error) {
       console.error("Error sending message:", error);
@@ -536,6 +581,43 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
     });
   };
 
+  const handleSubmitConfigRequest = async () => {
+    if (!pendingConfigRequest) return;
+
+    const nextSessionEnv = {
+      ...sessionEnv,
+      ...Object.fromEntries(
+        Object.entries(configInputValues)
+          .map(([key, value]) => [key, value.trim()])
+          .filter(([, value]) => value),
+      ),
+    };
+
+    const sqlHost = nextSessionEnv.SQL_DB_HOST;
+    const sqlPort = nextSessionEnv.SQL_DB_PORT;
+    const sqlDatabase = nextSessionEnv.SQL_DB_DATABASE;
+    const sqlUsername = nextSessionEnv.SQL_DB_USERNAME;
+    const sqlPassword = nextSessionEnv.SQL_DB_PASSWORD;
+    if (sqlHost && sqlPort && sqlDatabase && sqlUsername && sqlPassword) {
+      nextSessionEnv.SQL_CONNECTION_STRING =
+        `Host=${sqlHost};Port=${sqlPort};Database=${sqlDatabase};Username=${sqlUsername};Password=${sqlPassword}`;
+    }
+
+    for (const field of pendingConfigRequest.fields) {
+      if (field.required && !nextSessionEnv[field.key]) {
+        return;
+      }
+    }
+
+    setSessionEnv(nextSessionEnv);
+    await sendChatRequest({
+      requestMessage: pendingConfigRequest.originalMessage,
+      renderedMessage: pendingConfigRequest.originalMessage,
+      includeUserMessage: false,
+      sessionEnvOverride: nextSessionEnv,
+    });
+  };
+
   const handleRepositoryOptionClick = async (repository: RepositoryOption) => {
     const message = `Connect the GitHub repo ${repository.full_name}${repository.default_branch ? ` branch ${repository.default_branch}` : ""}`;
     setRepositoryOptions([]);
@@ -554,6 +636,10 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
     setPendingSecretRequest(null);
     setSecretInputValue("");
     setRepositoryOptions([]);
+    setPendingConfigRequest(null);
+    setConfigInputValues({});
+    setSessionEnv({});
+    setSessionGitHubToken("");
   };
 
   const handleLoadChatThread = (thread: ChatThread) => {
@@ -863,6 +949,59 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
                 </button>
               ))}
             </div>
+          </div>
+        )}
+
+        {pendingConfigRequest && (
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
+            <p className="text-xs font-medium text-emerald-900">{pendingConfigRequest.prompt}</p>
+            <div className="mt-3 space-y-2">
+              {pendingConfigRequest.fields.map((field) => (
+                <div key={field.key}>
+                  <label className="mb-1 block text-[11px] font-medium text-emerald-900">
+                    {field.label}
+                    {field.required ? " *" : ""}
+                  </label>
+                    <input
+                      type={field.secret ? "password" : "text"}
+                      value={configInputValues[field.key] ?? sessionEnv[field.key] ?? ""}
+                      onChange={(e) =>
+                        setConfigInputValues((prev) => ({
+                          ...prev,
+                          [field.key]: e.target.value,
+                      }))
+                    }
+                    placeholder={field.placeholder ?? ""}
+                    className="w-full rounded-md border border-emerald-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-500 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                  />
+                </div>
+              ))}
+            </div>
+            {pendingConfigRequest.repository_hints && pendingConfigRequest.repository_hints.length > 0 && (
+              <div className="mt-3 rounded-md border border-emerald-200 bg-white/70 px-3 py-2">
+                <p className="text-[11px] font-medium text-emerald-900">Repository hints</p>
+                <ul className="mt-1 space-y-1 text-[11px] text-emerald-800">
+                  {pendingConfigRequest.repository_hints.map((hint) => (
+                    <li key={hint}>• {hint}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <div className="mt-3 flex justify-end">
+              <button
+                onClick={() => void handleSubmitConfigRequest()}
+                disabled={
+                  isLoading ||
+                  pendingConfigRequest.fields.some((field) => field.required && !(configInputValues[field.key] ?? "").trim())
+                }
+                className="rounded-md bg-[#ed0923] px-3 py-2 text-xs font-medium text-white hover:bg-[#d10820] disabled:cursor-not-allowed disabled:bg-gray-300"
+              >
+                {pendingConfigRequest.submit_label ?? "Use settings"}
+              </button>
+            </div>
+            <p className="mt-2 text-[11px] text-emerald-800">
+              These settings stay only in this chat session so the assistant can connect to the SQL MCP workflow live.
+            </p>
           </div>
         )}
 

@@ -79,6 +79,7 @@ async def run_prompt_native_mcp(
     message: str,
     environment: str = "dev",
     model: str | None = None,
+    server_names: list[str] | None = None,
     server_env_overrides: dict[str, dict[str, str]] | None = None,
 ) -> PromptNativeMCPResult:
     ensure_control_center_importable()
@@ -86,7 +87,8 @@ async def run_prompt_native_mcp(
 
     agent = await build_agent_from_registry(
         environment=environment,
-        selection_prompt=message,
+        server_names=server_names,
+        selection_prompt=None if server_names else message,
         model=model,
         server_env_overrides=server_env_overrides,
         verbose=False,
