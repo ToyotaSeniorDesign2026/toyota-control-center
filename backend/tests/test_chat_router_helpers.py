@@ -4,6 +4,7 @@ import unittest
 
 from app.api.routers.chat import (
     ChatRequest,
+    _deterministic_repo_connection_fields,
     _deterministic_sql_fields,
     _is_explicit_sql_run_request,
 )
@@ -56,6 +57,29 @@ class ChatRouterHelperTests(unittest.TestCase):
         )
 
         self.assertTrue(_is_explicit_sql_run_request(request))
+
+    def test_repo_connection_request_extracts_repo_fields(self) -> None:
+        fields = _deterministic_repo_connection_fields(
+            ChatRequest(
+                message="Connect the GitHub repo toyota-data/dbt-core branch develop",
+            )
+        )
+
+        self.assertEqual(fields["connection_intent"], "connect_repo")
+        self.assertEqual(fields["type"], "repo_connection")
+        self.assertEqual(fields["connector"], "github")
+        self.assertEqual(fields["repo"], "toyota-data/dbt-core")
+        self.assertEqual(fields["ref"], "develop")
+
+    def test_repo_connection_request_without_repo_still_marks_intent(self) -> None:
+        fields = _deterministic_repo_connection_fields(
+            ChatRequest(
+                message="Can you connect my GitHub repository?",
+            )
+        )
+
+        self.assertEqual(fields["connection_intent"], "connect_repo")
+        self.assertEqual(fields["connector"], "github")
 
 
 if __name__ == "__main__":

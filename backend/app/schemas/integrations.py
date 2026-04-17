@@ -51,3 +51,22 @@ class MCPServerSummary(BaseModel):
 
 class MCPServerListResponse(BaseModel):
     items: list[MCPServerSummary] = Field(default_factory=list)
+
+
+class MCPConnectionBundleSummary(BaseModel):
+    id: str
+    title: str
+    summary: str
+    primary_server: str
+    server_names: list[str] = Field(default_factory=list)
+    companion_servers: list[str] = Field(default_factory=list)
+    manual_connection_supported: bool = True
+    chat_connection_supported: bool = True
+    resource_type: str
+    required_config_fields: list[str] = Field(default_factory=list)
+    optional_config_fields: list[str] = Field(default_factory=list)
+    recommended_use_cases: list[str] = Field(default_factory=list)
+
+
+class MCPConnectionBundleListResponse(BaseModel):
+    items: list[MCPConnectionBundleSummary] = Field(default_factory=list)

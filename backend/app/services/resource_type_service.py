@@ -111,6 +111,32 @@ _RESOURCE_TYPE_REGISTRY = [
         "approval_defaults": {"required_above_risk_score": 60, "always_required_environments": ["prod"]},
     },
     {
+        "type": "repo_connection",
+        "kind": "runtime",
+        "required_config_schema": {
+            "required": ["repo", "provider"],
+            "optional": [
+                "ref",
+                "path",
+                "default_branch",
+                "installation_owner",
+                "server_names",
+                "primary_server",
+                "companion_servers",
+                "connection_mode",
+                "description",
+            ],
+        },
+        "supported_resource_actions": ["activate", "pause", "archive"],
+        "run_capabilities": {
+            "supports_retry": False,
+            "supports_cancel": False,
+            "supports_schedule": False,
+            "supports_heartbeat": False,
+        },
+        "approval_defaults": {"required_above_risk_score": 50, "always_required_environments": ["prod"]},
+    },
+    {
         "type": "pipeline",
         "kind": "runtime",
         "required_config_schema": {"required": [], "optional": ["schedule", "timezone", "pipeline_id"]},

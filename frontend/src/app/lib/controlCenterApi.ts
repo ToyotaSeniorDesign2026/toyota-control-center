@@ -87,6 +87,25 @@ export interface MCPServerListResponse {
   items: MCPServerSummary[];
 }
 
+export interface MCPConnectionBundleSummary {
+  id: string;
+  title: string;
+  summary: string;
+  primary_server: string;
+  server_names: string[];
+  companion_servers: string[];
+  manual_connection_supported: boolean;
+  chat_connection_supported: boolean;
+  resource_type: string;
+  required_config_fields: string[];
+  optional_config_fields: string[];
+  recommended_use_cases: string[];
+}
+
+export interface MCPConnectionBundleListResponse {
+  items: MCPConnectionBundleSummary[];
+}
+
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8000";
 const AUTH_TOKEN_KEY = "control-center-auth-token";
 
@@ -159,6 +178,11 @@ export function requestOpenAIChat(payload: OpenAIChatRequest, token?: string | n
 
 export function listMcpServers(token?: string | null) {
   return request<MCPServerListResponse>("/integrations/mcp/servers", {}, token);
+}
+
+export function listMcpRepoBundles(environment = "dev", token?: string | null) {
+  const query = new URLSearchParams({ environment });
+  return request<MCPConnectionBundleListResponse>(`/integrations/mcp/repo-bundles?${query.toString()}`, {}, token);
 }
 
 export interface RunLogEntry {

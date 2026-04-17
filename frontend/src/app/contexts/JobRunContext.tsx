@@ -76,17 +76,17 @@ function writeCache(cache: LocalCacheShape) {
   if (typeof window === "undefined") {
     return;
   }
-  window.localStorage.setItem(JOB_RUN_CACHE_KEY, JSON.stringify(cache));
+  const persistedCache: LocalCacheShape = {
+    resources: cache.resources.filter((resource) => !resource.id.startsWith("local-")),
+    runs: cache.runs.filter((run) => !run.id.startsWith("local-")),
+  };
+  window.localStorage.setItem(JOB_RUN_CACHE_KEY, JSON.stringify(persistedCache));
 }
 
 function dedupeById<T extends { id: string }>(items: T[]) {
   const map = new Map<string, T>();
   items.forEach((item) => map.set(item.id, item));
   return Array.from(map.values());
-}
-
-function localOnly<T extends { id: string }>(items: T[]) {
-  return items.filter((item) => item.id.startsWith("local-"));
 }
 
 function toIsoNow() {
@@ -286,10 +286,8 @@ export function JobRunProvider({ children }: { children: ReactNode }) {
   const syncFromApi = async () => {
     const token = getAuthToken();
     const [resourcesResponse, runsResponse] = await Promise.all([listResources(token), listRuns(token)]);
-    const nextResources = dedupeById([...localOnly(resources), ...resourcesResponse.items]);
-    const nextRuns = dedupeById([...localOnly(runs), ...runsResponse.items]).sort((a, b) =>
-      b.updated_at.localeCompare(a.updated_at),
-    );
+    const nextResources = dedupeById(resourcesResponse.items);
+    const nextRuns = dedupeById(runsResponse.items).sort((a, b) => b.updated_at.localeCompare(a.updated_at));
 
     setResources(nextResources);
     setRuns(nextRuns);

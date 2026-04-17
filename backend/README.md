@@ -170,6 +170,14 @@ alembic upgrade head
 alembic current
 ```
 
+Reset runtime data only:
+```bash
+cd "/Users/hamnatameez/toyota-control-center/backend"
+./scripts/reset_runtime_data.sh
+```
+
+This clears local rows from `resources`, `runs`, `run_logs`, `policy_evaluations`, `approvals`, and `run_execution_status` without creating an Alembic migration.
+
 ## Run API
 Always run Uvicorn via the active venv interpreter:
 

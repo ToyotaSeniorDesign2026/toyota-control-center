@@ -213,6 +213,7 @@ async def build_agent_from_registry(
     max_tool_rounds: int = 5,
     instructor_client: Any | None = None,
     instructor_model: str | None = None,
+    server_env_overrides: dict[str, dict[str, str]] | None = None,
     verbose: bool = False,
 ) -> MCPAgent:
     """
@@ -234,6 +235,16 @@ async def build_agent_from_registry(
         )
 
     server_configs = manager.get_server_configs(resolved_server_names)
+    for server_name, env_overrides in (server_env_overrides or {}).items():
+        if server_name not in server_configs or not env_overrides:
+            continue
+        existing_env = server_configs[server_name].get("env")
+        if not isinstance(existing_env, dict):
+            existing_env = {}
+        server_configs[server_name]["env"] = {
+            **existing_env,
+            **env_overrides,
+        }
 
     runtime_client = client or LLMClient()
     for server_name, server_config in server_configs.items():
