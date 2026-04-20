@@ -17,6 +17,12 @@ from app.services.run_service import create_run_and_maybe_execute
 
 
 SQL_MCP_CONNECTORS = {"sql-dab", "sql-dab-analytics"}
+GITHUB_WRITE_INTENT_PATTERN = re.compile(
+    r"\b(write|save|commit|push|add|store)\b.{0,60}\b(sql|query|script)\b.{0,60}\b(github|repo|repository|file|\.sql)\b"
+    r"|\b(github|repo|repository)\b.{0,60}\b(write|save|commit|push|add)\b.{0,60}\b(sql|query|script)\b"
+    r"|\b(sql|query)\b.{0,60}\b(github|repo|repository|\.sql)\b",
+    re.IGNORECASE,
+)
 SQL_CONNECTOR_ALIASES = {
     "control center dev database": "sql-dab",
     "control-center dev database": "sql-dab",
@@ -81,6 +87,17 @@ def get_chat_actor(db: Session) -> User:
     return actor
 
 
+def _message_requests_github_write(
+    message: str,
+    extracted_fields: dict[str, Any] | None,
+    current_draft: dict[str, Any] | None,
+) -> bool:
+    merged = _merge_dicts(current_draft, extracted_fields)
+    if str(merged.get("sql_subtype") or "").strip().lower() == "sql_github_write":
+        return True
+    return bool(GITHUB_WRITE_INTENT_PATTERN.search((message or "").strip()))
+
+
 def _message_requests_sql_execution(
     message: str,
     extracted_fields: dict[str, Any] | None,
@@ -125,7 +142,10 @@ def _infer_sql_connector(merged_fields: dict[str, Any]) -> str:
     connector = _non_empty_string(merged_fields.get("connector"))
     if connector:
         normalized_connector = connector.strip().lower()
-        return SQL_CONNECTOR_ALIASES.get(normalized_connector, normalized_connector if normalized_connector in SQL_MCP_CONNECTORS else "sql-dab")
+        return SQL_CONNECTOR_ALIASES.get(
+            normalized_connector,
+            normalized_connector if normalized_connector in SQL_MCP_CONNECTORS else normalized_connector,
+        )
 
     config = merged_fields.get("config")
     if isinstance(config, dict):
@@ -137,7 +157,7 @@ def _infer_sql_connector(merged_fields: dict[str, Any]) -> str:
     if connection_id in SQL_MCP_CONNECTORS:
         return connection_id
 
-    return "sql-dab"
+    return ""
 
 
 def _normalize_sql_resource_connector(resource: Resource | Any, fallback_fields: dict[str, Any]) -> None:
@@ -229,6 +249,8 @@ def maybe_run_sql_job_from_chat(
     extracted_fields: dict[str, Any] | None,
     current_draft: dict[str, Any] | None,
 ) -> ChatJobExecutionResult | None:
+    if _message_requests_github_write(message, extracted_fields, current_draft):
+        return None
     if not _message_requests_sql_execution(message, extracted_fields, current_draft):
         return None
 
@@ -238,6 +260,9 @@ def maybe_run_sql_job_from_chat(
         current_draft.get("config") if isinstance(current_draft, dict) else None,
         extracted_fields.get("config") if isinstance(extracted_fields, dict) else None,
     )
+
+    if merged.get("creation_requested") and not _non_empty_string((current_draft or {}).get("resource_id")):
+        return None
 
     resource_name = (
         _non_empty_string(merged.get("name"))

@@ -1,4 +1,4 @@
-import { ArrowUpCircle, FileText, Play, Plus, Terminal } from "lucide-react";
+import { ArrowUpCircle, FileText, Play, Terminal } from "lucide-react";
 import { Button } from "./ui/button";
 
 interface QuickAction {
@@ -10,15 +10,10 @@ interface QuickAction {
 
 const quickActions: QuickAction[] = [
   {
-    id: "1",
-    label: "Create Job",
-    icon: <Plus className="h-4 w-4" />,
-    primary: true,
-  },
-  {
     id: "2",
     label: "Run Job",
     icon: <Play className="h-4 w-4" />,
+    primary: true,
   },
   {
     id: "3",

@@ -179,6 +179,7 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
 
   const [errors, setErrors] = useState<Record<string, string>>({});
   const isApplyingDraftDataRef = useRef(false);
+  const hasAppliedIncomingDraftRef = useRef(false);
 
   // Helper function to build the current draft object and notify parent
   const updateDraftAndParent = (
@@ -190,6 +191,7 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
     powerpoint: PowerPointDetails
   ) => {
     if (!onDraftDataChange || isApplyingDraftDataRef.current) return;
+    if (!hasAppliedIncomingDraftRef.current && draftData && Object.keys(draftData).length > 0) return;
     const resolvedUniversal = {
       ...uni,
       run_type: uni.schedule.trim() && uni.run_type !== "scheduled" ? "scheduled" : uni.run_type,
@@ -257,6 +259,9 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
     if (!draftData) return;
     
     isApplyingDraftDataRef.current = true;
+    if (Object.keys(draftData).length > 0) {
+      hasAppliedIncomingDraftRef.current = true;
+    }
     
     // Update job_type if provided
     const config = isRecord(draftData.config) ? draftData.config : {};

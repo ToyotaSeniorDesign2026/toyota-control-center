@@ -70,6 +70,14 @@ Install the Data API Builder CLI if you do not already have `dab`:
 dotnet tool install --global Microsoft.DataApiBuilder
 ```
 
+If `dab` still shows `command not found` after install, add the default .NET tools directory to your shell PATH and reload the shell:
+
+```bash
+export PATH="$PATH:$HOME/.dotnet/tools"
+```
+
+`backend/mcp_servers/sql-mcp-server` is only a Data API Builder config directory, not a Python package. Run `python -m pip install -e .` from the backend root (`backend/`), not from `backend/mcp_servers/sql-mcp-server/`.
+
 Start the local PostgreSQL database and run migrations first:
 
 ```bash
@@ -87,6 +95,21 @@ export SQL_CONNECTION_STRING="Host=localhost;Port=5432;Database=control_center;U
 dab start --config dab-config.json
 ```
 
+Or run the SQL MCP server through Docker Compose:
+
+```bash
+cd "/Users/hamnatameez/toyota-control-center/backend"
+docker compose up -d postgres sql-mcp
+```
+
+When the SQL MCP server runs in Docker, it connects to Postgres over the Compose network using the service hostname `postgres`. The host-mapped MCP endpoint is:
+
+```bash
+http://localhost:5001/mcp
+```
+
+The manual host-run `dab start` flow typically uses:
+
 Use the MCP URL printed by DAB. If it starts on the default local port, the MCP endpoint is typically:
 
 ```bash
@@ -94,7 +117,7 @@ http://localhost:5000/mcp
 ```
 
 ### Point Backend at SQL MCP
-Set these in `backend/.env` before starting the FastAPI backend:
+Set these in `backend/.env` before starting the FastAPI backend when the SQL MCP server is running on your host:
 
 ```bash
 SQL_MCP_SERVER_URL=http://localhost:5000/mcp
@@ -104,6 +127,9 @@ SQL_ANALYTICS_MCP_SERVER_BEARER_TOKEN=local-dev-token
 ```
 
 For local DAB development, `local-dev-token` can be any non-empty placeholder unless your DAB host is enforcing bearer validation. In shared or deployed environments, use the real bearer token for that MCP gateway.
+
+If you run the backend through `docker compose`, the `api` service already points to `http://sql-mcp:5000/mcp` internally. If you run the backend on your host machine instead, keep `backend/.env` pointed at `http://localhost:5000/mcp`.
+If you run the SQL MCP server through Docker Compose and the backend on your host machine, point `backend/.env` at `http://localhost:5001/mcp` instead.
 
 ### Run a SQL Job Through MCP
 1. Start PostgreSQL, DAB, and the FastAPI backend.

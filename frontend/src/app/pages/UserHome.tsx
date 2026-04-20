@@ -26,7 +26,6 @@ import { Button } from "../components/ui/button";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
 import { ChatPanel } from "../components/ChatPanel";
-import { CreateJobForm } from "../components/CreateJobForm";
 import ExcelReportForm from "../components/user/ExcelReportForm";
 import SQLJobForm from "../components/user/SQLJobForm";
 import PowerPointForm from "../components/user/PowerPointForm";
@@ -1884,6 +1883,28 @@ export default function UserHome() {
   const normalizeExtractedJobFields = (fields: Record<string, any>) => {
     const config = typeof fields.config === "object" && fields.config !== null ? fields.config : {};
     const params = typeof fields.params === "object" && fields.params !== null ? fields.params : {};
+    const parseSqlConnectionString = (value: any) => {
+      if (typeof value !== "string") return {};
+      const parts = value
+        .split(";")
+        .map((segment) => segment.trim())
+        .filter(Boolean);
+      const entries = Object.fromEntries(
+        parts.map((segment) => {
+          const separatorIndex = segment.indexOf("=");
+          if (separatorIndex < 0) return ["", ""];
+          const key = segment.slice(0, separatorIndex).trim().toLowerCase();
+          const rawValue = segment.slice(separatorIndex + 1).trim();
+          return [key, rawValue];
+        }).filter(([key]) => key),
+      );
+      return {
+        host: typeof entries.host === "string" ? entries.host : "",
+        port: typeof entries.port === "string" ? entries.port : "",
+        database: typeof entries.database === "string" ? entries.database : "",
+        username: typeof entries.username === "string" ? entries.username : "",
+      };
+    };
     const normalizeEnv = (value: any) => {
       if (typeof value !== "string") return value;
       const normalized = value.trim().toLowerCase();
@@ -1920,12 +1941,18 @@ export default function UserHome() {
     if (isSql) {
       const connector = normalizeConnector(fields.connector ?? config.connector);
       const explicitConnectionId = fields.connection_id ?? config.connection_id;
+      const parsedConnection = parseSqlConnectionString(config.sql_connection_string);
+      const database =
+        fields.database ??
+        config.database ??
+        parsedConnection.database;
       normalized.job_type = "SQL";
       normalized.kind = fields.kind ?? "runtime";
       normalized.type = "sql";
       normalized.data_sensitivity = fields.data_sensitivity ?? "low";
       normalized.connector = connector;
       normalized.connection_id = explicitConnectionId ?? defaultConnectionIdForConnector(connector);
+      normalized.database = database ?? "";
       normalized.target_environment = normalized.target_environment ?? normalized.environment ?? "dev";
       normalized.query = fields.query ?? params.query ?? config.query ?? "";
       normalized.output_destination = fields.output_destination ?? config.output_destination ?? "";
@@ -1933,6 +1960,10 @@ export default function UserHome() {
       normalized.config = {
         ...config,
         connection_id: normalized.connection_id,
+        ...(normalized.database ? { database: normalized.database } : {}),
+        ...(parsedConnection.host ? { host: config.host ?? parsedConnection.host } : {}),
+        ...(parsedConnection.port ? { port: config.port ?? parsedConnection.port } : {}),
+        ...(parsedConnection.username ? { username: config.username ?? parsedConnection.username } : {}),
         query: normalized.query,
         schedule: normalized.schedule,
         target_environment: normalized.target_environment,
@@ -1943,10 +1974,47 @@ export default function UserHome() {
         ...params,
         query: normalized.query,
         connection_id: normalized.connection_id,
+        ...(normalized.database ? { database: normalized.database } : {}),
       };
     }
 
     return normalized;
+  };
+
+  const mergeDraftValues = (previous: Record<string, any>, next: Record<string, any>): Record<string, any> => {
+    const merged: Record<string, any> = { ...previous };
+
+    for (const [key, value] of Object.entries(next)) {
+      if (value === undefined || value === null) {
+        continue;
+      }
+
+      if (typeof value === "string") {
+        if (value.trim() === "") {
+          continue;
+        }
+        merged[key] = value;
+        continue;
+      }
+
+      if (Array.isArray(value)) {
+        if (value.length === 0) {
+          continue;
+        }
+        merged[key] = value;
+        continue;
+      }
+
+      if (typeof value === "object") {
+        const previousObject = typeof previous[key] === "object" && previous[key] !== null ? previous[key] : {};
+        merged[key] = mergeDraftValues(previousObject, value);
+        continue;
+      }
+
+      merged[key] = value;
+    }
+
+    return merged;
   };
 
   const handleChatFieldsExtracted = (fields: Record<string, any>) => {
@@ -1978,18 +2046,7 @@ export default function UserHome() {
       return;
     }
 
-    const shouldOpenCreateJob =
-      normalized.job_type === "SQL" ||
-      normalized.job_name ||
-      normalized.query ||
-      normalized.connector ||
-      normalized.connection_id;
-
-    if (shouldOpenCreateJob) {
-      handleOpenTabInPane({ type: "create-job", id: "create-job", name: "Create Job" }, "primary");
-    }
-
-    setJobDraft((prev) => ({ ...prev, ...normalized }));
+    setJobDraft((prev) => mergeDraftValues(prev, normalized));
   };
 
   const isCreateJobDraftComplete = (draft: Record<string, any>) => {
@@ -2031,9 +2088,6 @@ export default function UserHome() {
 
     return Boolean(jobType);
   };
-
-  const isCreateJobDisabled =
-    workspace.primary.tabs.some((tab) => tab.type === "create-job") && !isCreateJobDraftComplete(jobDraft);
 
   const getAuthToken = () => {
     if (typeof window === "undefined") return "u_analyst";
@@ -2223,7 +2277,7 @@ export default function UserHome() {
     throw new Error(`Job type '${jobType || "unknown"}' is not supported yet.`);
   };
 
-  const registerJobResourceFromDraft = async (options: { askToRun?: boolean; closeTabId?: string } = {}) => {
+  const registerJobResourceFromDraft = async (options: { askToRun?: boolean; autoRun?: boolean; closeTabId?: string } = {}) => {
     if (!isCreateJobDraftComplete(jobDraft)) {
       throw new Error("Fill the required SQL job fields before creating the job.");
     }
@@ -2259,7 +2313,20 @@ export default function UserHome() {
         connector: resource.connector,
       });
 
-      if (options.askToRun) {
+      if (options.autoRun) {
+        const run = await createResourceRun(resource.id, buildRunPayloadFromResource(resource), getAuthToken());
+        setActiveRunId(run.id);
+        setRunLogs([]);
+        setConsoleActiveTab("logs");
+        setConsoleHeight(300);
+        setChatAssistantNotices((prev) => [
+          ...prev,
+          {
+            id: `resource-created-and-run-${resource.id}-${run.id}-${Date.now()}`,
+            content: `Created SQL job \`${resource.name}\` and started run \`${run.id}\`.`,
+          },
+        ]);
+      } else if (options.askToRun) {
         setChatAssistantNotices((prev) => [
           ...prev,
           {
@@ -2354,7 +2421,10 @@ export default function UserHome() {
       return;
     }
     autoRegisteredDraftKeyRef.current = draftKey;
-    void registerJobResourceFromDraft({ askToRun: true }).catch((err) => {
+    void registerJobResourceFromDraft({
+      askToRun: !Boolean(jobDraft.run_after_create || jobDraft.action === "run"),
+      autoRun: Boolean(jobDraft.run_after_create || jobDraft.action === "run"),
+    }).catch((err) => {
       emitConsoleEvent("missing_fields_identified", "Unable to register SQL resource", {
         error: err instanceof Error ? err.message : "Unknown error",
       });
@@ -2941,15 +3011,14 @@ export default function UserHome() {
     return (
       <>
         {tab.type === "create-job" ? (
-          /* Create Job Form */
-          <CreateJobForm
-            draftData={jobDraft}
-            onDraftDataChange={setJobDraft}
-            onSubmit={() => {
-              void registerJobResourceFromDraft({ askToRun: true, closeTabId: tab.id });
-            }}
-            onCancel={() => handleCloseTabInPane(tab.id, "primary")}
-          />
+          <div className="flex h-full items-center justify-center p-8 text-center">
+            <div className="max-w-sm">
+              <p className="text-lg font-semibold text-gray-700">Use the AI Chat Assistant</p>
+              <p className="mt-2 text-sm text-gray-500">
+                Job creation is handled through the chat panel. Describe the SQL job you want to create and the assistant will guide you.
+              </p>
+            </div>
+          </div>
         ) : tab.type === "job" && currentJobSpec ? (
           /* Job Workspace View */
           <div className="mx-auto max-w-[1600px] px-6 py-8">
@@ -4304,14 +4373,6 @@ export default function UserHome() {
                 <h3 className="text-xs font-bold text-gray-900 uppercase tracking-wide">
                   My Current Jobs ({currentJobs.length})
                 </h3>
-                <button
-                  onClick={() => handleOpenTabInPane({ type: "create-job", id: "create-job", name: "Create Job" }, "primary")}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#ed0923] text-white rounded-md text-xs font-medium hover:bg-[#d10820] transition"
-                  title="Create a new job"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  Create
-                </button>
               </div>
               <div className="flex-1 overflow-y-auto space-y-1.5">
                 {jobRunsLoading && dashboardJobs.length === 0 ? (
@@ -5021,79 +5082,12 @@ export default function UserHome() {
               <div className="flex-1 flex flex-col overflow-hidden min-h-0">
                 {/* CONTENT PANEL - Form or other workspace content */}
                 {activeTab?.type === "create-job" ? (
-                  <div className="flex-1 min-h-0 overflow-hidden p-4">
-                    <div className="h-full flex flex-col rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-                      {/* Form Content - Scrollable area inside panel */}
-                      <div 
-                        className={`flex-1 min-h-0 overflow-y-auto transition-all relative ${
-                          isDraggingOverWorkspace 
-                            ? isDraggingOverSplitZone === "left" 
-                              ? 'bg-purple-50'
-                              : isDraggingOverSplitZone === "right"
-                              ? 'bg-purple-50'
-                              : 'bg-blue-50'
-                            : ''
-                        }`}
-                        onDragOver={handleWorkspaceDragOver}
-                        onDragLeave={handleWorkspaceDragLeave}
-                        onDrop={handleWorkspaceDrop}
-                      >
-                        {/* Drag and Drop Hint */}
-                        {isDraggingOverWorkspace && (
-                          <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                            {isDraggingOverSplitZone === "left" ? (
-                              <div className="text-center">
-                                <p className="text-lg font-semibold text-purple-900">Drop here to create left split pane</p>
-                                <p className="text-sm text-purple-700 mt-1">This item opens on the left</p>
-                              </div>
-                            ) : isDraggingOverSplitZone === "right" ? (
-                              <div className="text-center">
-                                <p className="text-lg font-semibold text-purple-900">Drop here to create right split pane</p>
-                                <p className="text-sm text-purple-700 mt-1">This item opens on the right</p>
-                              </div>
-                            ) : (
-                              <div className="text-center bg-blue-50/80">
-                                <p className="text-lg font-semibold text-blue-900">Drop job here to open in workspace</p>
-                                <p className="text-sm text-blue-700 mt-1">Center = primary pane | Edges = split pane</p>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                        
-                        {/* Render form without footer */}
-                        <CreateJobForm
-                          hideFooter={true}
-                          draftData={jobDraft}
-                          onDraftDataChange={setJobDraft}
-                          onSubmit={() => {
-                            void registerJobResourceFromDraft({ askToRun: true });
-                          }}
-                          onCancel={() => handleCloseTabInPane(activeTab.id, "primary")}
-                        />
-                      </div>
-
-                      {/* Form Panel Footer - Inside the bordered panel */}
-                      <div className="flex-shrink-0 border-t border-gray-200 bg-gray-50 px-4 py-4 flex gap-3">
-                        <div className="w-full flex gap-3">
-                          <Button
-                            variant="outline"
-                            onClick={() => handleCloseTabInPane(activeTab.id, "primary")}
-                            className="flex-1"
-                          >
-                            Cancel
-                          </Button>
-                          <Button
-                            disabled={isCreateJobDisabled || isRegisteringJob}
-                            title={isCreateJobDisabled ? "Fill the required SQL job fields before creating the job" : undefined}
-                            onClick={() => {
-                              void registerJobResourceFromDraft({ askToRun: true, closeTabId: activeTab.id });
-                            }}
-                            className="flex-1 bg-[#ed0923] hover:bg-[#d10820] text-white disabled:cursor-not-allowed disabled:bg-gray-300"
-                          >
-                            {isRegisteringJob ? "Creating..." : "Create Job"}
-                          </Button>
-                        </div>
-                      </div>
+                  <div className="flex-1 flex items-center justify-center p-8 text-center">
+                    <div className="max-w-sm">
+                      <p className="text-lg font-semibold text-gray-700">Use the AI Chat Assistant</p>
+                      <p className="mt-2 text-sm text-gray-500">
+                        Job creation is handled through the chat panel. Describe the SQL job you want to create and the assistant will guide you.
+                      </p>
                     </div>
                   </div>
                 ) : (
@@ -5605,7 +5599,13 @@ export default function UserHome() {
               currentDraftData={jobDraft}
               assistantNotices={chatAssistantNotices}
               onConsoleEvent={emitConsoleEvent}
-              resources={resources.map((r) => ({ id: r.id, name: r.name, type: r.type ?? "Custom" }))}
+              resources={resources.map((r) => ({
+                id: r.id,
+                name: r.name,
+                type: r.type ?? "Custom",
+                connector: r.connector,
+                config: r.config ?? {},
+              }))}
               onRunStarted={(runId) => {
                 setActiveRunId(runId);
                 setRunLogs([]);

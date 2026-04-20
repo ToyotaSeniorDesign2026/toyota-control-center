@@ -7,6 +7,8 @@ from app.api.routers.chat import (
     _deterministic_repo_connection_fields,
     _deterministic_sql_fields,
     _is_explicit_sql_run_request,
+    _missing_sql_job_fields,
+    _sql_followup_response,
 )
 
 
@@ -19,8 +21,6 @@ class ChatRouterHelperTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(fields["connector"], "sql-dab")
-        self.assertEqual(fields["connection_id"], "postgres")
         self.assertEqual(fields["query"], "SELECT * FROM runs;")
 
     def test_manual_run_type_does_not_count_as_explicit_execution(self) -> None:
@@ -49,6 +49,18 @@ class ChatRouterHelperTests(unittest.TestCase):
         )
 
         self.assertTrue(fields["creation_requested"])
+
+    def test_create_and_run_sql_request_marks_run_after_create(self) -> None:
+        fields = _deterministic_sql_fields(
+            ChatRequest(
+                message="Please create the job and run it",
+                current_draft_data={"job_type": "SQL", "job_name": "get-resources"},
+            )
+        )
+
+        self.assertTrue(fields["creation_requested"])
+        self.assertTrue(fields["run_after_create"])
+        self.assertEqual(fields["action"], "run")
 
     def test_yes_after_resource_creation_counts_as_execution(self) -> None:
         request = ChatRequest(
@@ -80,6 +92,71 @@ class ChatRouterHelperTests(unittest.TestCase):
 
         self.assertEqual(fields["connection_intent"], "connect_repo")
         self.assertEqual(fields["connector"], "github")
+
+    def test_sql_followup_response_asks_for_query_not_connector(self) -> None:
+        request = ChatRequest(
+            message="connect to a SQL database",
+            current_draft_data={"job_type": "SQL"},
+            session_env={
+                "SQL_DB_HOST": "localhost",
+                "SQL_DB_PORT": "5432",
+                "SQL_DB_DATABASE": "control_center",
+                "SQL_DB_USERNAME": "postgres",
+                "SQL_DB_PASSWORD": "postgres",
+                "SQL_CONNECTION_ID": "postgres",
+            },
+        )
+
+        response = _sql_followup_response(
+            request,
+            extracted_fields={"job_type": "SQL", "connector": "sql-dab", "connection_id": "postgres"},
+            session_env=request.session_env or {},
+        )
+
+        self.assertIsNotNone(response)
+        self.assertIn("sql-dab", response)
+        self.assertIn("next thing I need is the SQL query", response)
+        self.assertNotIn("connector or database type", response)
+
+    def test_missing_sql_job_fields_prioritizes_name_owner_target_environment_run_type(self) -> None:
+        missing = _missing_sql_job_fields(
+            extracted_fields={"job_type": "SQL", "query": "SELECT * FROM users"},
+            current_draft=None,
+        )
+
+        self.assertEqual(
+            missing,
+            ["job_name", "owner", "target_environment", "run_type"],
+        )
+
+    def test_sql_followup_response_asks_for_job_name_after_query(self) -> None:
+        request = ChatRequest(
+            message="connect to a SQL database",
+            current_draft_data={"job_type": "SQL"},
+            session_env={
+                "SQL_DB_HOST": "localhost",
+                "SQL_DB_PORT": "5432",
+                "SQL_DB_DATABASE": "control_center",
+                "SQL_DB_USERNAME": "postgres",
+                "SQL_DB_PASSWORD": "postgres",
+                "SQL_CONNECTION_ID": "postgres",
+            },
+        )
+
+        response = _sql_followup_response(
+            request,
+            extracted_fields={
+                "job_type": "SQL",
+                "connector": "sql-dab",
+                "connection_id": "postgres",
+                "query": "SELECT * FROM users",
+            },
+            session_env=request.session_env or {},
+        )
+
+        self.assertIsNotNone(response)
+        self.assertIn("job/resource name", response)
+        self.assertNotIn("run the query now", response)
 
 
 if __name__ == "__main__":
