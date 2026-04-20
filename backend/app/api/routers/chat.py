@@ -1,5 +1,6 @@
 """Chat API router for handling AI chat messages."""
 
+import asyncio
 import json
 import logging
 import os
@@ -608,6 +609,58 @@ def _load_registry_field_info() -> str:
             o = srv.get("optional_fields") or []
             lines.append(f"{display} (job_type={job_type}) required: {r}  optional: {o}")
     return "\n".join(lines)
+
+
+def _validate_against_registry(connector: str, environment: str) -> list[str]:
+    """Check connector exists/is active and environment is allowed. Returns error strings."""
+    errors: list[str] = []
+    try:
+        with open(_REGISTRY_PATH) as f:
+            registry = json.load(f)
+    except Exception:
+        return []
+
+    approved = registry.get("approved_servers", {})
+    if not connector:
+        return []
+
+    if connector not in approved:
+        errors.append(
+            f"Connector `{connector}` is not in the approved servers list. "
+            f"Available SQL connectors: {', '.join(k for k, v in approved.items() if v.get('job_type') == 'sql')}."
+        )
+        return errors
+
+    server = approved[connector]
+    if not server.get("active", True):
+        errors.append(f"Connector `{connector}` is currently marked inactive in the registry.")
+
+    if environment:
+        allowed = server.get("allowed_environments", [])
+        if allowed and allowed != ["*"] and environment not in allowed:
+            errors.append(
+                f"Environment `{environment}` is not allowed for `{connector}`. "
+                f"Allowed: {', '.join(allowed)}."
+            )
+
+    return errors
+
+
+async def _tcp_ping(host: str, port: str | int, timeout: float = 3.0) -> bool:
+    """Return True if a TCP connection to host:port succeeds within timeout seconds."""
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(str(host), int(port)),
+            timeout=timeout,
+        )
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
 
 
 def _ask_llm_for_next_field(
@@ -1363,7 +1416,44 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                     extracted_fields=new_ef,
                 )
 
-            # All fields collected — show the confirmation summary
+            # All fields collected — validate before showing confirmation
+            cfg: dict[str, Any] = merged.get("config") or {}
+            connector = str(merged.get("connector") or "sql-dab").strip().lower()
+            environment = str(
+                merged.get("target_environment") or merged.get("environment") or
+                cfg.get("target_environment") or "dev"
+            ).strip().lower()
+
+            # 1 & 2: Registry checks — connector active + environment allowed
+            registry_errors = _validate_against_registry(connector, environment)
+            if registry_errors:
+                error_lines = "\n".join(f"- {e}" for e in registry_errors)
+                return ChatResponse(
+                    response=(
+                        f"I found a configuration issue before creating the job:\n{error_lines}\n\n"
+                        "What would you like to change?"
+                    ),
+                    job_creation_intent=True,
+                    extracted_fields=new_ef,
+                )
+
+            # 3: TCP reachability check — verify host:port is accessible
+            host = str(merged.get("host") or cfg.get("host") or session_env.get("SQL_DB_HOST") or "").strip()
+            port = str(merged.get("port") or cfg.get("port") or session_env.get("SQL_DB_PORT") or "").strip()
+            if host and port:
+                reachable = await _tcp_ping(host, port)
+                if not reachable:
+                    return ChatResponse(
+                        response=(
+                            f"I couldn't reach the database at `{host}:{port}` — "
+                            "the host may be wrong or the server may not be running. "
+                            "Would you like to update the host or port?"
+                        ),
+                        job_creation_intent=True,
+                        extracted_fields=new_ef,
+                    )
+
+            # All validated — show the confirmation summary
             summary = _build_sql_job_summary(merged, session_env)
             return ChatResponse(
                 response=summary,
