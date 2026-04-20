@@ -1,9 +1,11 @@
 """Chat API router for handling AI chat messages."""
 
+import json
 import logging
 import os
 import re
 import base64
+from pathlib import Path
 from typing import Optional, Any
 from fastapi import APIRouter, HTTPException, Depends
 import httpx
@@ -21,6 +23,23 @@ from app.services.chat_mcp_service import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+_FLOW_ABANDONMENT_PATTERN = re.compile(
+    r"\b(nevermind|never\s+mind|nvm|forget\s+it|forget\s+this|forget\s+that|"
+    r"cancel\s+(?:that|this|it|everything)|cancel|start\s+over|start\s+fresh|"
+    r"abort|go\s+back|ignore\s+that|scrap\s+(?:it|this|that)|changed\s+my\s+mind|"
+    r"stop\s+(?:this|that|it|creating|the\s+job)|please\s+stop|just\s+stop|"
+    r"stop\s+it|stop\s+now|exit\s+(?:this|flow)|"
+    r"reset\s+(?:everything|the\s+draft|draft)|i\s+don[''']?t\s+want\s+to\s+(?:do\s+this|create\s+this|continue)|"
+    r"quit|exit)\b"
+    r"|(?:\blet[''']?s\s+(?:do|try)\s+something\s+(?:else|different)\b)",
+    re.IGNORECASE,
+)
+_TASK_SWITCH_PATTERN = re.compile(
+    r"\b(?:instead|switch|want\s+to\s+do|rather\s+do)\b.{0,80}\b(?:github|repo|repository|filesystem|fetch|api|webhook|arxiv)\b"
+    r"|\b(?:github|repo|repository|filesystem|fetch|arxiv)\b.{0,80}\b(?:instead|now|first|rather)\b"
+    r"|\bi\s+(?:want|need|'?d\s+like)\s+to\s+(?:connect|link|add|create|set\s+up).{0,80}\b(?:github|repo|repository)\b",
+    re.IGNORECASE,
+)
 SQL_RUN_REQUEST_PATTERN = re.compile(r"\b(run|execute|launch|trigger|start)\b", re.IGNORECASE)
 RUN_JOB_MARKER_PATTERN = re.compile(r'\[RUN_JOB:([a-zA-Z0-9\-_]+)\]')
 SQL_RUN_CONTEXT_PATTERN = re.compile(r"\b(job|sql|query|resource)\b", re.IGNORECASE)
@@ -64,19 +83,6 @@ _NL_TABLE_EXTRACT_PATTERN = re.compile(
     r"\b(?:get|fetch|show|list|select|retrieve|find|display)\b\s+(?:me\s+)?(?:all\s+)?(?:the\s+)?(\w+?)(?:\s+(?:from|in|records?|data|table|entries?|rows?)|\s*$)",
     re.IGNORECASE,
 )
-_SQL_FIELD_QUESTIONS: dict[str, str] = {
-    "job_name": "What name would you like to give this job?",
-    "owner": "Who is the owner of this job?",
-    "run_type": "Should this be a **one-time** (manual) run or a **scheduled** job?",
-    "schedule": "What schedule should I use? (e.g., `every day at 9am`, `30 8 * * 1-5`)",
-    "query": 'What SQL query would you like to run? (Plain English is fine, e.g. "get all users")',
-    "database": "What is the database name?",
-    "connection_id": "What is the connection ID? (type `skip` to leave empty)",
-    "username": "What is the database username?",
-    "password": "What is the database password?",
-    "host": "What is the database host? (e.g., `localhost` or `db.example.com`)",
-    "port": "What is the database port? (e.g., `5432` for PostgreSQL)",
-}
 _SQL_FLOW_ASKED_PATTERNS: dict[str, re.Pattern] = {
     "job_name": re.compile(r"\bjob.*name\b|\bname.*(?:this )?job\b|\bwhat name\b|\bgive this job\b", re.IGNORECASE),
     "owner": re.compile(r"\bwho is the owner\b|\bowner of this job\b|\bjob.*owner\b", re.IGNORECASE),
@@ -497,6 +503,174 @@ def _build_github_write_mcp_prompt(query: str, repo: str, file_path: str, ref: s
     )
 
 
+def _openai_classify_abandonment(message: str, draft_type: str, awaiting_confirmation: bool) -> bool:
+    """Ask OpenAI whether the user wants to abandon the current flow. Returns False on any error."""
+    try:
+        from app.core.config import settings
+        if not settings.openai_api_key:
+            return False
+        from openai import OpenAI
+        client = OpenAI(api_key=settings.openai_api_key)
+        state_desc = "waiting for user confirmation" if awaiting_confirmation else "collecting required fields"
+        resp = client.chat.completions.create(
+            model=settings.openai_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        f"The user is in the middle of creating a {draft_type} job ({state_desc}). "
+                        "Classify whether their message means they want to STOP/ABANDON creating this job "
+                        "and do something completely DIFFERENT, OR whether they are CONTINUING to provide "
+                        "information, asking a question about the current job, or giving a yes/no answer.\n"
+                        "Respond with exactly one word: 'abandon' or 'continue'."
+                    ),
+                },
+                {"role": "user", "content": message},
+            ],
+            max_tokens=5,
+            temperature=0,
+        )
+        return (resp.choices[0].message.content or "").strip().lower().startswith("abandon")
+    except Exception:
+        logger.debug("OpenAI abandonment classification failed", exc_info=True)
+        return False
+
+
+def _is_abandoning_current_flow(message: str, draft: dict) -> bool:
+    """Return True when the user wants to abandon an in-progress multi-step flow."""
+    if not draft:
+        return False
+    draft_type = str(draft.get("job_type") or draft.get("type") or "").strip().lower()
+    if not draft_type:
+        return False
+    # Fast path: unambiguous abandonment phrases — no API call needed
+    if _FLOW_ABANDONMENT_PATTERN.search(message) or _TASK_SWITCH_PATTERN.search(message):
+        return True
+    # Slow path: ask OpenAI to classify ambiguous messages
+    return _openai_classify_abandonment(message, draft_type, bool(draft.get("awaiting_confirmation")))
+
+
+_REGISTRY_PATH = (
+    Path(__file__).parent.parent.parent.parent
+    / "src" / "control_center" / "core" / "registry" / "registry.json"
+)
+
+_FIELD_LABELS: dict[str, str] = {
+    "job_name": "job name",
+    "owner": "job owner",
+    "run_type": "run type (manual or scheduled)",
+    "schedule": "schedule expression",
+    "query": "SQL query",
+    "database": "database name",
+    "connection_id": "connection ID",
+    "username": "database username",
+    "password": "database password",
+    "host": "database host",
+    "port": "database port",
+}
+
+# Fallback questions used when OpenAI is unavailable
+_SQL_FIELD_QUESTIONS_FALLBACK: dict[str, str] = {
+    "job_name": "What name would you like to give this job?",
+    "owner": "Who is the owner of this job?",
+    "run_type": "Should this be a **one-time** (manual) run or a **scheduled** job?",
+    "schedule": "What schedule should I use? (e.g., `every day at 9am`, `30 8 * * 1-5`)",
+    "query": 'What SQL query would you like to run? (Plain English is fine, e.g. "get all users")',
+    "database": "What is the database name?",
+    "connection_id": "What is the connection ID? (type `skip` to leave empty)",
+    "username": "What is the database username?",
+    "password": "What is the database password?",
+    "host": "What is the database host? (e.g., `localhost` or `db.example.com`)",
+    "port": "What is the database port? (e.g., `5432` for PostgreSQL)",
+}
+
+
+def _load_registry_field_info() -> str:
+    """Return a compact field-reference string from registry.json for use in prompts."""
+    try:
+        with open(_REGISTRY_PATH) as f:
+            registry = json.load(f)
+    except Exception:
+        return ""
+    lines: list[str] = []
+    universal = registry.get("universal_job_fields", {})
+    req = universal.get("required", [])
+    opt = universal.get("optional", [])
+    if req:
+        lines.append(f"Universal required fields: {', '.join(req)}")
+    if opt:
+        lines.append(f"Universal optional fields: {', '.join(opt)}")
+    for name, srv in registry.get("approved_servers", {}).items():
+        if srv.get("required_fields") or srv.get("optional_fields"):
+            display = srv.get("display_name") or name
+            job_type = srv.get("job_type", name)
+            r = srv.get("required_fields") or []
+            o = srv.get("optional_fields") or []
+            lines.append(f"{display} (job_type={job_type}) required: {r}  optional: {o}")
+    return "\n".join(lines)
+
+
+def _ask_llm_for_next_field(
+    next_field: str,
+    draft: dict,
+    session_env: dict,
+    history: list[dict] | None,
+) -> str:
+    """Ask the LLM to generate a natural question for the next missing SQL job field.
+    Falls back to _SQL_FIELD_QUESTIONS_FALLBACK on any error."""
+    try:
+        from app.core.config import settings
+        if not settings.openai_api_key:
+            return _SQL_FIELD_QUESTIONS_FALLBACK.get(next_field, f"What is the {next_field}?")
+        from openai import OpenAI
+        client = OpenAI(api_key=settings.openai_api_key)
+
+        config = draft.get("config") or {}
+        collected: dict[str, str] = {}
+        for f in ("job_name", "owner", "run_type", "schedule", "query",
+                  "database", "connection_id", "username", "host", "port"):
+            v = (
+                str(draft.get(f) or config.get(f) or "").strip()
+                or str(session_env.get(f"SQL_DB_{f.upper()}") or "").strip()
+            )
+            if v:
+                collected[f] = v
+        if draft.get("password") or config.get("password") or session_env.get("SQL_DB_PASSWORD"):
+            collected["password"] = "***"
+
+        registry_info = _load_registry_field_info()
+        field_label = _FIELD_LABELS.get(next_field, next_field)
+
+        system_prompt = (
+            "You are CC Assistant helping a user create a SQL job step by step.\n"
+            f"Job field reference from registry:\n{registry_info}\n\n"
+            "Rules:\n"
+            "- Ask exactly ONE short, friendly question to collect the next field.\n"
+            "- Be conversational. You may include a brief hint or example in backticks if helpful.\n"
+            "- Do NOT re-ask or mention fields already collected.\n"
+            "- Do NOT list all the fields — only ask about the one field requested.\n"
+            f"Already collected: {json.dumps(collected)}\n"
+            f"Next field to ask about: {field_label} (key: {next_field})"
+        )
+
+        msgs: list[Any] = [{"role": "system", "content": system_prompt}]
+        for h in (history or [])[-4:]:
+            if isinstance(h, dict) and h.get("role") in {"user", "assistant"}:
+                msgs.append({"role": h["role"], "content": str(h.get("content") or "")})
+
+        resp = client.chat.completions.create(
+            model=settings.openai_model,
+            messages=msgs,  # type: ignore[arg-type]
+            max_tokens=120,
+            temperature=0.7,
+        )
+        question = (resp.choices[0].message.content or "").strip()
+        return question or _SQL_FIELD_QUESTIONS_FALLBACK.get(next_field, f"What is the {next_field}?")
+    except Exception:
+        logger.debug("LLM field question generation failed", exc_info=True)
+        return _SQL_FIELD_QUESTIONS_FALLBACK.get(next_field, f"What is the {next_field}?")
+
+
 def _non_empty_str(value: Any) -> str | None:
     if isinstance(value, str):
         v = value.strip()
@@ -638,8 +812,8 @@ class ConfigRequest(BaseModel):
 class ChatResponse(BaseModel):
     """Response from chat API."""
     response: str
-    job_creation_intent: Optional[bool] = None  # True if user wants to create a job
-    extracted_fields: Optional[dict[str, Any]] = None  # Extracted job fields from message
+    job_creation_intent: Optional[bool] = None
+    extracted_fields: Optional[dict[str, Any]] = None
     resource_id: Optional[str] = None
     run_id: Optional[str] = None
     run_status: Optional[str] = None
@@ -650,6 +824,7 @@ class ChatResponse(BaseModel):
     secret_request: Optional[SecretRequest] = None
     repository_options: Optional[list[RepositoryOption]] = None
     config_request: Optional[ConfigRequest] = None
+    reset_draft: Optional[bool] = None  # True when user abandons current flow
 
 
 async def _list_github_repository_options(personal_access_token: str) -> list[RepositoryOption]:
@@ -967,6 +1142,15 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
         if not request.message or not request.message.strip():
             raise HTTPException(status_code=400, detail="Message cannot be empty")
         
+        # --- Abandonment check: let user bail out of any in-progress flow ---
+        if _is_abandoning_current_flow(request.message, request.current_draft_data or {}):
+            return ChatResponse(
+                response="No problem — I've cleared the job draft. What would you like to do next?",
+                job_creation_intent=False,
+                extracted_fields=None,
+                reset_draft=True,
+            )
+
         # Detect job creation intent from user message
         job_creation_intent = detect_job_creation_intent(request.message)
         deterministic_repo_fields = _deterministic_repo_connection_fields(request)
@@ -1048,6 +1232,16 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
         # --- SQL flow: structured state machine (universal fields → SQL fields → confirm → run) ---
         if _looks_like_sql_connect_request(request):
             draft = request.current_draft_data or {}
+
+            # Belt-and-suspenders abandonment check inside the SQL flow
+            if _is_abandoning_current_flow(request.message, draft):
+                return ChatResponse(
+                    response="No problem — I've cleared the job draft. What would you like to do next?",
+                    job_creation_intent=False,
+                    extracted_fields=None,
+                    reset_draft=True,
+                )
+
             last_asked = _last_asked_sql_flow_field(history_dicts)
             # Fallback: if the draft already has awaiting_confirmation, we're in confirm mode
             if draft.get("awaiting_confirmation"):
@@ -1162,8 +1356,9 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
             # Ask for the next missing field
             next_field = _next_missing_sql_field(merged, session_env)
             if next_field:
+                question = _ask_llm_for_next_field(next_field, merged, session_env, history_dicts)
                 return ChatResponse(
-                    response=_SQL_FIELD_QUESTIONS[next_field],
+                    response=question,
                     job_creation_intent=True,
                     extracted_fields=new_ef,
                 )

@@ -502,13 +502,12 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
       }
 
       // Handle extracted fields from the message
-      if (data.extracted_fields && onFieldsExtracted) {
-        // Emit extracted fields event
+      if (data.reset_draft && onFieldsExtracted) {
+        onFieldsExtracted({ __reset_draft__: true });
+        onConsoleEvent?.("draft_updated", "Draft reset — user switched tasks", {});
+      } else if (data.extracted_fields && onFieldsExtracted) {
         onConsoleEvent?.("extracted_fields", "Fields extracted from user message", data.extracted_fields);
-
         onFieldsExtracted(data.extracted_fields);
-
-        // Emit draft updated event
         onConsoleEvent?.("draft_updated", `Draft updated with ${Object.keys(data.extracted_fields).length} field(s)`, {
           updated_fields: Object.keys(data.extracted_fields),
           values: data.extracted_fields,
