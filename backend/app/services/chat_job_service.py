@@ -17,6 +17,12 @@ from app.services.run_service import create_run_and_maybe_execute
 
 
 SQL_MCP_CONNECTORS = {"sql-dab", "sql-dab-analytics"}
+GITHUB_WRITE_INTENT_PATTERN = re.compile(
+    r"\b(write|save|commit|push|add|store)\b.{0,60}\b(sql|query|script)\b.{0,60}\b(github|repo|repository|file|\.sql)\b"
+    r"|\b(github|repo|repository)\b.{0,60}\b(write|save|commit|push|add)\b.{0,60}\b(sql|query|script)\b"
+    r"|\b(sql|query)\b.{0,60}\b(github|repo|repository|\.sql)\b",
+    re.IGNORECASE,
+)
 SQL_CONNECTOR_ALIASES = {
     "control center dev database": "sql-dab",
     "control-center dev database": "sql-dab",
@@ -79,6 +85,17 @@ def get_chat_actor(db: Session) -> User:
     if actor is None:
         raise RuntimeError("No active user is available to execute chat-driven jobs.")
     return actor
+
+
+def _message_requests_github_write(
+    message: str,
+    extracted_fields: dict[str, Any] | None,
+    current_draft: dict[str, Any] | None,
+) -> bool:
+    merged = _merge_dicts(current_draft, extracted_fields)
+    if str(merged.get("sql_subtype") or "").strip().lower() == "sql_github_write":
+        return True
+    return bool(GITHUB_WRITE_INTENT_PATTERN.search((message or "").strip()))
 
 
 def _message_requests_sql_execution(
@@ -232,6 +249,8 @@ def maybe_run_sql_job_from_chat(
     extracted_fields: dict[str, Any] | None,
     current_draft: dict[str, Any] | None,
 ) -> ChatJobExecutionResult | None:
+    if _message_requests_github_write(message, extracted_fields, current_draft):
+        return None
     if not _message_requests_sql_execution(message, extracted_fields, current_draft):
         return None
 
