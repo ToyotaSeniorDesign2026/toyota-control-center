@@ -2018,6 +2018,10 @@ export default function UserHome() {
   };
 
   const handleChatFieldsExtracted = (fields: Record<string, any>) => {
+    if (fields.__reset_draft__) {
+      setJobDraft({});
+      return;
+    }
     const normalized = normalizeExtractedJobFields(fields);
     const isRepoConnectionDraft =
       normalized.connection_intent === "connect_repo" ||
