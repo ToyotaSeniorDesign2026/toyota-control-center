@@ -52,3 +52,48 @@ async def run_prompt_native_mcp(
         )
     finally:
         await agent.cleanup()
+
+
+async def github_write_file(
+    *,
+    owner: str,
+    repo: str,
+    path: str,
+    content: str,
+    commit_message: str,
+    branch: str | None = None,
+    github_token: str,
+    environment: str = "dev",
+) -> dict[str, Any]:
+    """Write a file to GitHub directly via the MCP tool, bypassing the LLM."""
+    ensure_control_center_importable()
+    from control_center.mcp.client import LLMClient
+    from control_center.core.registry import RegistryManager
+
+    manager = RegistryManager(environment=environment)
+    server_configs = manager.get_server_configs(["github"])
+    server_config = {
+        **server_configs["github"],
+        "env": {
+            **server_configs["github"].get("env", {}),
+            "GITHUB_PERSONAL_ACCESS_TOKEN": github_token,
+        },
+    }
+
+    arguments: dict[str, Any] = {
+        "owner": owner,
+        "repo": repo,
+        "path": path,
+        "message": commit_message,
+        "content": content,
+    }
+    if branch:
+        arguments["branch"] = branch
+
+    client = LLMClient()
+    try:
+        await client.connect_to_server("github", server_config)
+        result = await client.call_tool("github", "create_or_update_file", arguments)
+        return {"success": True, "result": str(result)}
+    finally:
+        await client.cleanup()

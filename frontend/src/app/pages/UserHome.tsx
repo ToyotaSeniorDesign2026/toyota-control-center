@@ -1939,7 +1939,7 @@ export default function UserHome() {
       normalized.run_type = "scheduled";
     }
 
-    if (isSql) {
+    if (isSql && fields.sql_subtype !== "sql_github_write") {
       const connector = normalizeConnector(fields.connector ?? config.connector);
       const explicitConnectionId = fields.connection_id ?? config.connection_id;
       const parsedConnection = parseSqlConnectionString(config.sql_connection_string);
@@ -2025,11 +2025,17 @@ export default function UserHome() {
       return;
     }
     const normalized = normalizeExtractedJobFields(fields);
+    // sql_github_write drafts carry a `repo` field but are NOT standalone repo connections —
+    // they are part of the SQL-to-GitHub write flow and should stay in the job draft.
+    const isGithubWriteFlow = normalized.sql_subtype === "sql_github_write";
     const isRepoConnectionDraft =
-      normalized.connection_intent === "connect_repo" ||
-      normalized.type === "repo_connection" ||
-      normalized.connector === "github" ||
-      Boolean(normalized.repo);
+      !isGithubWriteFlow &&
+      (
+        normalized.connection_intent === "connect_repo" ||
+        normalized.type === "repo_connection" ||
+        normalized.connector === "github" ||
+        Boolean(normalized.repo)
+      );
 
     if (isRepoConnectionDraft) {
       applyRepoConnectionFields(normalized);

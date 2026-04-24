@@ -1,9 +1,14 @@
 """FastAPI app entrypoint and router wiring for the control-plane API."""
 
 import asyncio
+import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+_logger = logging.getLogger(__name__)
 
 from app.api.routers import audit, auth, chat, integrations, policy, resource_types, resources, runs
 from app.core.config import settings
@@ -18,6 +23,11 @@ def create_app() -> FastAPI:
     setup_logging()
     init_db()
     app = FastAPI(title=settings.app_name, version=settings.app_version)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        _logger.error("Request validation error on %s %s: %s", request.method, request.url.path, exc.errors())
+        return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
     app.add_middleware(
         CORSMiddleware,

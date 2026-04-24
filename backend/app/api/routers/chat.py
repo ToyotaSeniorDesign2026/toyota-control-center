@@ -20,11 +20,12 @@ from app.services.field_extraction_service import get_field_extraction_service
 from app.services.chat_job_service import (
     get_chat_actor,
     maybe_run_sql_job_from_chat,
+    register_github_write_job_from_chat,
     register_sql_job_from_chat,
     run_resource_by_id,
     update_sql_resource_from_chat,
 )
-from app.services.chat_mcp_service import run_prompt_native_mcp
+from app.services.chat_mcp_service import run_prompt_native_mcp, github_write_file
 from app.services.run_service import list_runs
 
 router = APIRouter()
@@ -73,7 +74,10 @@ SQL_CONNECT_REQUEST_PATTERN = re.compile(
 SQL_GITHUB_WRITE_PATTERN = re.compile(
     r"\b(write|save|commit|push|add|store)\b.{0,60}\b(sql|query|script)\b.{0,60}\b(github|repo|repository|file|\.sql)\b"
     r"|\b(github|repo|repository)\b.{0,60}\b(write|save|commit|push|add)\b.{0,60}\b(sql|query|script)\b"
-    r"|\b(sql|query)\b.{0,60}\b(github|repo|repository|\.sql)\b",
+    r"|\b(sql|query)\b.{0,60}\b(github|repo|repository|\.sql)\b"
+    # Code-authoring intent — no GitHub keyword needed; writing a "script" implies version control
+    r"|\b(?:create|write|draft|build|make|generate|author)\b.{0,60}\b(?:sql\s+script|sql\s+code|sql\s+file)\b"
+    r"|\b(?:sql\s+script|sql\s+code|sql\s+file)\b.{0,60}\b(?:create|write|draft|build|make|generate)\b",
     re.IGNORECASE,
 )
 SQL_LOOKUP_ACTION_PATTERN = re.compile(
@@ -110,9 +114,13 @@ _ASKED_PORT_PATTERN = re.compile(r"\bdatabase port\b|\bport number\b", re.IGNORE
 _ASKED_DATABASE_PATTERN = re.compile(r"\bdatabase name\b|\bdb name\b", re.IGNORECASE)
 _ASKED_USERNAME_PATTERN = re.compile(r"\bdatabase username\b|\bdb username\b", re.IGNORECASE)
 _ASKED_PASSWORD_PATTERN = re.compile(r"\bdatabase password\b|\bdb password\b", re.IGNORECASE)
-_ASKED_GW_QUERY_PATTERN = re.compile(r"\bwhat sql query\b|\bsql query should i write\b|\bsql content\b", re.IGNORECASE)
-_ASKED_GW_REPO_PATTERN = re.compile(r"\bwhich (github )?repository\b|\bwhich repo\b|\bowner/repo\b", re.IGNORECASE)
+_ASKED_GW_QUERY_PATTERN = re.compile(r"\bwhat sql query\b|\bsql query should i write\b|\bsql content\b|\bwhat sql script\b|\bwrite to the repository\b", re.IGNORECASE)
+_ASKED_GW_REPO_PATTERN = re.compile(r"\bwhich (github )?repository\b|\bwhich repo\b|\bowner/repo\b|\bwrite this (sql\s+)?(script|query|code) to\b", re.IGNORECASE)
 _ASKED_GW_PATH_PATTERN = re.compile(r"\bfile path\b|\bfile name\b|\bwhich file\b", re.IGNORECASE)
+_ASKED_GW_JOB_NAME_PATTERN = re.compile(r"\bwhat name would you like to give this job\b|\bgive this job\b|\bjob name\b", re.IGNORECASE)
+_ASKED_GW_OWNER_PATTERN = re.compile(r"\bwho is the owner\b|\bowner of this job\b", re.IGNORECASE)
+_ASKED_GW_RUN_TYPE_PATTERN = re.compile(r"\bone-time.*manual.*run\b|\bscheduled job\b|\bmanual.*or.*scheduled\b|\bone-time.*or.*scheduled\b", re.IGNORECASE)
+_ASKED_GW_SCHEDULE_PATTERN = re.compile(r"\bwhat schedule should i use\b|\bschedule.*cron\b|\bevery day at\b", re.IGNORECASE)
 _SIMPLE_VALUE_PATTERN = re.compile(r"^(?:(?:it[''`]?s|the \w+ is|use|is|just)\s+)?([^\s,;]+)\s*$", re.IGNORECASE)
 _PORT_DIGITS_PATTERN = re.compile(r"\b(\d{2,5})\b")
 _ASKED_SQL_QUERY_PATTERN = re.compile(
@@ -626,6 +634,14 @@ def _last_asked_github_write_field(conversation_history: list[dict] | None) -> s
         if not isinstance(msg, dict) or msg.get("role") != "assistant":
             continue
         content = str(msg.get("content") or "")
+        if _ASKED_GW_JOB_NAME_PATTERN.search(content):
+            return "job_name"
+        if _ASKED_GW_OWNER_PATTERN.search(content):
+            return "owner"
+        if _ASKED_GW_RUN_TYPE_PATTERN.search(content):
+            return "run_type"
+        if _ASKED_GW_SCHEDULE_PATTERN.search(content):
+            return "schedule"
         if _ASKED_GW_QUERY_PATTERN.search(content):
             return "query"
         if _ASKED_GW_REPO_PATTERN.search(content):
@@ -636,13 +652,51 @@ def _last_asked_github_write_field(conversation_history: list[dict] | None) -> s
     return None
 
 
-def _build_github_write_mcp_prompt(query: str, repo: str, file_path: str, ref: str | None = None) -> str:
-    branch_part = f" on branch `{ref}`" if ref else ""
-    return (
-        f"Write the following SQL content to the file `{file_path}` in GitHub repository `{repo}`{branch_part}. "
-        "Create or update the file with an appropriate commit message such as 'Add SQL query file'.\n\n"
-        f"SQL content to write:\n```sql\n{query}\n```"
-    )
+_GW_TABLE_NAME_PATTERN = re.compile(
+    r"\b(?:CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?TABLE|DROP\s+TABLE|INSERT\s+INTO"
+    r"|UPDATE|DELETE\s+FROM|ALTER\s+TABLE|TRUNCATE(?:\s+TABLE)?)\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?"
+    r"([a-zA-Z_][a-zA-Z0-9_.]*)",
+    re.IGNORECASE,
+)
+_GW_FROM_TABLE_PATTERN = re.compile(r"\bFROM\s+([a-zA-Z_][a-zA-Z0-9_.]*)", re.IGNORECASE)
+
+
+def _suggest_sql_filename(query: str) -> str:
+    """Return a descriptive filename (no folder prefix) based on the SQL content."""
+    q = query.strip()
+    upper = q.upper()
+    if upper.startswith("CREATE"):
+        op = "create"
+    elif upper.startswith("DROP"):
+        op = "drop"
+    elif upper.startswith("INSERT"):
+        op = "insert"
+    elif upper.startswith("UPDATE"):
+        op = "update"
+    elif upper.startswith("DELETE"):
+        op = "delete"
+    elif upper.startswith("ALTER"):
+        op = "alter"
+    elif upper.startswith(("SELECT", "WITH")):
+        op = "query"
+    else:
+        op = "script"
+
+    tables: list[str] = []
+    for m in _GW_TABLE_NAME_PATTERN.finditer(q):
+        name = m.group(1).lower().split(".")[-1]
+        if name not in tables:
+            tables.append(name)
+    if not tables and op == "query":
+        for m in _GW_FROM_TABLE_PATTERN.finditer(q):
+            name = m.group(1).lower().split(".")[-1]
+            if name not in tables:
+                tables.append(name)
+
+    if tables:
+        return f"{op}_{'_'.join(tables[:2])}.sql"
+    return f"{op}.sql"
+
 
 
 def _openai_classify_abandonment(message: str, draft_type: str, awaiting_confirmation: bool) -> bool:
@@ -681,6 +735,9 @@ def _openai_classify_abandonment(message: str, draft_type: str, awaiting_confirm
 def _is_abandoning_current_flow(message: str, draft: dict) -> bool:
     """Return True when the user wants to abandon an in-progress multi-step flow."""
     if not draft:
+        return False
+    # Repo selection ("Connect the GitHub repo X") is always a valid action in the write flow.
+    if draft.get("sql_subtype") == "sql_github_write":
         return False
     draft_type = str(draft.get("job_type") or draft.get("type") or "").strip().lower()
     if not draft_type:
@@ -1063,7 +1120,7 @@ class ChatRequest(BaseModel):
     current_draft_data: Optional[dict[str, Any]] = None  # Current job draft state
     available_resources: Optional[list[dict[str, Any]]] = None
     github_personal_access_token: Optional[str] = None
-    session_env: Optional[dict[str, str]] = None
+    session_env: Optional[dict[str, Any]] = None
 
 
 class SecretRequest(BaseModel):
@@ -1181,6 +1238,30 @@ def _answer_run_history_question(db, message: str) -> str | None:
             f"{index}. `{resource_name}` — status `{run['status']}` — environment `{run['target_environment']}` — updated `{run['updated_at']}`"
         )
     return "\n".join(lines)
+
+
+def _connected_github_repos(available_resources: list[dict[str, Any]] | None) -> list[RepositoryOption]:
+    """Return RepositoryOption objects for GitHub repos the user has already connected."""
+    if not available_resources:
+        return []
+    options: list[RepositoryOption] = []
+    seen: set[str] = set()
+    for resource in available_resources:
+        connector = str(resource.get("connector") or "").strip().lower()
+        rtype = str(resource.get("type") or "").strip().lower()
+        if connector != "github" and rtype != "repo_connection":
+            continue
+        config = resource.get("config") or {}
+        repo = str(config.get("repo") or "").strip()
+        if not repo or repo in seen:
+            continue
+        seen.add(repo)
+        parts = repo.split("/", 1)
+        owner = parts[0] if len(parts) == 2 else ""
+        name = parts[1] if len(parts) == 2 else repo
+        default_branch = str(config.get("ref") or config.get("default_branch") or "").strip() or None
+        options.append(RepositoryOption(full_name=repo, owner=owner, name=name, default_branch=default_branch))
+    return options
 
 
 async def _list_github_repository_options(personal_access_token: str) -> list[RepositoryOption]:
@@ -1612,6 +1693,7 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
             missing_sql_session_fields
             and not _form_already_shown
             and (_looks_like_live_sql_lookup(request) or is_sql_job_flow)
+            and not _is_sql_github_write_request(request)
         ):
             ef = {
                 **(request.current_draft_data or {}),
@@ -1634,14 +1716,141 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
 
         # --- SQL GitHub write flow: write a SQL query file into a GitHub repository ---
         if _is_sql_github_write_request(request):
+            draft = request.current_draft_data or {}
+            last_asked_gw = _last_asked_github_write_field(history_dicts)
+            new_gw: dict[str, Any] = {}
+            if last_asked_gw and last_asked_gw != "query":
+                val = request.message.strip()
+                if val:
+                    new_gw[last_asked_gw] = val
+
+            # If the user clicked a RepositoryOption (sends "Connect the GitHub repo X branch Y"),
+            # extract the repo slug and fold it into the draft rather than triggering a standalone flow.
+            if deterministic_repo_fields.get("repo"):
+                new_gw["repo"] = deterministic_repo_fields["repo"]
+                if deterministic_repo_fields.get("ref"):
+                    new_gw["ref"] = deterministic_repo_fields["ref"]
+
+            merged_gw = {**draft, **new_gw}
+            gw_config = merged_gw.get("config") if isinstance(merged_gw.get("config"), dict) else {}
+            gw_query = _non_empty_str(merged_gw.get("query")) or _non_empty_str(gw_config.get("query"))
+            gw_repo = _non_empty_str(merged_gw.get("repo")) or _non_empty_str(gw_config.get("repo"))
+            gw_ref = _non_empty_str(merged_gw.get("ref")) or _non_empty_str(merged_gw.get("branch"))
+            base_ef: dict[str, Any] = {"sql_subtype": "sql_github_write", **new_gw}
+
+            # Extract/generate SQL from the current message.
+            # Run when: (a) no query yet and the user hasn't been asked yet, OR
+            #           (b) the bot just asked for the query (user may have replied in natural language).
+            if not gw_query or last_asked_gw == "query":
+                ai_q = _openai_extract_sql_fields(request.message, merged_gw, history_dicts)
+                if ai_q.get("query"):
+                    gw_query = ai_q["query"]
+                    new_gw["query"] = gw_query
+                    base_ef["query"] = gw_query
+
+            if not gw_query:
+                return ChatResponse(
+                    response="What SQL script would you like to write to the repository?",
+                    job_creation_intent=True,
+                    extracted_fields=base_ef,
+                )
+
+            # Derive a descriptive filename once we know the query; persist it in the draft
+            explicit_file = _non_empty_str(merged_gw.get("file_path")) or _non_empty_str(merged_gw.get("path"))
+            if explicit_file:
+                gw_file = explicit_file
+            else:
+                gw_file = f"queries/{_suggest_sql_filename(gw_query)}"
+                base_ef["file_path"] = gw_file
+
+            # No repo chosen yet — offer connected repos first, then fall back to PAT
+            if not gw_repo:
+                file_note = f"I'll save it as `{gw_file}`. "
+                connected_repos = _connected_github_repos(request.available_resources)
+                if connected_repos:
+                    return ChatResponse(
+                        response=(
+                            f"{file_note}Which repository should I write this to? "
+                            "You have these repositories already connected — pick one below, "
+                            "or provide a different repo in `owner/repo-name` format."
+                        ),
+                        job_creation_intent=True,
+                        extracted_fields={**base_ef, "query": gw_query},
+                        repository_options=connected_repos,
+                    )
+                if not github_token:
+                    return ChatResponse(
+                        response=(
+                            f"{file_note}To write the SQL to a GitHub repository, I need a personal "
+                            "access token with repository write access."
+                        ),
+                        job_creation_intent=True,
+                        extracted_fields={**base_ef, "query": gw_query},
+                        secret_request=SecretRequest(
+                            kind="github_personal_access_token",
+                            prompt="Enter a GitHub personal access token with repo write access.",
+                            submit_label="Use token",
+                        ),
+                    )
+                try:
+                    repo_options = await _list_github_repository_options(github_token)
+                except httpx.HTTPError as exc:
+                    logger.warning("Unable to list GitHub repositories: %s", exc)
+                    return ChatResponse(
+                        response=f"{file_note}Which GitHub repository should I write it to? (format: `owner/repo-name`)",
+                        job_creation_intent=True,
+                        extracted_fields={**base_ef, "query": gw_query},
+                    )
+                return ChatResponse(
+                    response=(
+                        f"{file_note}Which repository should I write this to? "
+                        "Here are your available repositories — pick one or provide a different repo."
+                    ),
+                    job_creation_intent=True,
+                    extracted_fields={**base_ef, "query": gw_query},
+                    repository_options=repo_options,
+                )
+
+            # Both query and repo are known — collect universal job fields before writing
+            gw_job_name = _non_empty_str(merged_gw.get("job_name") or merged_gw.get("name"))
+            gw_owner_field = _non_empty_str(merged_gw.get("owner"))
+            gw_run_type = str(merged_gw.get("run_type") or "").strip().lower()
+            gw_schedule = _non_empty_str(merged_gw.get("schedule"))
+
+            if not gw_job_name:
+                return ChatResponse(
+                    response="What name would you like to give this job?",
+                    job_creation_intent=True,
+                    extracted_fields={**base_ef, "query": gw_query, "repo": gw_repo, "_pending_field": "job_name"},
+                )
+            if not gw_owner_field:
+                return ChatResponse(
+                    response="Who is the owner of this job?",
+                    job_creation_intent=True,
+                    extracted_fields={**base_ef, "query": gw_query, "repo": gw_repo, "_pending_field": "owner"},
+                )
+            if not gw_run_type:
+                return ChatResponse(
+                    response="Should this be a **one-time** (manual) run or a **scheduled** job?",
+                    job_creation_intent=True,
+                    extracted_fields={**base_ef, "query": gw_query, "repo": gw_repo, "_pending_field": "run_type"},
+                )
+            if gw_run_type == "scheduled" and not gw_schedule:
+                return ChatResponse(
+                    response="What schedule should I use? (e.g., `every day at 9am`, `30 8 * * 1-5`)",
+                    job_creation_intent=True,
+                    extracted_fields={**base_ef, "query": gw_query, "repo": gw_repo, "_pending_field": "schedule"},
+                )
+
+            # All fields collected — request PAT if not yet provided, then write + register
             if not github_token:
                 return ChatResponse(
                     response=(
-                        "I can write the SQL query to a GitHub repository. "
-                        "First I need a GitHub personal access token with repository write access."
+                        f"Almost done! I just need a GitHub personal access token with "
+                        "repository write access to commit the file."
                     ),
                     job_creation_intent=True,
-                    extracted_fields={"sql_subtype": "sql_github_write"},
+                    extracted_fields={**base_ef, "query": gw_query, "repo": gw_repo},
                     secret_request=SecretRequest(
                         kind="github_personal_access_token",
                         prompt="Enter a GitHub personal access token with repo write access.",
@@ -1649,52 +1858,17 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                     ),
                 )
 
-            draft = request.current_draft_data or {}
-            last_asked_gw = _last_asked_github_write_field(history_dicts)
-            new_gw: dict[str, Any] = {}
-            if last_asked_gw:
-                val = request.message.strip()
-                if val:
-                    new_gw[last_asked_gw] = val
-
-            merged_gw = {**draft, **new_gw}
-            gw_config = merged_gw.get("config") if isinstance(merged_gw.get("config"), dict) else {}
-            gw_query = _non_empty_str(merged_gw.get("query")) or _non_empty_str(gw_config.get("query"))
-            gw_repo = _non_empty_str(merged_gw.get("repo")) or _non_empty_str(gw_config.get("repo"))
-            gw_file = _non_empty_str(merged_gw.get("file_path")) or _non_empty_str(merged_gw.get("path")) or "queries/query.sql"
-            gw_ref = _non_empty_str(merged_gw.get("ref")) or _non_empty_str(merged_gw.get("branch"))
-            base_ef: dict[str, Any] = {"sql_subtype": "sql_github_write", **new_gw}
-
-            if not gw_query:
-                return ChatResponse(
-                    response="What SQL query should I write to the repository?",
-                    job_creation_intent=True,
-                    extracted_fields=base_ef,
-                )
-            if not gw_repo:
-                return ChatResponse(
-                    response="Which GitHub repository should I write it to? (format: `owner/repo-name`)",
-                    job_creation_intent=True,
-                    extracted_fields={**base_ef, "query": gw_query},
-                )
-
-            write_prompt = _build_github_write_mcp_prompt(gw_query, gw_repo, gw_file, gw_ref)
-            server_env_overrides = {"github": {"GITHUB_PERSONAL_ACCESS_TOKEN": github_token}}
+            gw_owner, _, gw_repo_name = gw_repo.partition("/")
+            commit_msg = f"Add SQL script {gw_file}"
             try:
-                mcp_result = await run_prompt_native_mcp(
-                    message=write_prompt,
-                    environment="dev",
-                    model=request.model,
-                    server_names=["github"],
-                    server_env_overrides=server_env_overrides,
-                )
-                return ChatResponse(
-                    response=mcp_result.response,
-                    job_creation_intent=False,
-                    extracted_fields={"sql_subtype": "sql_github_write"},
-                    mcp_tool_executed=True,
-                    mcp_servers=mcp_result.server_names,
-                    mcp_tool_executions=mcp_result.tool_executions,
+                await github_write_file(
+                    owner=gw_owner,
+                    repo=gw_repo_name,
+                    path=gw_file,
+                    content=gw_query,
+                    commit_message=commit_msg,
+                    branch=gw_ref or None,
+                    github_token=github_token,
                 )
             except Exception as exc:
                 logger.exception("GitHub write via MCP failed")
@@ -1702,6 +1876,30 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                     response=f"I ran into an issue writing to GitHub: {exc}. Please verify the token has repository write access.",
                     job_creation_intent=False,
                 )
+
+            try:
+                reg = register_github_write_job_from_chat(
+                    db,
+                    extracted_fields={**base_ef, "query": gw_query, "repo": gw_repo},
+                    current_draft=merged_gw,
+                )
+            except Exception:
+                logger.exception("GitHub write job registration failed")
+                return ChatResponse(
+                    response=f"I've written `{gw_file}` to `{gw_repo}`, but ran into an error registering the job. Please try again.",
+                    job_creation_intent=False,
+                    extracted_fields={"sql_subtype": "sql_github_write"},
+                    mcp_tool_executed=True,
+                    mcp_servers=["github"],
+                )
+            return ChatResponse(
+                response=f"Done! I've written `{gw_file}` to `{gw_repo}` and registered the job as **{reg.resource_name}**.",
+                job_creation_intent=False,
+                extracted_fields={"sql_subtype": "sql_github_write"},
+                mcp_tool_executed=True,
+                mcp_servers=["github"],
+                resource_id=reg.resource_id,
+            )
 
         # --- SQL flow: structured state machine (universal fields → SQL fields → confirm → run) ---
         if is_sql_job_flow:
@@ -2089,43 +2287,54 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                 extracted_fields={**merged, "awaiting_confirmation": True, "_pending_field": "confirm"},
             )
 
-        if deterministic_repo_fields.get("connection_intent") == "connect_repo" and not github_token:
-            return ChatResponse(
-                response=(
-                    "I can help connect a GitHub repository, but I need a GitHub personal access token "
-                    "for this live MCP session first."
-                ),
-                job_creation_intent=True,
-                extracted_fields=None,
-                secret_request=SecretRequest(
-                    kind="github_personal_access_token",
-                    prompt="Enter a GitHub personal access token to browse and connect repositories for this session.",
-                    submit_label="Use token",
-                ),
-            )
-
-        if (
-            deterministic_repo_fields.get("connection_intent") == "connect_repo"
-            and not deterministic_repo_fields.get("repo")
-            and github_token
-        ):
+        # Standalone "connect repo" intent → redirect into the SQL GitHub write flow.
+        # Repository connections are not a job type on their own; they are part of writing SQL to a repo.
+        if deterministic_repo_fields.get("connection_intent") == "connect_repo":
+            gw_ef: dict[str, Any] = {"sql_subtype": "sql_github_write"}
+            if deterministic_repo_fields.get("repo"):
+                gw_ef["repo"] = deterministic_repo_fields["repo"]
+            if deterministic_repo_fields.get("ref"):
+                gw_ef["ref"] = deterministic_repo_fields["ref"]
+            connected_repos = _connected_github_repos(request.available_resources)
+            if connected_repos and not gw_ef.get("repo"):
+                return ChatResponse(
+                    response=(
+                        "To write SQL to a repository, pick one you’ve already connected below "
+                        "or provide a different repo in `owner/repo-name` format. "
+                        "What SQL query would you like to save?"
+                    ),
+                    job_creation_intent=True,
+                    extracted_fields=gw_ef,
+                    repository_options=connected_repos,
+                )
+            if not github_token:
+                return ChatResponse(
+                    response=(
+                        "I can write SQL code to a GitHub repository. "
+                        "First I need a personal access token with repository write access."
+                    ),
+                    job_creation_intent=True,
+                    extracted_fields=gw_ef,
+                    secret_request=SecretRequest(
+                        kind="github_personal_access_token",
+                        prompt="Enter a GitHub personal access token with repo write access.",
+                        submit_label="Use token",
+                    ),
+                )
             try:
-                repository_options = await _list_github_repository_options(github_token)
+                repo_opts = await _list_github_repository_options(github_token)
             except httpx.HTTPError as exc:
-                logger.warning("Unable to list GitHub repositories for chat repo connection: %s", exc)
-                raise HTTPException(
-                    status_code=502,
-                    detail="Unable to load repositories from GitHub with the provided token.",
-                ) from exc
-
+                logger.warning("Unable to list GitHub repositories: %s", exc)
+                repo_opts = []
             return ChatResponse(
                 response=(
-                    "I found repositories available through that token. Choose one below and I’ll connect it "
-                    "as a reusable GitHub repo resource."
+                    "I can write SQL code to a GitHub repository. "
+                    "Pick one below or provide a repo in `owner/repo-name` format. "
+                    "What SQL query would you like to save?"
                 ),
                 job_creation_intent=True,
-                extracted_fields=None,
-                repository_options=repository_options,
+                extracted_fields=gw_ef,
+                repository_options=repo_opts or None,
             )
 
         preflight_sql_job_result = None

@@ -427,6 +427,58 @@ def register_sql_job_from_chat(
     )
 
 
+def register_github_write_job_from_chat(
+    db: Session,
+    *,
+    extracted_fields: dict[str, Any] | None,
+    current_draft: dict[str, Any] | None,
+) -> ChatJobRegistrationResult:
+    actor = get_chat_actor(db)
+    merged = _merge_dicts(current_draft, extracted_fields)
+
+    resource_name = (
+        _non_empty_string(merged.get("name"))
+        or _non_empty_string(merged.get("job_name"))
+    )
+    if not resource_name:
+        return ChatJobRegistrationResult(message="I still need a job name to register this.")
+
+    environment = (
+        _non_empty_string(merged.get("target_environment"))
+        or _non_empty_string(merged.get("environment"))
+        or "dev"
+    )
+    data_sensitivity = _non_empty_string(merged.get("data_sensitivity")) or "low"
+    tags = _coerce_string_list(merged.get("tags"))
+
+    resource_config: dict[str, Any] = {}
+    for field in ("query", "repo", "ref", "file_path", "path", "schedule"):
+        val = _non_empty_string(merged.get(field))
+        if val:
+            resource_config[field] = val
+
+    resource_out = create_resource(
+        db,
+        actor,
+        ResourceCreate(
+            name=resource_name,
+            kind="runtime",
+            type="sql",
+            connector="github",
+            environment=environment,
+            config=resource_config,
+            data_sensitivity=data_sensitivity,
+            tags=tags,
+        ),
+    )
+    return ChatJobRegistrationResult(
+        message=f"Registered SQL write job `{resource_name}`.",
+        resource_id=resource_out["id"],
+        resource_name=resource_name,
+        resource_created=True,
+    )
+
+
 def maybe_run_sql_job_from_chat(
     db: Session,
     *,
