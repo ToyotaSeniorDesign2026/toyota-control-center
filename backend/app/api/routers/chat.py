@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import base64
+from heapq import nlargest
 from pathlib import Path
 from typing import Optional, Any
 from fastapi import APIRouter, HTTPException, Depends
@@ -13,14 +14,18 @@ import httpx
 from pydantic import BaseModel
 
 from app.api.deps import get_db
+from app.models.resource import Resource
 from app.services.chat_service import get_chat_service
 from app.services.field_extraction_service import get_field_extraction_service
-from app.services.chat_job_service import maybe_run_sql_job_from_chat, run_resource_by_id
-from app.services.chat_mcp_service import (
-    needs_github_personal_access_token,
-    run_prompt_native_mcp,
-    should_run_prompt_native_mcp,
+from app.services.chat_job_service import (
+    get_chat_actor,
+    maybe_run_sql_job_from_chat,
+    register_sql_job_from_chat,
+    run_resource_by_id,
+    update_sql_resource_from_chat,
 )
+from app.services.chat_mcp_service import run_prompt_native_mcp
+from app.services.run_service import list_runs
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -42,7 +47,18 @@ _TASK_SWITCH_PATTERN = re.compile(
     re.IGNORECASE,
 )
 SQL_RUN_REQUEST_PATTERN = re.compile(r"\b(run|execute|launch|trigger|start)\b", re.IGNORECASE)
+_UPDATE_RESOURCE_PATTERN = re.compile(
+    r"\b(update|change|modify|edit|rename|configure|set)\b.{0,80}\b(schedule|query|name|owner|connection|run.?type|environment)\b"
+    r"|\b(schedule|query|run.?type)\b.{0,60}\b(to|as|should|=|every|daily|weekly|hourly|monthly|manually)\b",
+    re.IGNORECASE,
+)
 RUN_JOB_MARKER_PATTERN = re.compile(r'\[RUN_JOB:([a-zA-Z0-9\-_]+)\]')
+# Extracts a potential resource name from update messages like "change the query for create-tables-3"
+_NAMED_RESOURCE_REF_PATTERN = re.compile(
+    r'\b(?:for|of|named?|called?|on|resource|job)\s+([a-zA-Z0-9][a-zA-Z0-9_.-]{1,})\b'
+    r'|([a-z][a-z0-9]{1,}(?:-[a-z0-9]+){1,})\b',  # kebab-case identifier
+    re.IGNORECASE,
+)
 SQL_RUN_CONTEXT_PATTERN = re.compile(r"\b(job|sql|query|resource)\b", re.IGNORECASE)
 AFFIRMATIVE_RUN_RESPONSE_PATTERN = re.compile(r"^(yes|yep|yeah|sure|please do|go ahead|run it|run now|do it)[\s.!?]*$", re.IGNORECASE)
 REPO_CONNECTION_REQUEST_PATTERN = re.compile(r"\b(connect|link|attach|add)\b.*\b(github|repo|repository)\b|\b(github|repo|repository)\b.*\b(connect|link|attach|add)\b", re.IGNORECASE)
@@ -60,7 +76,34 @@ SQL_GITHUB_WRITE_PATTERN = re.compile(
     r"|\b(sql|query)\b.{0,60}\b(github|repo|repository|\.sql)\b",
     re.IGNORECASE,
 )
+SQL_LOOKUP_ACTION_PATTERN = re.compile(
+    r"\b(get|fetch|list|show|read|query|search|find|look up|lookup|inspect|summarize|summarise|run|execute|select|describe|explain|count)\b",
+    re.IGNORECASE,
+)
+SQL_LOOKUP_CONTEXT_PATTERN = re.compile(
+    r"\b(database|db|sql|postgres|postgresql|mysql|snowflake|redshift|bigquery|table|tables|row|rows|record|records)\b",
+    re.IGNORECASE,
+)
 ENV_VAR_NAME_PATTERN = re.compile(r"\b[A-Z][A-Z0-9_]{2,}\b")
+NEW_DATABASE_REQUEST_PATTERN = re.compile(
+    r"\b(connect|use|switch|try)\b.{0,40}\b(different|new|another|other)\b.{0,40}\b(database|db|postgres|postgresql|mysql|snowflake|redshift|bigquery)\b"
+    r"|\b(different|new|another|other)\b.{0,40}\b(database|db|connection)\b"
+    r"|\bconnect\s+to\s+(?:a\s+)?(?:different|new|another)\s+(?:database|db)\b",
+    re.IGNORECASE,
+)
+# Matches a bare job-type selection like "SQL", "a SQL job", "sql job"
+_SQL_TYPE_SELECTION_PATTERN = re.compile(
+    r"^(sql|a\s+sql(\s+job)?|sql\s+job|sql\s+query|use\s+sql)\s*$",
+    re.IGNORECASE,
+)
+# Detects that the previous assistant turn was asking the user to pick a job type
+_ASKED_JOB_TYPE_PATTERN = re.compile(
+    r"\b(airflow|excel|powerpoint)\b"
+    r"|\btype of job\b"
+    r"|\brepository\s+connection\b"
+    r"|\bsql\s+job\b",
+    re.IGNORECASE,
+)
 # Patterns for detecting which connection field was last asked in conversation
 _ASKED_HOST_PATTERN = re.compile(r"\bdatabase host\b|\bdb host\b|\bhost address\b|\bserver host\b", re.IGNORECASE)
 _ASKED_PORT_PATTERN = re.compile(r"\bdatabase port\b|\bport number\b", re.IGNORECASE)
@@ -77,19 +120,40 @@ _ASKED_SQL_QUERY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _SQL_STATEMENT_PATTERN = re.compile(
-    r"^\s*(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|WITH|SHOW|DESCRIBE|EXPLAIN)\b",
+    r"^\s*(?:"
+    r"SELECT\s+"
+    r"|INSERT\s+INTO\s+"
+    r"|UPDATE\s+\w[\w.]*\s+SET\s+"
+    r"|DELETE\s+FROM\s+"
+    r"|CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?(?:TABLE|VIEW|INDEX|SCHEMA|DATABASE|SEQUENCE)\s+"
+    r"|DROP\s+(?:TABLE|VIEW|INDEX|SCHEMA|DATABASE|SEQUENCE)\s+"
+    r"|ALTER\s+(?:TABLE|VIEW|INDEX|SCHEMA|DATABASE)\s+"
+    r"|TRUNCATE\s+(?:TABLE\s+)?\w+"
+    r"|WITH\s+\w+\s+AS\s*\("
+    r"|SHOW\s+"
+    r"|DESCRIBE\s+"
+    r"|EXPLAIN\s+"
+    r")",
     re.IGNORECASE,
 )
 _NL_TABLE_EXTRACT_PATTERN = re.compile(
     r"\b(?:get|fetch|show|list|select|retrieve|find|display)\b\s+(?:me\s+)?(?:all\s+)?(?:the\s+)?(\w+?)(?:\s+(?:from|in|records?|data|table|entries?|rows?)|\s*$)",
     re.IGNORECASE,
 )
+_NL_CREATE_TABLE_EXTRACT_PATTERN = re.compile(
+    r"\bcreate\b.{0,40}\b(?:table)\b.{0,20}\b(?:called|named)\s+[`\"']?([A-Za-z_][A-Za-z0-9_]*)[`\"']?",
+    re.IGNORECASE,
+)
 _SQL_FLOW_ASKED_PATTERNS: dict[str, re.Pattern] = {
     "job_name": re.compile(r"\bjob.*name\b|\bname.*(?:this )?job\b|\bwhat name\b|\bgive this job\b", re.IGNORECASE),
-    "owner": re.compile(r"\bwho is the owner\b|\bowner of this job\b|\bjob.*owner\b", re.IGNORECASE),
+    "owner": re.compile(r"\bwho (?:is|will be|should be) the owner\b|\bowner of this job\b|\bjob.*owner\b", re.IGNORECASE),
     "run_type": re.compile(r"\bone-time.*run\b|\bscheduled job\b|\brun type\b|\bmanual.*or.*scheduled\b|\bone-time.*or.*scheduled\b", re.IGNORECASE),
     "schedule": re.compile(r"\bwhat schedule\b|\bschedule should i use\b|\bschedule.*use\b", re.IGNORECASE),
-    "query": re.compile(r"\bsql query.*run\b|\bquery.*run\b|\bwhat.*query\b|\bplain english\b|\bdescribe it\b|\bquery.*like to run\b", re.IGNORECASE),
+    "query": re.compile(
+        r"\bsql query.*run\b|\bsql query.*execute\b|\bprovide.*sql query\b|\bquery.*run\b|"
+        r"\bquery.*execute\b|\bwhat.*query\b|\bplain english\b|\bdescribe it\b|\bquery.*like to run\b",
+        re.IGNORECASE,
+    ),
     "database": re.compile(r"\bdatabase name\b|\bdb name\b|\bwhat is the database name\b", re.IGNORECASE),
     "connection_id": re.compile(r"\bconnection id\b|\bconnection_id\b", re.IGNORECASE),
     "username": re.compile(r"\bdatabase username\b|\bdb username\b|\bwhat is the.*username\b", re.IGNORECASE),
@@ -100,6 +164,23 @@ _SQL_FLOW_ASKED_PATTERNS: dict[str, re.Pattern] = {
 }
 _AFFIRMATIVE_RESPONSE_PATTERN = re.compile(
     r"^(yes|yep|yeah|sure|please|go ahead|do it|run it|create it|ok|okay|confirm|y|sounds good|looks good)\b",
+    re.IGNORECASE,
+)
+SQL_CREATE_REQUEST_PATTERN = re.compile(
+    r"\b(create|save|register|finali[sz]e|set up)\b.{0,40}\b(job|resource)\b"
+    r"|\bcreate the job\b|\bsave this job\b|\bfinali[sz]e (?:the )?job\b",
+    re.IGNORECASE,
+)
+LAST_RUN_QUESTION_PATTERN = re.compile(
+    r"\b(last|latest|most recent)\b.{0,40}\b(job|run)\b"
+    r"|\bwhat was the last job i ran\b"
+    r"|\bwhat was my last run\b",
+    re.IGNORECASE,
+)
+RECENT_RUNS_QUESTION_PATTERN = re.compile(
+    r"\b(recent|latest|last)\b.{0,40}\b(jobs|runs)\b"
+    r"|\bwhat jobs have i run\b"
+    r"|\bshow my recent runs\b",
     re.IGNORECASE,
 )
 REPO_ENV_DISCOVERY_FILES = [
@@ -117,7 +198,7 @@ SQL_SESSION_ENV_FIELDS = [
     {
         "key": "SQL_DB_HOST",
         "label": "Database host",
-        "placeholder": "localhost",
+        "placeholder": "e.g. db.example.com",
         "secret": False,
         "required": True,
         "group": "sql_connection_string",
@@ -125,7 +206,7 @@ SQL_SESSION_ENV_FIELDS = [
     {
         "key": "SQL_DB_PORT",
         "label": "Database port",
-        "placeholder": "5432",
+        "placeholder": "e.g. 5432",
         "secret": False,
         "required": True,
         "group": "sql_connection_string",
@@ -133,7 +214,7 @@ SQL_SESSION_ENV_FIELDS = [
     {
         "key": "SQL_DB_DATABASE",
         "label": "Database name",
-        "placeholder": "control_center",
+        "placeholder": "e.g. my_database",
         "secret": False,
         "required": True,
         "group": "sql_connection_string",
@@ -141,7 +222,7 @@ SQL_SESSION_ENV_FIELDS = [
     {
         "key": "SQL_DB_USERNAME",
         "label": "Database username",
-        "placeholder": "postgres",
+        "placeholder": "e.g. db_user",
         "secret": False,
         "required": True,
         "group": "sql_connection_string",
@@ -149,15 +230,15 @@ SQL_SESSION_ENV_FIELDS = [
     {
         "key": "SQL_DB_PASSWORD",
         "label": "Database password",
-        "placeholder": "Password",
+        "placeholder": "Enter your database password",
         "secret": True,
         "required": True,
         "group": "sql_connection_string",
     },
     {
         "key": "SQL_CONNECTION_ID",
-        "label": "Connection ID",
-        "placeholder": "postgres",
+        "label": "Connection ID (optional)",
+        "placeholder": "e.g. my-connection (leave blank to skip)",
         "secret": False,
         "required": False,
     },
@@ -267,6 +348,10 @@ def _coerce_to_sql(message: str) -> str:
     stripped = message.strip()
     if _SQL_STATEMENT_PATTERN.match(stripped):
         return stripped
+    create_match = _NL_CREATE_TABLE_EXTRACT_PATTERN.search(stripped)
+    if create_match:
+        table = create_match.group(1)
+        return f"CREATE TABLE {table} (id SERIAL PRIMARY KEY);"
     _NL_STOPWORDS = {"all", "me", "data", "records", "result", "results", "rows", "everything",
                      "from", "database", "db", "the", "some", "those", "these", "any"}
     m = _NL_TABLE_EXTRACT_PATTERN.search(stripped)
@@ -300,9 +385,11 @@ def _openai_extract_sql_fields(message: str, draft: dict, history: list[dict] | 
             "query (valid SQL), database, connection_id, username, password, host, port.\n"
             "Rules:\n"
             "- ONLY extract a field if the user's message directly provides or clearly describes its value.\n"
-            "- For 'query': only set this if the user states a specific SQL query or describes a specific "
-            "table/operation (e.g. 'SELECT * FROM orders' or 'get all orders'). "
-            "NEVER invent or assume a query from vague phrases like 'run a SQL query'.\n"
+            "- For 'query': if the user provides actual SQL, return it exactly. If they describe an "
+            "operation in natural language (e.g. 'get all orders', 'create a table called customers', "
+            "'show me all users', 'delete old records from logs'), GENERATE the correct SQL for it "
+            "(e.g. 'SELECT * FROM orders;', 'CREATE TABLE customers (id SERIAL PRIMARY KEY, name VARCHAR(100));'). "
+            "NEVER invent a query from vague intents with no specific target (e.g. 'run a SQL query').\n"
             "- For 'run_type': output exactly 'manual' or 'scheduled'.\n"
             "- If unsure, omit the field entirely. Returning an empty object {} is perfectly valid.\n"
             "- Return a JSON object with only the found fields.\n"
@@ -395,34 +482,13 @@ def _extract_sql_field_value(field: str, message: str) -> str | None:
 
 def _next_missing_sql_field(draft: dict, session_env: dict) -> str | None:
     """Return the next field to collect in the SQL flow, or None when all are present."""
-    config = draft.get("config") if isinstance(draft.get("config"), dict) else {}
-    # Phase 1 – universal
-    if not _non_empty_str(draft.get("job_name") or draft.get("name")):
-        return "job_name"
-    if not _non_empty_str(draft.get("owner")):
-        return "owner"
-    run_type = str(draft.get("run_type") or "").strip().lower()
-    if not run_type:
-        return "run_type"
-    if run_type == "scheduled" and not _non_empty_str(draft.get("schedule") or config.get("schedule")):
+    for field in _sql_ordered_required_fields():
+        if not _sql_field_has_value(field, draft, session_env):
+            return field
+    if str(draft.get("run_type") or "").strip().lower() == "scheduled" and not _sql_field_has_value("schedule", draft, session_env):
         return "schedule"
-    # Phase 2 – SQL-specific
-    if not _non_empty_str(draft.get("query") or config.get("query")):
-        return "query"
-    if not _non_empty_str(draft.get("database") or config.get("database") or session_env.get("SQL_DB_DATABASE")):
-        return "database"
-    if not draft.get("_connection_id_asked") and not _non_empty_str(
-        draft.get("connection_id") or config.get("connection_id") or session_env.get("SQL_CONNECTION_ID")
-    ):
+    if not draft.get("_connection_id_asked") and not _sql_field_has_value("connection_id", draft, session_env):
         return "connection_id"
-    if not _non_empty_str(draft.get("username") or config.get("username") or session_env.get("SQL_DB_USERNAME")):
-        return "username"
-    if not _non_empty_str(draft.get("password") or config.get("password") or session_env.get("SQL_DB_PASSWORD")):
-        return "password"
-    if not _non_empty_str(draft.get("host") or config.get("host") or session_env.get("SQL_DB_HOST")):
-        return "host"
-    if not _non_empty_str(draft.get("port") or config.get("port") or session_env.get("SQL_DB_PORT")):
-        return "port"
     return None
 
 
@@ -462,6 +528,81 @@ def _build_sql_job_summary(draft: dict, session_env: dict) -> str:
     else:
         lines.append("Shall I create and run this job now? (yes / no)")
     return "\n".join(lines)
+
+
+def _sql_config_with_session_env(merged: dict[str, Any], session_env: dict[str, str]) -> dict[str, Any]:
+    """Build SQL config from draft fields plus session-level connection details."""
+    cfg: dict[str, Any] = {**(merged.get("config") or {})}
+    cfg.pop("target_environment", None)
+    cfg.pop("environment", None)
+    for fld, env_key in (
+        ("host", "SQL_DB_HOST"),
+        ("port", "SQL_DB_PORT"),
+        ("database", "SQL_DB_DATABASE"),
+        ("username", "SQL_DB_USERNAME"),
+        ("password", "SQL_DB_PASSWORD"),
+    ):
+        if not cfg.get(fld) and session_env.get(env_key):
+            cfg[fld] = session_env[env_key]
+    for fld in ("query", "database", "username", "password", "host", "port", "connection_id"):
+        if merged.get(fld) and not cfg.get(fld):
+            cfg[fld] = merged[fld]
+    if merged.get("schedule"):
+        cfg["schedule"] = merged["schedule"]
+    return cfg
+
+
+def _resolved_job_environment(fields: dict[str, Any]) -> str:
+    config = fields.get("config") if isinstance(fields.get("config"), dict) else {}
+    return (
+        _non_empty_str(fields.get("target_environment"))
+        or _non_empty_str(fields.get("environment"))
+        or _non_empty_str(config.get("target_environment"))
+        or _non_empty_str(config.get("environment"))
+        or "dev"
+    )
+
+
+def _clear_sql_transient_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    # Explicit false (not removed) so the frontend merge overwrites previous truthy values.
+    base = {k: v for k, v in fields.items() if k not in {"_pending_field", "awaiting_confirmation"}}
+    return {**base, "_pending_field": False, "awaiting_confirmation": False}
+
+
+def _sql_connection_check_key(draft: dict, session_env: dict[str, str]) -> str | None:
+    config = draft.get("config") if isinstance(draft.get("config"), dict) else {}
+    host = _non_empty_str(draft.get("host") or config.get("host") or session_env.get("SQL_DB_HOST"))
+    port = _non_empty_str(draft.get("port") or config.get("port") or session_env.get("SQL_DB_PORT"))
+    database = _non_empty_str(draft.get("database") or config.get("database") or session_env.get("SQL_DB_DATABASE")) or ""
+    username = _non_empty_str(draft.get("username") or config.get("username") or session_env.get("SQL_DB_USERNAME")) or ""
+    if not host or not port:
+        return None
+    return f"{host}:{port}/{database}@{username}"
+
+
+async def _sql_connection_status_message(
+    draft: dict,
+    session_env: dict[str, str],
+) -> tuple[str | None, dict[str, Any]]:
+    check_key = _sql_connection_check_key(draft, session_env)
+    if not check_key or draft.get("_connection_check_key") == check_key:
+        return None, {}
+
+    host, rest = check_key.split(":", 1)
+    port = rest.split("/", 1)[0]
+    reachable = await _tcp_ping(host, port)
+    status = "reachable" if reachable else "unreachable"
+    update = {
+        "_connection_check_key": check_key,
+        "_connection_check_status": status,
+    }
+    if reachable:
+        return f"I successfully reached the database endpoint at `{host}:{port}`.", update
+    return (
+        f"I received the database details, but I couldn't reach `{host}:{port}` yet. "
+        "You can update the host or port, or continue drafting the job.",
+        update,
+    )
 
 
 def _extract_connection_detail_from_answer(field: str, message: str) -> str | None:
@@ -544,10 +685,20 @@ def _is_abandoning_current_flow(message: str, draft: dict) -> bool:
     draft_type = str(draft.get("job_type") or draft.get("type") or "").strip().lower()
     if not draft_type:
         return False
+    if draft_type == "sql" and (
+        SQL_CREATE_REQUEST_PATTERN.search(message or "")
+        or (SQL_RUN_REQUEST_PATTERN.search(message or "") and SQL_RUN_CONTEXT_PATTERN.search(message or ""))
+        or _AFFIRMATIVE_RESPONSE_PATTERN.match((message or "").strip())
+    ):
+        return False
     # Fast path: unambiguous abandonment phrases — no API call needed
     if _FLOW_ABANDONMENT_PATTERN.search(message) or _TASK_SWITCH_PATTERN.search(message):
         return True
-    # Slow path: ask OpenAI to classify ambiguous messages
+    # Short messages are almost always field answers (names, IDs, dates, single words)
+    # not abandonment signals — skip the API call entirely
+    if len(message.split()) <= 5:
+        return False
+    # Slow path: ask OpenAI to classify ambiguous longer messages
     return _openai_classify_abandonment(message, draft_type, bool(draft.get("awaiting_confirmation")))
 
 
@@ -646,6 +797,53 @@ def _validate_against_registry(connector: str, environment: str) -> list[str]:
     return errors
 
 
+def _load_registry() -> dict[str, Any]:
+    try:
+        with open(_REGISTRY_PATH) as f:
+            registry = json.load(f)
+        return registry if isinstance(registry, dict) else {}
+    except Exception:
+        return {}
+
+
+def _sql_ordered_required_fields() -> list[str]:
+    """Return universal required fields followed by SQL required fields from registry.json."""
+    registry = _load_registry()
+    universal = registry.get("universal_job_fields", {}) if isinstance(registry.get("universal_job_fields"), dict) else {}
+    approved = registry.get("approved_servers", {}) if isinstance(registry.get("approved_servers"), dict) else {}
+    sql_server = approved.get("sql-dab", {}) if isinstance(approved.get("sql-dab"), dict) else {}
+    fields: list[str] = []
+    for field in [*(universal.get("required") or []), *(sql_server.get("required_fields") or [])]:
+        if isinstance(field, str) and field not in fields:
+            fields.append(field)
+    return fields or ["job_name", "owner", "run_type", "query", "database", "host", "port", "username", "password"]
+
+
+def _sql_field_has_value(field: str, draft: dict, session_env: dict) -> bool:
+    config = draft.get("config") if isinstance(draft.get("config"), dict) else {}
+    if field == "job_name":
+        return bool(_non_empty_str(draft.get("job_name") or draft.get("name")))
+    if field == "run_type":
+        return bool(_non_empty_str(draft.get("run_type")))
+    if field == "schedule":
+        return bool(_non_empty_str(draft.get("schedule") or config.get("schedule")))
+    if field == "query":
+        return bool(_non_empty_str(draft.get("query") or config.get("query")))
+    if field == "database":
+        return bool(_non_empty_str(draft.get("database") or config.get("database") or session_env.get("SQL_DB_DATABASE")))
+    if field == "host":
+        return bool(_non_empty_str(draft.get("host") or config.get("host") or session_env.get("SQL_DB_HOST")))
+    if field == "port":
+        return bool(_non_empty_str(draft.get("port") or config.get("port") or session_env.get("SQL_DB_PORT")))
+    if field == "username":
+        return bool(_non_empty_str(draft.get("username") or config.get("username") or session_env.get("SQL_DB_USERNAME")))
+    if field == "password":
+        return bool(_non_empty_str(draft.get("password") or config.get("password") or session_env.get("SQL_DB_PASSWORD")))
+    if field == "connection_id":
+        return bool(_non_empty_str(draft.get("connection_id") or config.get("connection_id") or session_env.get("SQL_CONNECTION_ID")))
+    return bool(_non_empty_str(draft.get(field) or config.get(field)))
+
+
 async def _tcp_ping(host: str, port: str | int, timeout: float = 3.0) -> bool:
     """Return True if a TCP connection to host:port succeeds within timeout seconds."""
     try:
@@ -702,6 +900,7 @@ def _ask_llm_for_next_field(
             "- Be conversational. You may include a brief hint or example in backticks if helpful.\n"
             "- Do NOT re-ask or mention fields already collected.\n"
             "- Do NOT list all the fields — only ask about the one field requested.\n"
+            "- NEVER ask about the connector or database type — the connector is always `sql-dab` and is set automatically. Database connection details (host, port, database name, username, password) are collected via a form, not conversationally.\n"
             f"Already collected: {json.dumps(collected)}\n"
             f"Next field to ask about: {field_label} (key: {next_field})"
         )
@@ -724,6 +923,38 @@ def _ask_llm_for_next_field(
         return _SQL_FIELD_QUESTIONS_FALLBACK.get(next_field, f"What is the {next_field}?")
 
 
+def _is_sql_type_selection(message: str, history: list[dict] | None) -> bool:
+    """Return True when the user is selecting SQL as the job type.
+
+    Matches bare messages like "SQL" or "sql job" that follow an assistant turn
+    which listed the available job types (identified by mentioning Airflow/Excel/PowerPoint).
+    """
+    if not _SQL_TYPE_SELECTION_PATTERN.match((message or "").strip()):
+        return False
+    for msg in reversed(history or []):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        return bool(_ASKED_JOB_TYPE_PATTERN.search(str(msg.get("content") or "")))
+    return False
+
+
+def _is_new_database_request(message: str, draft: dict) -> bool:
+    """Return True when user explicitly wants to connect to a new/different database."""
+    if not NEW_DATABASE_REQUEST_PATTERN.search(message or ""):
+        return False
+    draft_type = str((draft or {}).get("job_type", "")).strip().lower()
+    return draft_type == "sql" or bool(SQL_LOOKUP_CONTEXT_PATTERN.search(message or ""))
+
+
+def _draft_without_connection_details(draft: dict) -> dict:
+    """Return draft with all database connection fields cleared, preserving other job fields."""
+    connection_keys = {"host", "port", "database", "username", "password", "connection_id", "_connection_id_asked", "_connection_form_shown"}
+    clean = {k: v for k, v in draft.items() if k not in connection_keys}
+    if isinstance(clean.get("config"), dict):
+        clean["config"] = {k: v for k, v in clean["config"].items() if k not in connection_keys}
+    return clean
+
+
 def _non_empty_str(value: Any) -> str | None:
     if isinstance(value, str):
         v = value.strip()
@@ -739,6 +970,10 @@ def _is_explicit_sql_run_request(request: "ChatRequest") -> bool:
     if draft.get("resource_id") and AFFIRMATIVE_RUN_RESPONSE_PATTERN.search(message.strip()):
         return True
     return bool(SQL_RUN_REQUEST_PATTERN.search(message) and SQL_RUN_CONTEXT_PATTERN.search(message))
+
+
+def _is_explicit_sql_create_request(message: str) -> bool:
+    return bool(SQL_CREATE_REQUEST_PATTERN.search(message or ""))
 
 
 def _deterministic_sql_fields(request: "ChatRequest") -> dict[str, Any]:
@@ -862,6 +1097,20 @@ class ConfigRequest(BaseModel):
     repository_hints: Optional[list[str]] = None
 
 
+_ALL_SQL_CONNECTION_FIELDS: list[ConfigRequestField] = [
+    ConfigRequestField(**field) for field in SQL_SESSION_ENV_FIELDS
+]
+
+
+def _sql_connection_config_request(prompt: str, fields: list[ConfigRequestField] | None = None) -> ConfigRequest:
+    return ConfigRequest(
+        kind="sql_session_env",
+        prompt=prompt,
+        submit_label="Connect database",
+        fields=fields if fields is not None else _ALL_SQL_CONNECTION_FIELDS,
+    )
+
+
 class ChatResponse(BaseModel):
     """Response from chat API."""
     response: str
@@ -878,6 +1127,60 @@ class ChatResponse(BaseModel):
     repository_options: Optional[list[RepositoryOption]] = None
     config_request: Optional[ConfigRequest] = None
     reset_draft: Optional[bool] = None  # True when user abandons current flow
+    reset_session_env: Optional[bool] = None  # True when frontend should clear stored DB credentials
+
+
+def _resource_name_for_run(db, resource_id: str) -> str:
+    resource = db.get(Resource, resource_id)
+    if resource and getattr(resource, "name", None):
+        return str(resource.name)
+    return resource_id
+
+
+def _find_named_resource_in_message(db, message: str) -> "Resource | None":
+    """Try to find an existing resource whose name appears in an update message."""
+    candidates: list[str] = []
+    for m in _NAMED_RESOURCE_REF_PATTERN.finditer(message):
+        name = m.group(1) or m.group(2)
+        if name:
+            candidates.append(name.strip())
+    if not candidates:
+        return None
+    from sqlalchemy import func
+    for name in candidates:
+        resource = (
+            db.query(Resource)
+            .filter(func.lower(Resource.name) == name.lower())
+            .first()
+        )
+        if resource:
+            return resource
+    return None
+
+
+def _answer_run_history_question(db, message: str) -> str | None:
+    actor = get_chat_actor(db)
+    runs = list_runs(db, actor)
+    if not runs:
+        return "I couldn't find any runs for you yet."
+
+    key = lambda run: run["updated_at"]  # noqa: E731
+    if LAST_RUN_QUESTION_PATTERN.search(message):
+        last_run = nlargest(1, runs, key=key)[0]
+        resource_name = _resource_name_for_run(db, last_run["resource_id"])
+        return (
+            f"Your most recent run was `{resource_name}`. "
+            f"It is currently `{last_run['status']}` in `{last_run['target_environment']}` "
+            f"and was last updated at `{last_run['updated_at']}`."
+        )
+
+    lines = ["Here are your most recent runs:"]
+    for index, run in enumerate(nlargest(5, runs, key=key), start=1):
+        resource_name = _resource_name_for_run(db, run["resource_id"])
+        lines.append(
+            f"{index}. `{resource_name}` — status `{run['status']}` — environment `{run['target_environment']}` — updated `{run['updated_at']}`"
+        )
+    return "\n".join(lines)
 
 
 async def _list_github_repository_options(personal_access_token: str) -> list[RepositoryOption]:
@@ -929,6 +1232,26 @@ def _looks_like_sql_connect_request(request: "ChatRequest") -> bool:
     if draft_type == "sql" and str(draft.get("sql_subtype") or "").strip().lower() != "sql_github_write":
         return True
     return SQL_CONNECT_REQUEST_PATTERN.search(message) is not None
+
+
+def _looks_like_live_sql_lookup(request: "ChatRequest") -> bool:
+    if _is_sql_github_write_request(request):
+        return False
+    message = request.message or ""
+    return bool(
+        SQL_LOOKUP_ACTION_PATTERN.search(message)
+        and SQL_LOOKUP_CONTEXT_PATTERN.search(message)
+    )
+
+
+def _is_sql_job_flow_request(request: "ChatRequest", job_creation_intent: bool) -> bool:
+    if _has_sql_draft(request):
+        return True
+    if _looks_like_live_sql_lookup(request) or _looks_like_sql_connect_request(request):
+        return True
+    if not job_creation_intent:
+        return False
+    return SQL_LOOKUP_CONTEXT_PATTERN.search(request.message or "") is not None
 
 
 def _effective_session_env(request: "ChatRequest") -> dict[str, str]:
@@ -995,7 +1318,7 @@ def _missing_sql_job_fields(
     job_name = str(merged.get("job_name") or merged.get("name") or "").strip()
     owner = str(merged.get("owner") or "").strip()
     target_environment = str(
-        merged.get("target_environment") or merged.get("environment") or config.get("target_environment") or ""
+        merged.get("target_environment") or merged.get("environment") or config.get("target_environment") or config.get("environment") or ""
     ).strip()
     run_type = str(merged.get("run_type") or "").strip().lower()
     schedule = str(merged.get("schedule") or config.get("schedule") or "").strip()
@@ -1062,7 +1385,7 @@ def _sql_followup_response(
             if next_field == "target_environment":
                 return (
                     "I have the SQL connection details, query, job name, and owner. "
-                    "Next I need the target environment for this job, like `dev`, `staging`, or `prod`."
+                    "Next I need the target environment for this job: `dev`, `semi-prod`, or `prod`."
                 )
             if next_field == "run_type":
                 return (
@@ -1182,26 +1505,29 @@ async def _discover_repository_env_hints(
 
 @router.post("/send", response_model=ChatResponse)
 async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatResponse:
-    """
-    Send a message to the AI chat assistant.
-    
-    Args:
-        request: Chat request with message and optional conversation history
-        
-    Returns:
-        AI assistant response with optional job creation intent and extracted fields
-    """
+    """Route a chat message through SQL, GitHub, or generic LLM flows."""
     try:
         if not request.message or not request.message.strip():
             raise HTTPException(status_code=400, detail="Message cannot be empty")
-        
-        # --- Abandonment check: let user bail out of any in-progress flow ---
-        if _is_abandoning_current_flow(request.message, request.current_draft_data or {}):
+
+        draft = request.current_draft_data or {}
+        # True when the connection form was just submitted: the frontend re-sends the
+        # original message (e.g. "I want to run a SQL query") which would otherwise
+        # be mis-classified as abandonment by the OpenAI classifier.
+        _form_already_shown = bool(draft.get("_connection_form_shown"))
+
+        if not _form_already_shown and _is_abandoning_current_flow(request.message, draft):
             return ChatResponse(
                 response="No problem — I've cleared the job draft. What would you like to do next?",
                 job_creation_intent=False,
                 extracted_fields=None,
                 reset_draft=True,
+            )
+
+        if LAST_RUN_QUESTION_PATTERN.search(request.message) or RECENT_RUNS_QUESTION_PATTERN.search(request.message):
+            return ChatResponse(
+                response=_answer_run_history_question(db, request.message),
+                job_creation_intent=False,
             )
 
         # Detect job creation intent from user message
@@ -1210,6 +1536,101 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
         github_token = request.github_personal_access_token or os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
         session_env = _effective_session_env(request)
         history_dicts = [{"role": msg.role, "content": msg.content} for msg in (request.conversation_history or [])]
+
+        # --- SQL type selection: "SQL" after "what type of job?" → enter structured flow now ---
+        if _is_sql_type_selection(request.message, history_dicts) and not _form_already_shown:
+            return ChatResponse(
+                response=(
+                    "Great choice! To get started with your SQL job, I'll need the database "
+                    "connection details. Please fill in the form below."
+                ),
+                job_creation_intent=True,
+                extracted_fields={
+                    **(request.current_draft_data or {}),
+                    "job_type": "SQL",
+                    "_connection_form_shown": True,
+                    "_connection_id_asked": True,
+                },
+                config_request=_sql_connection_config_request("Enter the database connection details for this SQL job."),
+                reset_session_env=True,
+            )
+
+        is_sql_job_flow = _is_sql_job_flow_request(request, job_creation_intent)
+
+        # --- New/different database: always collect fresh connection details ---
+        if _is_new_database_request(request.message, request.current_draft_data or {}):
+            clean_draft = _draft_without_connection_details(request.current_draft_data or {})
+            ef = {
+                "job_type": "SQL",
+                **clean_draft,
+                "_connection_form_shown": True,
+                "_connection_id_asked": True,
+            }
+            return ChatResponse(
+                response=(
+                    "Sure! To connect to the new database, I'll need its connection details. "
+                    "Please provide the host, port, database name, username, and password below."
+                ),
+                job_creation_intent=is_sql_job_flow,
+                extracted_fields=ef if is_sql_job_flow else None,
+                config_request=_sql_connection_config_request("Enter the connection details for the new database."),
+                reset_session_env=True,
+            )
+
+        # --- Named resource update: "change the query for create-tables-3" → skip connection form ---
+        if _UPDATE_RESOURCE_PATTERN.search(request.message) and not draft.get("resource_id"):
+            named_resource = _find_named_resource_in_message(db, request.message)
+            if named_resource is not None:
+                ai_fields = _openai_extract_sql_fields(request.message, draft, history_dicts)
+                update_msg, draft_updates = update_sql_resource_from_chat(
+                    db, named_resource.id, ai_fields
+                )
+                seed_draft: dict[str, Any] = {
+                    "job_type": "SQL",
+                    "resource_id": named_resource.id,
+                    "job_name": named_resource.name,
+                    "name": named_resource.name,
+                }
+                new_draft = _clear_sql_transient_fields({**seed_draft, **draft_updates})
+                config_patch: dict[str, Any] = {}
+                if "config" in draft_updates and isinstance(draft_updates["config"], dict):
+                    config_patch.update(draft_updates["config"])
+                for _f in ("query", "schedule", "connection_id", "run_type"):
+                    if _f in draft_updates:
+                        config_patch[_f] = draft_updates[_f]
+                if config_patch:
+                    existing_cfg = getattr(named_resource, "config", None) or {}
+                    new_draft["config"] = {**existing_cfg, **config_patch}
+                return ChatResponse(
+                    response=update_msg,
+                    job_creation_intent=True,
+                    extracted_fields=new_draft,
+                )
+
+        missing_sql_session_fields = _missing_sql_session_env(session_env)
+        if (
+            missing_sql_session_fields
+            and not _form_already_shown
+            and (_looks_like_live_sql_lookup(request) or is_sql_job_flow)
+        ):
+            ef = {
+                **(request.current_draft_data or {}),
+                "job_type": "SQL",
+                "_connection_form_shown": True,
+                "_connection_id_asked": True,
+            }
+            return ChatResponse(
+                response=(
+                    "Before I can run a live SQL query in this chat, I need the database connection details "
+                    "for this session. Please provide the host, port, database name, username, and password."
+                ),
+                job_creation_intent=is_sql_job_flow,
+                extracted_fields=ef if is_sql_job_flow else None,
+                config_request=_sql_connection_config_request(
+                    "Enter the database connection details for this chat session.",
+                    fields=missing_sql_session_fields,
+                ),
+            )
 
         # --- SQL GitHub write flow: write a SQL query file into a GitHub repository ---
         if _is_sql_github_write_request(request):
@@ -1283,7 +1704,7 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                 )
 
         # --- SQL flow: structured state machine (universal fields → SQL fields → confirm → run) ---
-        if _looks_like_sql_connect_request(request):
+        if is_sql_job_flow:
             draft = request.current_draft_data or {}
 
             # Belt-and-suspenders abandonment check inside the SQL flow
@@ -1295,10 +1716,8 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                     reset_draft=True,
                 )
 
-            last_asked = _last_asked_sql_flow_field(history_dicts)
-            # Fallback: if the draft already has awaiting_confirmation, we're in confirm mode
-            if draft.get("awaiting_confirmation"):
-                last_asked = "confirm"
+            pending_field = str(draft.get("_pending_field") or "").strip() or None
+            last_asked = "confirm" if draft.get("awaiting_confirmation") else pending_field
 
             new_ef: dict[str, Any] = {"job_type": "SQL"}
 
@@ -1335,30 +1754,65 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
             merged: dict[str, Any] = {**draft, **new_ef}
             if "config" in new_ef:
                 merged["config"] = {**(draft.get("config") or {}), **new_ef["config"]}
+            if isinstance(merged.get("config"), dict):
+                merged["config"] = {k: v for k, v in merged["config"].items() if k not in {"target_environment", "environment"}}
+            if not _non_empty_str(merged.get("target_environment")) and _non_empty_str(merged.get("environment")):
+                merged["target_environment"] = merged["environment"]
+            merged.pop("environment", None)
+            if last_asked not in (None, "confirm"):
+                if last_asked == "connection_id" or _sql_field_has_value(last_asked, merged, session_env):
+                    merged.pop("_pending_field", None)
+            if "awaiting_confirmation" in merged and last_asked != "confirm":
+                merged.pop("awaiting_confirmation", None)
+
+            connection_status_message, connection_status_fields = await _sql_connection_status_message(merged, session_env)
+            if connection_status_fields:
+                merged.update(connection_status_fields)
 
             # Confirmation step: user answered yes/no to the summary
             if last_asked == "confirm":
                 if _AFFIRMATIVE_RESPONSE_PATTERN.match(request.message.strip()):
-                    cfg: dict[str, Any] = {**(merged.get("config") or {})}
-                    for fld, env_key in (
-                        ("host", "SQL_DB_HOST"), ("port", "SQL_DB_PORT"),
-                        ("database", "SQL_DB_DATABASE"), ("username", "SQL_DB_USERNAME"),
-                        ("password", "SQL_DB_PASSWORD"),
-                    ):
-                        if not cfg.get(fld) and session_env.get(env_key):
-                            cfg[fld] = session_env[env_key]
-                    for fld in ("query", "database", "username", "password", "host", "port", "connection_id"):
-                        if merged.get(fld) and not cfg.get(fld):
-                            cfg[fld] = merged[fld]
-                    if merged.get("schedule"):
-                        cfg["schedule"] = merged["schedule"]
+                    cfg = _sql_config_with_session_env(merged, session_env)
+                    run_type = str(merged.get("run_type") or "manual").strip().lower()
+
+                    # Scheduled jobs: register only — the schedule triggers future runs
+                    if run_type == "scheduled":
+                        registration_result = register_sql_job_from_chat(
+                            db,
+                            extracted_fields={**merged, "config": cfg, "creation_requested": True},
+                            current_draft=merged,
+                        )
+                        job_label = merged.get("job_name") or merged.get("name") or "your SQL job"
+                        schedule = merged.get("schedule") or cfg.get("schedule") or ""
+                        schedule_msg = f" It is scheduled to run `{schedule}`." if schedule else ""
+                        reg_msg = (
+                            f"Registered SQL job `{job_label}`.{schedule_msg}"
+                            if registration_result.resource_id
+                            else registration_result.message
+                        )
+                        return ChatResponse(
+                            response=reg_msg,
+                            job_creation_intent=True,
+                            extracted_fields=_clear_sql_transient_fields({
+                                **merged,
+                                "config": cfg,
+                                "resource_id": registration_result.resource_id,
+                                "name": registration_result.resource_name or merged.get("job_name") or merged.get("name"),
+                            }),
+                            resource_id=registration_result.resource_id,
+                        )
+
                     exec_fields: dict[str, Any] = {
                         "job_type": "SQL",
                         "name": merged.get("job_name") or merged.get("name"),
                         "owner": merged.get("owner"),
-                        "run_type": str(merged.get("run_type") or "manual").strip().lower(),
+                        "run_type": run_type,
                         "connector": "sql-dab",
                         "config": cfg,
+                        "connection_id": merged.get("connection_id") or cfg.get("connection_id"),
+                        "query": merged.get("query") or cfg.get("query"),
+                        "target_environment": _resolved_job_environment(merged),
+                        "resource_id": merged.get("resource_id"),
                         "action": "run",
                     }
                     try:
@@ -1366,29 +1820,33 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                             db,
                             message="run sql job",
                             extracted_fields=exec_fields,
-                            current_draft=None,
+                            current_draft=merged,
                         )
                     except Exception as exec_err:
                         logger.exception("SQL job execution failed after chat confirmation")
                         err_str = str(exec_err)
                         if "ConnectError" in err_str or "Connection" in err_str or "connection" in err_str:
                             user_msg = (
-                                "The job was registered but I couldn't execute it — "
+                                "I couldn't execute the SQL job — "
                                 "the SQL MCP server at `http://localhost:5100/mcp` is not reachable. "
                                 "Please start the SQL MCP server and try again."
                             )
                         else:
-                            user_msg = f"The job was registered but execution failed: {err_str}"
+                            user_msg = f"Execution failed: {err_str}"
                         return ChatResponse(
                             response=user_msg,
-                            job_creation_intent=False,
-                            extracted_fields=None,
+                            job_creation_intent=True,
+                            extracted_fields=_clear_sql_transient_fields(merged),
                         )
                     if sql_result is not None:
                         return ChatResponse(
                             response=sql_result.message,
                             job_creation_intent=False,
-                            extracted_fields=None,
+                            extracted_fields=_clear_sql_transient_fields({
+                                **merged,
+                                "resource_id": sql_result.resource_id,
+                                "name": merged.get("job_name") or merged.get("name"),
+                            }),
                             resource_id=sql_result.resource_id,
                             run_id=sql_result.run_id,
                             run_status=sql_result.run_status,
@@ -1397,32 +1855,62 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                     return ChatResponse(
                         response="I wasn't able to create the job. Please verify the connection details and try again.",
                         job_creation_intent=True,
-                        extracted_fields={"job_type": "SQL"},
+                        extracted_fields=_clear_sql_transient_fields(merged),
                     )
                 else:
+                    # Extract any field updates the user mentioned (e.g. "change the query to X")
+                    ai_fields = _openai_extract_sql_fields(request.message, draft, history_dicts)
+                    for fld, val in ai_fields.items():
+                        if fld in {"host", "port", "database", "username", "password"}:
+                            merged.setdefault("config", {})[fld] = val
+                        elif fld == "config" and isinstance(val, dict):
+                            merged["config"] = {**(merged.get("config") or {}), **val}
+                        else:
+                            merged[fld] = val
+                    merged.pop("awaiting_confirmation", None)
+                    merged.pop("_pending_field", None)
+                    if ai_fields:
+                        summary = _build_sql_job_summary(merged, session_env)
+                        return ChatResponse(
+                            response=summary,
+                            job_creation_intent=True,
+                            extracted_fields={**merged, "awaiting_confirmation": True, "_pending_field": "confirm"},
+                        )
                     return ChatResponse(
                         response="No problem — what would you like to change?",
                         job_creation_intent=True,
-                        extracted_fields={"job_type": "SQL"},
+                        extracted_fields=merged,
                     )
+
+            # Show the connection form on first entry; merged preserves any fields already collected.
+            if not merged.get("_connection_form_shown"):
+                return ChatResponse(
+                    response=(
+                        "Before we proceed with this SQL job, I'll need the database connection details. "
+                        "Please fill in the form below."
+                    ),
+                    job_creation_intent=True,
+                    extracted_fields={**merged, "_connection_form_shown": True, "_connection_id_asked": True},
+                    config_request=_sql_connection_config_request("Enter the database connection details for this job."),
+                    reset_session_env=True,
+                )
 
             # Ask for the next missing field
             next_field = _next_missing_sql_field(merged, session_env)
             if next_field:
                 question = _ask_llm_for_next_field(next_field, merged, session_env, history_dicts)
+                if connection_status_message:
+                    question = f"{connection_status_message}\n\n{question}"
                 return ChatResponse(
                     response=question,
                     job_creation_intent=True,
-                    extracted_fields=new_ef,
+                    extracted_fields={**merged, "_pending_field": next_field},
                 )
 
             # All fields collected — validate before showing confirmation
             cfg: dict[str, Any] = merged.get("config") or {}
             connector = str(merged.get("connector") or "sql-dab").strip().lower()
-            environment = str(
-                merged.get("target_environment") or merged.get("environment") or
-                cfg.get("target_environment") or "dev"
-            ).strip().lower()
+            environment = _resolved_job_environment(merged).strip().lower()
 
             # 1 & 2: Registry checks — connector active + environment allowed
             registry_errors = _validate_against_registry(connector, environment)
@@ -1434,7 +1922,36 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                         "What would you like to change?"
                     ),
                     job_creation_intent=True,
-                    extracted_fields=new_ef,
+                    extracted_fields=merged,
+                )
+
+            explicit_run_request = _is_explicit_sql_run_request(request)
+            explicit_create_request = _is_explicit_sql_create_request(request.message)
+
+            if explicit_create_request and not explicit_run_request and not merged.get("resource_id"):
+                cfg = _sql_config_with_session_env(merged, session_env)
+                registration_result = register_sql_job_from_chat(
+                    db,
+                    extracted_fields={
+                        **merged,
+                        "config": cfg,
+                        "connection_id": merged.get("connection_id") or cfg.get("connection_id"),
+                        "query": merged.get("query") or cfg.get("query"),
+                        "creation_requested": True,
+                    },
+                    current_draft=merged,
+                )
+                return ChatResponse(
+                    response=registration_result.message,
+                    job_creation_intent=True,
+                    extracted_fields=_clear_sql_transient_fields({
+                        **merged,
+                        "config": cfg,
+                        "resource_id": registration_result.resource_id,
+                        "name": registration_result.resource_name or merged.get("job_name") or merged.get("name"),
+                        "creation_requested": True,
+                    }),
+                    resource_id=registration_result.resource_id,
                 )
 
             # 3: TCP reachability check — verify host:port is accessible
@@ -1450,15 +1967,126 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                             "Would you like to update the host or port?"
                         ),
                         job_creation_intent=True,
-                        extracted_fields=new_ef,
+                        extracted_fields=merged,
                     )
 
             # All validated — show the confirmation summary
+            if explicit_run_request:
+                exec_fields = {
+                    **merged,
+                    "action": "run",
+                }
+                try:
+                    sql_result = maybe_run_sql_job_from_chat(
+                        db,
+                        message=request.message,
+                        extracted_fields=exec_fields,
+                        current_draft=merged,
+                    )
+                except Exception as exec_err:
+                    logger.exception("Immediate SQL execution failed from chat")
+                    return ChatResponse(
+                        response=f"I couldn't run the SQL job: {exec_err}",
+                        job_creation_intent=True,
+                        extracted_fields=merged,
+                    )
+                if sql_result is not None:
+                    return ChatResponse(
+                        response=sql_result.message,
+                        job_creation_intent=False,
+                        extracted_fields={
+                            **merged,
+                            "resource_id": sql_result.resource_id,
+                            "name": merged.get("job_name") or merged.get("name"),
+                        },
+                        resource_id=sql_result.resource_id,
+                        run_id=sql_result.run_id,
+                        run_status=sql_result.run_status,
+                        sql_job_executed=sql_result.executed,
+                    )
+
+            if explicit_create_request and not merged.get("resource_id"):
+                registration_result = register_sql_job_from_chat(
+                    db,
+                    extracted_fields={
+                        **merged,
+                        "creation_requested": True,
+                    },
+                    current_draft=merged,
+                )
+                return ChatResponse(
+                    response=registration_result.message,
+                    job_creation_intent=True,
+                    extracted_fields=_clear_sql_transient_fields({
+                        **merged,
+                        "resource_id": registration_result.resource_id,
+                        "name": registration_result.resource_name or merged.get("job_name") or merged.get("name"),
+                        "creation_requested": True,
+                    }),
+                    resource_id=registration_result.resource_id,
+                )
+
+            # Job already registered — update fields, run it, or inform the user
+            if merged.get("resource_id"):
+                msg = request.message.strip()
+
+                # Update request: "change the schedule to...", "update the query", etc.
+                if _UPDATE_RESOURCE_PATTERN.search(msg):
+                    ai_fields = _openai_extract_sql_fields(msg, merged, history_dicts)
+                    update_msg, draft_updates = update_sql_resource_from_chat(
+                        db, merged["resource_id"], ai_fields
+                    )
+                    new_draft = _clear_sql_transient_fields({**merged, **draft_updates})
+                    # Merge updated config fields back into draft["config"] so frontend reflects changes
+                    config_patch: dict[str, Any] = {}
+                    if "config" in draft_updates and isinstance(draft_updates["config"], dict):
+                        config_patch.update(draft_updates["config"])
+                    for _f in ("query", "schedule", "connection_id", "run_type"):
+                        if _f in draft_updates:
+                            config_patch[_f] = draft_updates[_f]
+                    if config_patch:
+                        new_draft["config"] = {**(merged.get("config") or {}), **config_patch}
+                    return ChatResponse(
+                        response=update_msg,
+                        job_creation_intent=True,
+                        extracted_fields=new_draft,
+                    )
+
+                # "run it" / "yes" / explicit run verb without update context
+                wants_run = (
+                    AFFIRMATIVE_RUN_RESPONSE_PATTERN.match(msg)
+                    or _AFFIRMATIVE_RESPONSE_PATTERN.match(msg)
+                    or (SQL_RUN_REQUEST_PATTERN.search(msg) and not _UPDATE_RESOURCE_PATTERN.search(msg))
+                )
+                if wants_run:
+                    run_result = run_resource_by_id(db, merged["resource_id"])
+                    return ChatResponse(
+                        response=run_result.message,
+                        job_creation_intent=False,
+                        extracted_fields=_clear_sql_transient_fields({
+                            **merged,
+                            "resource_id": run_result.resource_id,
+                            "name": merged.get("job_name") or merged.get("name"),
+                        }),
+                        resource_id=run_result.resource_id,
+                        run_id=run_result.run_id,
+                        run_status=run_result.run_status,
+                        sql_job_executed=run_result.executed,
+                    )
+                job_label = merged.get("job_name") or merged.get("name") or "your SQL job"
+                return ChatResponse(
+                    response=f"Your SQL job `{job_label}` is registered. You can run it or update its fields (schedule, query, etc.).",
+                    job_creation_intent=True,
+                    extracted_fields=_clear_sql_transient_fields(merged),
+                )
+
             summary = _build_sql_job_summary(merged, session_env)
+            if connection_status_message:
+                summary = f"{connection_status_message}\n\n{summary}"
             return ChatResponse(
                 response=summary,
                 job_creation_intent=True,
-                extracted_fields={**new_ef, "awaiting_confirmation": True},
+                extracted_fields={**merged, "awaiting_confirmation": True, "_pending_field": "confirm"},
             )
 
         if deterministic_repo_fields.get("connection_intent") == "connect_repo" and not github_token:
@@ -1519,59 +2147,10 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                 sql_job_executed=preflight_sql_job_result.executed,
             )
 
-        if should_run_prompt_native_mcp(request.message, request.current_draft_data):
-            if needs_github_personal_access_token(
-                request.message,
-                request.current_draft_data,
-                supplied_token=request.github_personal_access_token,
-            ):
-                return ChatResponse(
-                    response=(
-                        "I can do that, but I need a GitHub personal access token for this live "
-                        "GitHub MCP session. Enter it in the secure token field and I will use "
-                        "it only for this request."
-                    ),
-                    job_creation_intent=False,
-                    extracted_fields=None,
-                    secret_request=SecretRequest(
-                        kind="github_personal_access_token",
-                        prompt="Enter a GitHub personal access token for this live MCP session.",
-                        submit_label="Use token",
-                    ),
-                )
-
-            server_env_overrides = None
-            if request.github_personal_access_token:
-                server_env_overrides = {
-                    "github": {
-                        "GITHUB_PERSONAL_ACCESS_TOKEN": request.github_personal_access_token,
-                    }
-                }
-            mcp_result = await run_prompt_native_mcp(
-                message=request.message,
-                environment=str((request.current_draft_data or {}).get("target_environment") or (request.current_draft_data or {}).get("environment") or "dev"),
-                model=request.model,
-                server_names=["sql-dab"] if _looks_like_sql_connect_request(request) else None,
-                server_env_overrides=server_env_overrides,
-            )
-            return ChatResponse(
-                response=mcp_result.response,
-                job_creation_intent=False,
-                extracted_fields=None,
-                mcp_tool_executed=True,
-                mcp_servers=mcp_result.server_names,
-                mcp_tool_executions=mcp_result.tool_executions,
-            )
-        
-        # Convert conversation history to dict format if provided
-        history = None
-        if request.conversation_history:
-            history = [{"role": msg.role, "content": msg.content} for msg in request.conversation_history]
-        
         chat_service = get_chat_service()
         response = await chat_service.send_message(
             message=request.message,
-            conversation_history=history,
+            conversation_history=history_dicts or None,
             model=request.model,
             current_draft=request.current_draft_data,
             available_resources=request.available_resources,
@@ -1654,7 +2233,7 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
             extraction_service = get_field_extraction_service()
             llm_fields = await extraction_service.extract_fields(
                 user_message=request.message,
-                conversation_history=history,
+                conversation_history=history_dicts or None,
                 current_draft=request.current_draft_data,
                 model=request.model
             )

@@ -102,6 +102,34 @@ class MCPJobExecutor(BaseJobExecutor):
         finally:
             await runtime_client.cleanup()
 
+    def _sql_server_env_overrides(self, execution_request: ExecutionRequest) -> dict[str, dict[str, str]] | None:
+        """Build server_env_overrides for sql-dab from the resource's connection config."""
+        config = {}
+        if hasattr(execution_request.resource, "config"):
+            cfg = execution_request.resource.config
+            config = cfg if isinstance(cfg, dict) else {}
+
+        host = str(config.get("host") or "").strip()
+        port = str(config.get("port") or "").strip()
+        database = str(config.get("database") or "").strip()
+        username = str(config.get("username") or "").strip()
+        password = str(config.get("password") or "").strip()
+
+        if not all([host, port, database, username, password]):
+            return None
+
+        conn_str = f"Host={host};Port={port};Database={database};Username={username};Password={password}"
+        return {
+            "sql-dab": {
+                "SQL_CONNECTION_STRING": conn_str,
+                "SQL_DB_HOST": host,
+                "SQL_DB_PORT": port,
+                "SQL_DB_DATABASE": database,
+                "SQL_DB_USERNAME": username,
+                "SQL_DB_PASSWORD": password,
+            }
+        }
+
     async def _execute_agent(self, execution_request: ExecutionRequest) -> dict[str, Any]:
         ensure_control_center_importable()
         from control_center.mcp import build_agent_from_registry, default_mcp_model
@@ -125,12 +153,15 @@ class MCPJobExecutor(BaseJobExecutor):
         if not final_prompt:
             raise RuntimeError("Agent MCP execution requires a prompt in mcp_config.prompt or params.prompt.")
 
+        server_env_overrides = self._sql_server_env_overrides(execution_request)
+
         agent = await build_agent_from_registry(
             environment=execution_request.target_environment,
             server_names=server_names or None,
             selection_prompt=selection_prompt,
             model=default_mcp_model(),
             instructor_model=os.getenv("CONTROL_CENTER_MCP_INSTRUCTOR_MODEL"),
+            server_env_overrides=server_env_overrides,
             verbose=False,
         )
         try:

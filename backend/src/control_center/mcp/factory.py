@@ -239,10 +239,12 @@ async def build_agent_from_registry(
         if server_name not in server_configs or not env_overrides:
             continue
         existing_env = server_configs[server_name].get("env")
-        if not isinstance(existing_env, dict):
-            existing_env = {}
+        # Start from os.environ so subprocess inherits PATH and the active Python/uv environment.
+        base_env = dict(os.environ)
+        if isinstance(existing_env, dict):
+            base_env.update(existing_env)
         server_configs[server_name]["env"] = {
-            **existing_env,
+            **base_env,
             **env_overrides,
         }
 

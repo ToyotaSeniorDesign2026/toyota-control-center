@@ -9,7 +9,23 @@ _RESOURCE_TYPE_REGISTRY = [
     {
         "type": "sql",
         "kind": "runtime",
-        "required_config_schema": {"required": [], "optional": ["query", "schedule", "timezone", "connection_id", "repo", "path", "ref"]},
+        "required_config_schema": {
+            "required": [],
+            "optional": [
+                "query",
+                "schedule",
+                "timezone",
+                "connection_id",
+                "host",
+                "port",
+                "database",
+                "username",
+                "password",
+                "repo",
+                "path",
+                "ref",
+            ],
+        },
         "supported_resource_actions": ["activate", "pause", "archive"],
         "run_capabilities": {
             "supports_retry": True,

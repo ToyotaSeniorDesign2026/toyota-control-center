@@ -100,10 +100,10 @@ IMPORTANT:
 - When extracting owner, recognize patterns like "I'm the owner", "I am the owner", "im the owner" → extract user as owner or use literal email if provided
 - For schedule, accept natural language like "daily", "weekly monday", "every monday at 3am"
 - For SQL resources, prefer backend-aligned fields when possible:
-  - name, kind, type, connector, environment, data_sensitivity, tags
-  - config.query, config.connection_id, config.schedule
+  - name, kind, type, environment, data_sensitivity, tags
+  - config.query, config.schedule
   - action, target_environment, params.query for run-specific overrides
-- For the local Control Center database, use connector "sql-dab" and connection_id "postgres" unless the user says otherwise
+- For SQL jobs, the connector is ALWAYS "sql-dab" — do NOT extract or set the connector field from user input. Do NOT set connection_id or any database credentials from conversation; those are collected separately via a connection form.
 - If the user says the job should run manually, extract run_type as "manual" and do not invent a schedule
 - If the user wants to connect a GitHub repo, use resource-oriented fields like type "repo_connection", connector "github", config.repo, and config.provider "github"
 
@@ -113,14 +113,13 @@ Universal Fields:
 - job_name (string)
 - description (string)
 - owner (string, email format or name)
-- environment (string: dev, staging, prod, production)
+- target_environment (string: dev, semi-prod, prod, production)
 - schedule (string: cron or natural language like "daily at 7am", "every Monday")
 - approval_required (boolean: true/false)
 - tags (array of strings)
 - run_type (string: manual, scheduled, triggered)
 - job_type (string: "SQL", "Airflow", "Excel", "PowerPoint")
 - action (string: usually "run")
-- target_environment (string: dev, staging, prod, production)
 - connection_intent (string: "connect_repo")
 
 Backend resource fields:
@@ -134,9 +133,9 @@ Backend resource fields:
 
 SQL-specific backend fields:
 - query (string)
-- connection_id (string)
 - output_destination (string)
 - result_limit (string or number)
+Note: connector (always "sql-dab"), connection_id, host, port, database, username, password are NOT extracted from conversation — they are collected via a dedicated connection form.
 
 Repo connection backend fields:
 - repo (string in owner/repo format)
@@ -177,8 +176,8 @@ PowerPoint-specific:
 EXTRACTION EXAMPLES:
 - User: "Create a PowerPoint named Revenue Dashboard"
   → {{"job_name": "Revenue Dashboard", "job_type": "PowerPoint"}}
-- User: "Create a SQL resource called Dealer Sales Summary in dev using Snowflake"
-  → {{"job_type": "SQL", "name": "Dealer Sales Summary", "kind": "runtime", "type": "sql", "environment": "dev", "connector": "snowflake"}}
+- User: "Create a SQL resource called Dealer Sales Summary in dev"
+  → {{"job_type": "SQL", "name": "Dealer Sales Summary", "kind": "runtime", "type": "sql", "environment": "dev"}}
 - User: "Use this query as the default query and schedule it daily at 6am"
   → {{"config": {{"query": "USER_PROVIDED_QUERY", "schedule": "daily at 6am"}}}}
 - User: "For this run, override the query to only pull yesterday's rows"
@@ -187,8 +186,8 @@ EXTRACTION EXAMPLES:
   → {{"job_type": "SQL", "action": "run", "name": "dealer_sales_summary"}}
 - User: "Run dealer_sales_summary with query select * from sales limit 10"
   → {{"job_type": "SQL", "action": "run", "name": "dealer_sales_summary", "query": "select * from sales limit 10"}}
-- User: "I want to get all the runs from the control-center database"
-  → {{"job_type": "SQL", "connector": "sql-dab", "connection_id": "postgres", "query": "SELECT * FROM runs"}}
+- User: "I want to get all the users"
+  → {{"job_type": "SQL", "query": "SELECT * FROM users"}}
 - User: "please run it manually"
   → {{"run_type": "manual"}}
 - User: "Extract data from Snowflake table customers"

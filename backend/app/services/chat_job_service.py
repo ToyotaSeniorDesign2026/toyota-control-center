@@ -9,29 +9,30 @@ from sqlalchemy.orm import Session
 
 from app.models.audit_event import RunLog
 from app.models.resource import Resource
+from app.models.run import Run
 from app.models.user import User
-from app.schemas.resource import ResourceCreate
+from app.schemas.resource import ResourceCreate, ResourceUpdate
 from app.schemas.run import RunCreate
-from app.services.resource_service import create_resource
+from app.services.resource_service import create_resource, update_resource
 from app.services.run_service import create_run_and_maybe_execute
 
 
-SQL_MCP_CONNECTORS = {"sql-dab", "sql-dab-analytics"}
+SQL_MCP_CONNECTORS = {"sql-dab"}
+_SQL_ERROR_INDICATORS = re.compile(
+    r"\b(already exists|does not exist|syntax error|permission denied|"
+    r"violates|duplicate key|duplicate table|relation .{0,60} already|"
+    r"table .{0,60} already|column .{0,60} does not|invalid input syntax|"
+    r"resulted in an error|error message|execution error)\b",
+    re.IGNORECASE,
+)
 GITHUB_WRITE_INTENT_PATTERN = re.compile(
     r"\b(write|save|commit|push|add|store)\b.{0,60}\b(sql|query|script)\b.{0,60}\b(github|repo|repository|file|\.sql)\b"
     r"|\b(github|repo|repository)\b.{0,60}\b(write|save|commit|push|add)\b.{0,60}\b(sql|query|script)\b"
     r"|\b(sql|query)\b.{0,60}\b(github|repo|repository|\.sql)\b",
     re.IGNORECASE,
 )
-SQL_CONNECTOR_ALIASES = {
-    "control center dev database": "sql-dab",
-    "control-center dev database": "sql-dab",
-    "control center database": "sql-dab",
-    "control-center database": "sql-dab",
-    "postgres": "sql-dab",
-    "postgresql": "sql-dab",
-    "analytics reporting database": "sql-dab-analytics",
-}
+# Connector for SQL jobs is always sql-dab; no database-specific aliases.
+SQL_CONNECTOR_ALIASES: dict[str, str] = {}
 RUN_INTENT_PATTERN = re.compile(r"\b(run|execute|launch|trigger|start)\b")
 SQL_EXECUTION_CONTEXT_PATTERN = re.compile(r"\b(sql|query|job|resource)\b")
 
@@ -45,6 +46,14 @@ class ChatJobExecutionResult:
     run_status: str | None = None
     resource_created: bool = False
     result_preview: str | None = None
+
+
+@dataclass(frozen=True)
+class ChatJobRegistrationResult:
+    message: str
+    resource_id: str | None = None
+    resource_name: str | None = None
+    resource_created: bool = False
 
 
 def _non_empty_string(value: Any) -> str | None:
@@ -160,6 +169,10 @@ def _infer_sql_connector(merged_fields: dict[str, Any]) -> str:
     return ""
 
 
+def _resolved_sql_connector(merged_fields: dict[str, Any]) -> str:
+    return "sql-dab"
+
+
 def _normalize_sql_resource_connector(resource: Resource | Any, fallback_fields: dict[str, Any]) -> None:
     connector = _infer_sql_connector({"connector": getattr(resource, "connector", None), **fallback_fields})
     if getattr(resource, "connector", None) != connector:
@@ -242,6 +255,178 @@ def _extract_sql_result_preview(db: Session, run_id: str) -> str | None:
     return None
 
 
+def _is_sql_execution_error(preview: str | None) -> bool:
+    """Return True when the result preview text describes a SQL-level failure."""
+    if not preview:
+        return False
+    return bool(_SQL_ERROR_INDICATORS.search(preview)) or preview.startswith("Execution error:")
+
+
+def _mark_run_failed(db: Session, run_id: str) -> None:
+    """Directly force a run to failed status when SQL content indicates failure."""
+    run_obj = db.get(Run, run_id)
+    if run_obj and run_obj.status == "succeeded":
+        run_obj.status = "failed"
+        db.add(run_obj)
+        db.commit()
+
+
+def update_sql_resource_from_chat(
+    db: Session,
+    resource_id: str,
+    new_fields: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    """Update a registered SQL resource's config from chat. Returns (message, updated_fields_for_draft)."""
+    actor = get_chat_actor(db)
+    resource = db.get(Resource, resource_id)
+    if resource is None:
+        return "I couldn't find the registered job to update.", {}
+
+    config = dict(resource.config or {})
+    changed: list[str] = []
+    draft_updates: dict[str, Any] = {}
+
+    for field in ("query", "schedule", "connection_id"):
+        val = _non_empty_string(str(new_fields.get(field) or ""))
+        if val:
+            config[field] = val
+            changed.append(field)
+            draft_updates[field] = val
+
+    if "schedule" in changed:
+        config["run_type"] = "scheduled"
+        draft_updates["run_type"] = "scheduled"
+    elif "run_type" in new_fields:
+        rt = _non_empty_string(str(new_fields["run_type"] or ""))
+        if rt in {"manual", "scheduled", "triggered"}:
+            config["run_type"] = rt
+            changed.append("run_type")
+            draft_updates["run_type"] = rt
+
+    name_val = _non_empty_string(str(new_fields.get("job_name") or new_fields.get("name") or ""))
+
+    if not changed and not name_val:
+        return (
+            "I couldn't determine what to update. Please specify what you'd like to change "
+            "(e.g. schedule, query, run type).",
+            {},
+        )
+
+    try:
+        payload_kwargs: dict[str, Any] = {"config": config}
+        if name_val:
+            payload_kwargs["name"] = name_val
+        payload = ResourceUpdate(**payload_kwargs)
+        update_resource(db, actor, resource_id, payload)
+    except Exception as exc:
+        return f"Couldn't update the resource: {exc}", {}
+
+    parts: list[str] = []
+    if "schedule" in changed:
+        parts.append(f"schedule → `{new_fields['schedule']}`")
+    if "query" in changed:
+        parts.append("SQL query updated")
+    if "connection_id" in changed:
+        parts.append(f"connection ID → `{new_fields['connection_id']}`")
+    if "run_type" in changed:
+        parts.append(f"run type → `{config['run_type']}`")
+    if name_val:
+        parts.append(f"name → `{name_val}`")
+        draft_updates["name"] = name_val
+        draft_updates["job_name"] = name_val
+
+    summary = "; ".join(parts) if parts else "settings updated"
+    return f"Updated **{resource.name}**: {summary}.", draft_updates
+
+
+def _build_sql_resource_config(merged: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    next_config = dict(config)
+    next_config.pop("target_environment", None)
+    next_config.pop("environment", None)
+
+    query = _non_empty_string(merged.get("query"))
+    if query and "query" not in next_config:
+        next_config["query"] = query
+
+    connection_id = _non_empty_string(merged.get("connection_id"))
+    if connection_id and "connection_id" not in next_config:
+        next_config["connection_id"] = connection_id
+
+    schedule = _non_empty_string(merged.get("schedule"))
+    if schedule and "schedule" not in next_config:
+        next_config["schedule"] = schedule
+
+    for field in ("database", "username", "password", "host", "port"):
+        value = _non_empty_string(merged.get(field))
+        if value and field not in next_config:
+            next_config[field] = value
+
+    return next_config
+
+
+def register_sql_job_from_chat(
+    db: Session,
+    *,
+    extracted_fields: dict[str, Any] | None,
+    current_draft: dict[str, Any] | None,
+) -> ChatJobRegistrationResult:
+    actor = get_chat_actor(db)
+    merged = _merge_dicts(current_draft, extracted_fields)
+    config = _merge_dicts(
+        current_draft.get("config") if isinstance(current_draft, dict) else None,
+        extracted_fields.get("config") if isinstance(extracted_fields, dict) else None,
+    )
+
+    resource_name = (
+        _non_empty_string(merged.get("name"))
+        or _non_empty_string(merged.get("job_name"))
+    )
+    if not resource_name:
+        return ChatJobRegistrationResult(
+            message="I can create the SQL job from chat, but I still need the job/resource name.",
+        )
+
+    resource = _find_sql_resource_for_actor(db, actor, resource_name)
+    if resource is not None:
+        return ChatJobRegistrationResult(
+            message=f"The SQL job `{resource.name}` is already registered and ready to run.",
+            resource_id=resource.id,
+            resource_name=resource.name,
+            resource_created=False,
+        )
+
+    connector = _resolved_sql_connector(merged)
+    environment = (
+        _non_empty_string(merged.get("target_environment"))
+        or _non_empty_string(merged.get("environment"))
+        or "dev"
+    )
+    data_sensitivity = _non_empty_string(merged.get("data_sensitivity")) or "low"
+    tags = _coerce_string_list(merged.get("tags"))
+    resource_config = _build_sql_resource_config(merged, config)
+
+    resource_out = create_resource(
+        db,
+        actor,
+        ResourceCreate(
+            name=resource_name,
+            kind="runtime",
+            type="sql",
+            connector=connector,
+            environment=environment,
+            config=resource_config,
+            data_sensitivity=data_sensitivity,
+            tags=tags,
+        ),
+    )
+    return ChatJobRegistrationResult(
+        message=f"Created SQL job `{resource_name}` and saved it as a Control Center resource. Do you want me to run it now?",
+        resource_id=resource_out["id"],
+        resource_name=resource_name,
+        resource_created=True,
+    )
+
+
 def maybe_run_sql_job_from_chat(
     db: Session,
     *,
@@ -279,22 +464,12 @@ def maybe_run_sql_job_from_chat(
                 message="I can run a SQL job from chat, but I still need the job/resource name.",
             )
 
-        connector = _infer_sql_connector(merged)
+        connector = _resolved_sql_connector(merged)
         environment = _non_empty_string(merged.get("environment")) or "dev"
         data_sensitivity = _non_empty_string(merged.get("data_sensitivity")) or "low"
         tags = _coerce_string_list(merged.get("tags"))
 
-        query = _non_empty_string(merged.get("query"))
-        if query and "query" not in config:
-            config["query"] = query
-
-        connection_id = _non_empty_string(merged.get("connection_id"))
-        if connection_id and "connection_id" not in config:
-            config["connection_id"] = connection_id
-
-        schedule = _non_empty_string(merged.get("schedule"))
-        if schedule and "schedule" not in config:
-            config["schedule"] = schedule
+        config = _build_sql_resource_config(merged, config)
 
         resource_out = create_resource(
             db,
@@ -365,6 +540,20 @@ def maybe_run_sql_job_from_chat(
         summary += " This run used the resource's registered default query."
 
     result_preview = _extract_sql_result_preview(db, run["id"])
+    effective_status = run["status"]
+    if _is_sql_execution_error(result_preview) and effective_status == "succeeded":
+        effective_status = "failed"
+        _mark_run_failed(db, run["id"])
+
+    summary = (
+        f"I {'registered and ' if created_resource else ''}started the SQL job for resource "
+        f"`{resource.name}`. Run ID: `{run['id']}`. Status: `{effective_status}`."
+    )
+    if params.get("query"):
+        summary += " This run used a query override from chat."
+    elif resource_query:
+        summary += " This run used the resource's registered default query."
+
     if result_preview:
         summary += f"\n\nSQL result:\n{result_preview}"
 
@@ -373,7 +562,7 @@ def maybe_run_sql_job_from_chat(
         message=summary,
         resource_id=resource.id,
         run_id=run["id"],
-        run_status=run["status"],
+        run_status=effective_status,
         resource_created=created_resource,
         result_preview=result_preview,
     )
@@ -406,9 +595,14 @@ def run_resource_by_id(
     )
 
     result_preview = _extract_sql_result_preview(db, run["id"])
+    effective_status = run["status"]
+    if _is_sql_execution_error(result_preview) and effective_status == "succeeded":
+        effective_status = "failed"
+        _mark_run_failed(db, run["id"])
+
     message = (
         f"Started a new run for **{resource.name}** ({resource.type}). "
-        f"Run ID: `{run['id']}`. Status: `{run['status']}`."
+        f"Run ID: `{run['id']}`. Status: `{effective_status}`."
     )
     if result_preview:
         message += f"\n\nResult:\n{result_preview}"
@@ -418,6 +612,6 @@ def run_resource_by_id(
         message=message,
         resource_id=resource.id,
         run_id=run["id"],
-        run_status=run["status"],
+        run_status=effective_status,
         result_preview=result_preview,
     )

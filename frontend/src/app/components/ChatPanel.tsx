@@ -952,55 +952,111 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
         )}
 
         {pendingConfigRequest && (
-          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
-            <p className="text-xs font-medium text-emerald-900">{pendingConfigRequest.prompt}</p>
-            <div className="mt-3 space-y-2">
-              {pendingConfigRequest.fields.map((field) => (
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
+            <p className="text-[11px] font-medium text-emerald-900 mb-2">{pendingConfigRequest.prompt}</p>
+            <div className="space-y-1.5">
+              {/* Host + Port on one row */}
+              {pendingConfigRequest.fields.some((f) => f.key === "SQL_DB_HOST") && (
+                <div className="flex gap-2">
+                  {["SQL_DB_HOST", "SQL_DB_PORT"].map((key) => {
+                    const field = pendingConfigRequest.fields.find((f) => f.key === key);
+                    if (!field) return null;
+                    return (
+                      <div key={field.key} className={key === "SQL_DB_HOST" ? "flex-1" : "w-24"}>
+                        <label className="block text-[10px] font-medium text-emerald-900 mb-0.5">
+                          {field.label}{field.required ? " *" : ""}
+                        </label>
+                        <input
+                          type="text"
+                          value={configInputValues[field.key] ?? sessionEnv[field.key] ?? ""}
+                          onChange={(e) => setConfigInputValues((prev) => ({ ...prev, [field.key]: e.target.value }))}
+                          placeholder={field.placeholder ?? ""}
+                          className="w-full rounded border border-emerald-300 bg-white px-2 py-1 text-xs text-gray-900 placeholder-gray-400 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {/* Database name */}
+              {pendingConfigRequest.fields.filter((f) => f.key === "SQL_DB_DATABASE").map((field) => (
                 <div key={field.key}>
-                  <label className="mb-1 block text-[11px] font-medium text-emerald-900">
-                    {field.label}
-                    {field.required ? " *" : ""}
+                  <label className="block text-[10px] font-medium text-emerald-900 mb-0.5">
+                    {field.label}{field.required ? " *" : ""}
                   </label>
-                    <input
-                      type={field.secret ? "password" : "text"}
-                      value={configInputValues[field.key] ?? sessionEnv[field.key] ?? ""}
-                      onChange={(e) =>
-                        setConfigInputValues((prev) => ({
-                          ...prev,
-                          [field.key]: e.target.value,
-                      }))
-                    }
+                  <input
+                    type="text"
+                    value={configInputValues[field.key] ?? sessionEnv[field.key] ?? ""}
+                    onChange={(e) => setConfigInputValues((prev) => ({ ...prev, [field.key]: e.target.value }))}
                     placeholder={field.placeholder ?? ""}
-                    className="w-full rounded-md border border-emerald-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-500 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                    className="w-full rounded border border-emerald-300 bg-white px-2 py-1 text-xs text-gray-900 placeholder-gray-400 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
                   />
                 </div>
               ))}
+              {/* Username + Password on one row */}
+              {pendingConfigRequest.fields.some((f) => f.key === "SQL_DB_USERNAME") && (
+                <div className="flex gap-2">
+                  {["SQL_DB_USERNAME", "SQL_DB_PASSWORD"].map((key) => {
+                    const field = pendingConfigRequest.fields.find((f) => f.key === key);
+                    if (!field) return null;
+                    return (
+                      <div key={field.key} className="flex-1">
+                        <label className="block text-[10px] font-medium text-emerald-900 mb-0.5">
+                          {field.label}{field.required ? " *" : ""}
+                        </label>
+                        <input
+                          type={field.secret ? "password" : "text"}
+                          value={configInputValues[field.key] ?? sessionEnv[field.key] ?? ""}
+                          onChange={(e) => setConfigInputValues((prev) => ({ ...prev, [field.key]: e.target.value }))}
+                          placeholder={field.placeholder ?? ""}
+                          className="w-full rounded border border-emerald-300 bg-white px-2 py-1 text-xs text-gray-900 placeholder-gray-400 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {/* Remaining fields (e.g. optional Connection ID) */}
+              {pendingConfigRequest.fields
+                .filter((f) => !["SQL_DB_HOST","SQL_DB_PORT","SQL_DB_DATABASE","SQL_DB_USERNAME","SQL_DB_PASSWORD"].includes(f.key))
+                .map((field) => (
+                  <div key={field.key}>
+                    <label className="block text-[10px] font-medium text-emerald-900 mb-0.5">
+                      {field.label}{field.required ? " *" : ""}
+                    </label>
+                    <input
+                      type={field.secret ? "password" : "text"}
+                      value={configInputValues[field.key] ?? sessionEnv[field.key] ?? ""}
+                      onChange={(e) => setConfigInputValues((prev) => ({ ...prev, [field.key]: e.target.value }))}
+                      placeholder={field.placeholder ?? ""}
+                      className="w-full rounded border border-emerald-300 bg-white px-2 py-1 text-xs text-gray-900 placeholder-gray-400 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                    />
+                  </div>
+                ))}
             </div>
             {pendingConfigRequest.repository_hints && pendingConfigRequest.repository_hints.length > 0 && (
-              <div className="mt-3 rounded-md border border-emerald-200 bg-white/70 px-3 py-2">
-                <p className="text-[11px] font-medium text-emerald-900">Repository hints</p>
-                <ul className="mt-1 space-y-1 text-[11px] text-emerald-800">
+              <div className="mt-2 rounded border border-emerald-200 bg-white/70 px-2 py-1.5">
+                <p className="text-[10px] font-medium text-emerald-900">Repository hints</p>
+                <ul className="mt-0.5 space-y-0.5 text-[10px] text-emerald-800">
                   {pendingConfigRequest.repository_hints.map((hint) => (
                     <li key={hint}>• {hint}</li>
                   ))}
                 </ul>
               </div>
             )}
-            <div className="mt-3 flex justify-end">
+            <div className="mt-2 flex items-center justify-between">
+              <p className="text-[10px] text-emerald-700">Session-only — not stored.</p>
               <button
                 onClick={() => void handleSubmitConfigRequest()}
                 disabled={
                   isLoading ||
                   pendingConfigRequest.fields.some((field) => field.required && !(configInputValues[field.key] ?? "").trim())
                 }
-                className="rounded-md bg-[#ed0923] px-3 py-2 text-xs font-medium text-white hover:bg-[#d10820] disabled:cursor-not-allowed disabled:bg-gray-300"
+                className="rounded bg-[#ed0923] px-3 py-1 text-xs font-medium text-white hover:bg-[#d10820] disabled:cursor-not-allowed disabled:bg-gray-300"
               >
                 {pendingConfigRequest.submit_label ?? "Use settings"}
               </button>
             </div>
-            <p className="mt-2 text-[11px] text-emerald-800">
-              These settings stay only in this chat session so the assistant can connect to the SQL MCP workflow live.
-            </p>
           </div>
         )}
 

@@ -1929,8 +1929,9 @@ export default function UserHome() {
     const normalized: Record<string, any> = {
       ...fields,
       ...(fields.name && !fields.job_name ? { job_name: fields.name } : {}),
-      ...(fields.environment !== undefined ? { environment: normalizeEnv(fields.environment) } : {}),
-      ...(fields.target_environment !== undefined ? { target_environment: normalizeEnv(fields.target_environment) } : {}),
+      ...((fields.target_environment ?? fields.environment) !== undefined
+        ? { target_environment: normalizeEnv(fields.target_environment ?? fields.environment) }
+        : {}),
       ...(fields.schedule === undefined && config.schedule !== undefined ? { schedule: config.schedule } : {}),
     };
     const normalizedSchedule = typeof normalized.schedule === "string" ? normalized.schedule.trim() : "";
@@ -1942,6 +1943,7 @@ export default function UserHome() {
       const connector = normalizeConnector(fields.connector ?? config.connector);
       const explicitConnectionId = fields.connection_id ?? config.connection_id;
       const parsedConnection = parseSqlConnectionString(config.sql_connection_string);
+      const { target_environment: _targetEnvironmentConfig, environment: _environmentConfig, ...sqlConfig } = config;
       const database =
         fields.database ??
         config.database ??
@@ -1954,11 +1956,12 @@ export default function UserHome() {
       normalized.connection_id = explicitConnectionId ?? defaultConnectionIdForConnector(connector);
       normalized.database = database ?? "";
       normalized.target_environment = normalized.target_environment ?? normalized.environment ?? "dev";
+      delete normalized.environment;
       normalized.query = fields.query ?? params.query ?? config.query ?? "";
       normalized.output_destination = fields.output_destination ?? config.output_destination ?? "";
       normalized.result_limit = fields.result_limit ?? config.result_limit ?? "";
       normalized.config = {
-        ...config,
+        ...sqlConfig,
         connection_id: normalized.connection_id,
         ...(normalized.database ? { database: normalized.database } : {}),
         ...(parsedConnection.host ? { host: config.host ?? parsedConnection.host } : {}),
@@ -1966,7 +1969,6 @@ export default function UserHome() {
         ...(parsedConnection.username ? { username: config.username ?? parsedConnection.username } : {}),
         query: normalized.query,
         schedule: normalized.schedule,
-        target_environment: normalized.target_environment,
         output_destination: normalized.output_destination,
         result_limit: normalized.result_limit,
       };
@@ -2071,10 +2073,10 @@ export default function UserHome() {
 
     if (jobType === "SQL") {
       return Boolean(
-        String(draft.connector ?? "").trim() &&
+          String(draft.connector ?? "").trim() &&
           String(draft.connection_id ?? draft.config?.connection_id ?? "").trim() &&
           String(draft.query ?? draft.config?.query ?? draft.params?.query ?? "").trim() &&
-          String(draft.target_environment ?? draft.config?.target_environment ?? draft.environment ?? "").trim()
+          String(draft.target_environment ?? draft.environment ?? "").trim()
       );
     }
 

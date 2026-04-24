@@ -83,7 +83,7 @@ def _derive_risk_inputs(resource, target_environment: str, mcp_config: MCPExecut
     if connector in {"fetch", "airflow", "powerbi", "tableau"}:
         risk_inputs.append("external_egress")
 
-    if target_environment in {"semi-prod", "staging"}:
+    if target_environment == "semi-prod":
         risk_inputs.append("semi_prod")
     elif target_environment == "prod":
         risk_inputs.append("prod")

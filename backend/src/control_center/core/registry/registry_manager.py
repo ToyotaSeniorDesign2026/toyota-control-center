@@ -28,7 +28,7 @@ class ApprovedServerDef(BaseModel):
     Example:
         {
             "description": "...",
-            "allowed_environments": ["dev", "staging"],
+            "allowed_environments": ["dev", "semi-prod"],
             "config_path": "configs/filesystem.json",
             "config_type": "standard",
             "version": "1.0",
@@ -53,6 +53,9 @@ class ApprovedServerDef(BaseModel):
     active: bool
     notes: str | None = None
     environment_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    job_type: str | None = None
+    required_fields: list[str] = Field(default_factory=list)
+    optional_fields: list[str] = Field(default_factory=list)
 
     @field_validator("config_type", mode="before")
     def normalize_config_type(cls, value: str | None) -> str:
@@ -98,6 +101,7 @@ class Registry(BaseModel):
 
     config_types: dict[str, ConfigTypeDef]
     environments: dict[str, EnvironmentDef]
+    universal_job_fields: dict[str, Any] = Field(default_factory=dict)
     approved_servers: dict[str, ApprovedServerDef]
 
     @field_validator("config_types", mode="before")

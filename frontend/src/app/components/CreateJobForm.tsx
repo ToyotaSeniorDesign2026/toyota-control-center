@@ -18,7 +18,6 @@ interface UniversalFields {
   job_name: string;
   description: string;
   owner: string;
-  environment: string;
   target_environment: string;
   data_sensitivity: string;
   schedule: string;
@@ -96,7 +95,7 @@ const normalizeEnvironment = (value: unknown) => {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim().toLowerCase();
   if (normalized === "production") return "prod";
-  if (normalized === "semi-prod" || normalized === "semiprod") return "staging";
+  if (normalized === "staging" || normalized === "semiprod") return "semi-prod";
   return normalized;
 };
 
@@ -123,7 +122,6 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
     job_name: "",
     description: "",
     owner: "",
-    environment: "dev",
     target_environment: "dev",
     data_sensitivity: "low",
     schedule: "",
@@ -282,8 +280,11 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
       ...((draftData.job_name ?? draftData.name) !== undefined && { job_name: draftData.job_name ?? draftData.name }),
       ...(draftData.description !== undefined && { description: draftData.description }),
       ...(draftData.owner !== undefined && { owner: draftData.owner }),
-      ...(draftData.environment !== undefined && { environment: normalizeEnvironment(draftData.environment) ?? draftData.environment }),
-      ...(draftData.target_environment !== undefined && { target_environment: normalizeEnvironment(draftData.target_environment) ?? draftData.target_environment }),
+      ...((draftData.target_environment ?? draftData.environment) !== undefined && {
+        target_environment:
+          normalizeEnvironment(draftData.target_environment ?? draftData.environment) ??
+          (draftData.target_environment ?? draftData.environment),
+      }),
       ...(draftData.data_sensitivity !== undefined && { data_sensitivity: draftData.data_sensitivity }),
       ...(incomingSchedule !== undefined && { schedule: incomingSchedule }),
       ...(draftData.approval_required !== undefined && { approval_required: draftData.approval_required }),
@@ -465,7 +466,6 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
       job_name: "",
       description: "",
       owner: "",
-      environment: "dev",
       target_environment: "dev",
       data_sensitivity: "low",
       schedule: "",
@@ -578,7 +578,7 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
                   />
                 </div>
 
-                {/* Two-Column Responsive Layout: Owner & Environment */}
+                {/* Two-Column Responsive Layout: Owner & Target Environment */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {/* Owner */}
                   <div className="space-y-2">
@@ -600,24 +600,6 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
                     )}
                   </div>
 
-                  {/* Environment */}
-                  <div className="space-y-2">
-                    <Label htmlFor="environment" className="text-sm font-medium text-gray-700">
-                      Environment
-                    </Label>
-                    <Select value={universal.environment} onValueChange={(value) =>
-                      setUniversal({ ...universal, environment: value })
-                    }>
-                      <SelectTrigger id="environment" className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="dev">Development</SelectItem>
-                      <SelectItem value="staging">Staging</SelectItem>
-                      <SelectItem value="prod">Production</SelectItem>
-                    </SelectContent>
-                    </Select>
-                  </div>
                 </div>
 
                 {/* Two-Column Responsive Layout: Target Environment & Data Sensitivity */}
@@ -635,7 +617,7 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="dev">Development</SelectItem>
-                        <SelectItem value="staging">Staging</SelectItem>
+                        <SelectItem value="semi-prod">Semi-Production</SelectItem>
                         <SelectItem value="prod">Production</SelectItem>
                       </SelectContent>
                     </Select>

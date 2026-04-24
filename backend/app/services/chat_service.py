@@ -16,7 +16,12 @@ _REGISTRY_PATH = (
 
 
 def _build_job_types_section() -> str:
-    """Read registry.json and return a compact job-types reference for the system prompt."""
+    """Return the available job types for the system prompt.
+
+    Includes universal fields plus job-specific required/optional fields from
+    registry.json. The router still owns deterministic ordered collection; this
+    context keeps the LLM's wording aligned with the registry.
+    """
     try:
         with open(_REGISTRY_PATH) as f:
             registry = json.load(f)
@@ -26,38 +31,61 @@ def _build_job_types_section() -> str:
 
     lines: list[str] = []
 
-    # Universal fields
+    # Universal fields — safe to expose; the LLM collects these conversationally
     universal = registry.get("universal_job_fields", {})
     req = universal.get("required", [])
     opt = universal.get("optional", [])
     if req or opt:
-        lines.append("UNIVERSAL FIELDS (every job type):")
+        lines.append("UNIVERSAL FIELDS (collected for every job):")
         if req:
             lines.append(f"  Required: {', '.join(req)}")
         if opt:
             lines.append(f"  Optional: {', '.join(opt)}")
         lines.append("")
 
-    # Per-connector job fields
-    job_servers = {
-        name: srv
-        for name, srv in registry.get("approved_servers", {}).items()
-        if srv.get("required_fields") is not None or srv.get("optional_fields") is not None
-    }
-    if job_servers:
-        lines.append("CONNECTOR-SPECIFIC FIELDS:")
-        for name, srv in job_servers.items():
-            display = srv.get("display_name") or name
-            job_type = srv.get("job_type", name)
-            req = srv.get("required_fields") or []
-            opt = srv.get("optional_fields") or []
-            lines.append(f"  {display} (connector: {name}, job_type: {job_type}):")
-            if req:
-                lines.append(f"    Required: {', '.join(req)}")
-            if opt:
-                lines.append(f"    Optional: {', '.join(opt)}")
+    # Job type field references from approved servers.
+    seen: set[str] = set()
+    job_type_lines: list[str] = []
+    for srv in registry.get("approved_servers", {}).values():
+        jt = srv.get("job_type")
+        if not jt or jt in seen:
+            continue
+        seen.add(jt)
+        display = srv.get("display_name") or jt
+        required = srv.get("required_fields") or []
+        optional = srv.get("optional_fields") or []
+        job_type_lines.append(f"  - {jt} ({display})")
+        if required:
+            job_type_lines.append(f"    Required: {', '.join(required)}")
+        if optional:
+            job_type_lines.append(f"    Optional: {', '.join(optional)}")
+
+    if job_type_lines:
+        lines.append("SUPPORTED JOB TYPES:")
+        lines.extend(job_type_lines)
 
     return "\n".join(lines)
+
+
+_LLM_HIDDEN_DRAFT_KEYS = frozenset({
+    "host", "port", "database", "username", "password",
+    "connection_id", "connector", "config", "params",
+    "_connection_form_shown", "_connection_id_asked", "awaiting_confirmation",
+})
+
+
+def _llm_visible_draft(draft: dict | None) -> dict:
+    """Return only the fields the LLM should see in the draft context.
+
+    Strips connection credentials, internal flags, and connector details so the
+    LLM never has information it might try to collect or expose.
+    """
+    if not draft:
+        return {}
+    return {
+        k: v for k, v in draft.items()
+        if k not in _LLM_HIDDEN_DRAFT_KEYS and not k.startswith("_")
+    }
 
 
 class ChatService:
@@ -98,10 +126,11 @@ class ChatService:
                 else "(none)"
             )
 
+            visible_draft = _llm_visible_draft(current_draft)
             draft_context = (
-                f"\n\nCURRENT DRAFT:\n{json.dumps(current_draft, indent=2)}\n"
+                f"\n\nCURRENT DRAFT:\n{json.dumps(visible_draft, indent=2)}\n"
                 "Ask for the next missing required field only. Do not re-ask filled fields."
-                if current_draft
+                if visible_draft
                 else ""
             )
 
@@ -112,10 +141,12 @@ Help users create, run, and manage jobs through a conversational UI.
 
 RULES:
 - Be concise and conversational. One question at a time.
-- Collect universal fields first, then connector-specific fields.
+- Collect universal fields (job_name, owner, run_type) conversationally.
 - run_type="manual" means no schedule is needed.
 - Never invent or assume field values. Never expose internal schemas.
 - For SQL jobs: plain-English queries (e.g. "get all users") are valid — convert them to SQL.
+- For SQL jobs: do NOT ask about connectors, databases, hosts, ports, or credentials — those are collected via a separate form automatically.
+- NEVER simulate, fabricate, or pretend to execute database queries. You have no database access. If the user asks you to query a database or retrieve data, tell them the SQL job creation flow will handle that once they provide their database connection details.
 
 AVAILABLE JOBS (existing resources the user can run):
 {resources_list}
