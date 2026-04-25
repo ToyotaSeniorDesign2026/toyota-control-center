@@ -12,6 +12,7 @@ import os
 import re
 from typing import Any
 
+from sqlalchemy import create_engine, text
 from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
@@ -54,12 +55,21 @@ def _build_sqlalchemy_url() -> str:
 mcp = FastMCP("sql-mcp-server")
 
 
+_CONNECT_TIMEOUT = int(os.environ.get("SQL_CONNECT_TIMEOUT", "15"))
+_QUERY_TIMEOUT = int(os.environ.get("SQL_QUERY_TIMEOUT", "30"))
+
+
+def _make_engine():
+    return create_engine(
+        _build_sqlalchemy_url(),
+        connect_args={"connect_timeout": _CONNECT_TIMEOUT},
+    )
+
+
 @mcp.tool()
 def list_tables() -> list[str]:
     """Return the names of all user tables in the connected database."""
-    from sqlalchemy import create_engine, text
-
-    engine = create_engine(_build_sqlalchemy_url())
+    engine = _make_engine()
     with engine.connect() as conn:
         result = conn.execute(
             text(
@@ -77,9 +87,7 @@ def execute_query(query: str) -> dict[str, Any]:
     Args:
         query: A valid SQL statement.
     """
-    from sqlalchemy import create_engine, text
-
-    engine = create_engine(_build_sqlalchemy_url())
+    engine = _make_engine()
     with engine.begin() as conn:
         result = conn.execute(text(query))
         if not result.returns_rows:

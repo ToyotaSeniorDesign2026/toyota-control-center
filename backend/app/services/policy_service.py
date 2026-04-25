@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.core.db import new_id, now_iso
 from app.models.policy import PolicyCheckResult as PolicyCheckResultModel
 from app.models.policy import PolicyEvaluation
-from app.models.resource import Resource
+from app.models.job import Job
 from app.schemas.policy import PolicyCheckResult, PolicyDecision, PolicyEvaluationOut
 
 
@@ -49,13 +49,13 @@ def _build_check(
 
 
 def evaluate_run_request(db: Session, user, run: dict) -> PolicyDecision:
-    resource = db.get(Resource, run["resource_id"])
+    resource = db.get(Job, run["job_id"])
     if not resource:
         return PolicyDecision(
             status="blocked",
             risk_score=100,
             risk_level="high",
-            reasons=["Resource not found for policy evaluation"],
+            reasons=["Job not found for policy evaluation"],
             requires_approval=True,
             evaluation_id=None,
         )

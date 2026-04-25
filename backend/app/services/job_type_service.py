@@ -24,6 +24,7 @@ _JOB_TYPE_REGISTRY = [
                 "repo",
                 "path",
                 "ref",
+                "github_token",
             ],
         },
         "supported_job_actions": ["activate", "pause", "archive"],

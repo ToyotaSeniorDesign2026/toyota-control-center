@@ -86,9 +86,8 @@ async def github_write_file(
         "path": path,
         "message": commit_message,
         "content": content,
+        "branch": branch or "main",
     }
-    if branch:
-        arguments["branch"] = branch
 
     client = LLMClient()
     try:

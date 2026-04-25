@@ -2,8 +2,12 @@ from __future__ import annotations
 
 """Run service layer: run creation/execution, state machine enforcement, and run queries."""
 
+import logging
+
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
+
+_logger = logging.getLogger(__name__)
 
 from app.core.db import new_id, now_iso
 from app.models.job import Job
@@ -364,3 +368,32 @@ def retry_run(db: Session, user, run_id: str):
     append_run_log(db, run_id, "INFO", "Retry requested", {"new_run": True})
     write_audit(db, user, "RUN_RETRY_REQUESTED", {"run_id": run_id})
     return create_run_and_maybe_execute(db, user, payload)
+
+
+def cleanup_orphaned_runs(db: Session) -> int:
+    """Mark runs left in non-terminal states by a previous process as failed.
+
+    Called once at API startup so runs orphaned by a container restart don't
+    stay stuck in 'queued' or 'executing' forever.
+    """
+    orphaned = (
+        db.query(Run)
+        .filter(Run.status.in_(["queued", "executing", "running"]))
+        .all()
+    )
+    ts = now_iso()
+    for run in orphaned:
+        run.status = "failed"
+        run.error = "Orphaned: process restarted before execution completed"
+        run.updated_at = ts
+        db.add(run)
+        append_run_log(
+            db,
+            run.id,
+            "ERROR",
+            "Run marked failed: server restarted while run was in-progress",
+        )
+    if orphaned:
+        db.commit()
+        _logger.warning("Marked %d orphaned run(s) as failed on startup", len(orphaned))
+    return len(orphaned)

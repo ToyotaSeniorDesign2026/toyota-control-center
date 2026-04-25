@@ -20,12 +20,14 @@ import {
   ChevronDown,
   GitMerge,
   Plus,
+  Trash2,
 } from "lucide-react";
 import { useNavigate } from "react-router";
 import { Button } from "../components/ui/button";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
 import { ChatPanel } from "../components/ChatPanel";
+import { RunParamsModal, connectorNeedsRunParams } from "../components/RunParamsModal";
 import ExcelReportForm from "../components/user/ExcelReportForm";
 import SQLJobForm from "../components/user/SQLJobForm";
 import PowerPointForm from "../components/user/PowerPointForm";
@@ -34,6 +36,7 @@ import { useJobRuns } from "../contexts/JobRunContext";
 import {
   createJob,
   createJobRun,
+  deleteJob,
   getRunLogs,
   listMcpRepoBundles,
   listMcpServers,
@@ -894,6 +897,7 @@ export default function UserHome() {
   const [jobSort, setJobSort] = useState<"name" | "status" | "type" | "recently-updated">("name");
   const [jobFilter, setJobFilter] = useState<string>("all");
   const [runningJobIds, setRunningJobIds] = useState<string[]>([]);
+  const [runParamsJob, setRunParamsJob] = useState<JobRecord | null>(null);
   const [templateSort, setTemplateSort] = useState<"name" | "category" | "recently-used" | "recommended">("name");
   const [templateFilter, setTemplateFilter] = useState<"all" | "PowerPoint" | "Excel" | "SQL" | "Workflow" | "Form" | "Dashboard">("all");
   const [selectedPromotions, setSelectedPromotions] = useState<string[]>([]);
@@ -909,7 +913,7 @@ export default function UserHome() {
   const [repoConnectionSuccess, setRepoConnectionSuccess] = useState<string | null>(null);
   const [isSavingRepoConnection, setIsSavingRepoConnection] = useState(false);
   const [consoleHeight, setConsoleHeight] = useState(50);
-  const [consoleActiveTab, setConsoleActiveTab] = useState<"json" | "logs" | "events">("json");
+  const [consoleActiveTab, setConsoleActiveTab] = useState<"json" | "logs" | "events" | "output">("json");
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [runLogs, setRunLogs] = useState<RunLogEntry[]>([]);
   const [expandedActionId, setExpandedActionId] = useState<string | null>(null);
@@ -1240,6 +1244,26 @@ export default function UserHome() {
     ];
   };
 
+  const getConsoleOutput = () => {
+    const execLog = runLogs.find((l) => l.message === "Connector execution finished");
+    if (!execLog) return null;
+    const meta = execLog.metadata as any;
+    const execution = meta?.metadata?.execution ?? meta?.execution ?? null;
+    return {
+      final_text: execution?.final_text ?? null,
+      tool_executions: (execution?.tool_executions ?? []) as Array<{
+        framework_name?: string;
+        server_name?: string;
+        remote_name?: string;
+        arguments?: Record<string, unknown>;
+        parsed_result?: unknown;
+      }>,
+      result: execution?.result ?? null,
+      error: execution?.error ?? meta?.error ?? null,
+      status: execution?.status ?? meta?.status ?? null,
+    };
+  };
+
   // Fetch run logs whenever activeRunId changes, polling until the run reaches a terminal state
   useEffect(() => {
     if (!activeRunId) return;
@@ -1250,9 +1274,12 @@ export default function UserHome() {
         const result = await getRunLogs(activeRunId, getAuthToken());
         if (!stopped) {
           setRunLogs(result.logs);
-          // Stop polling once the run is in a terminal state
-          const terminal = ["completed", "failed", "stopped", "cancelled", "canceled"];
-          if (terminal.includes(result.status.toLowerCase())) stopped = true;
+          // Stop polling once the run is in a terminal state; auto-switch to output
+          const terminal = ["completed", "succeeded", "failed", "stopped", "cancelled", "canceled", "deployed"];
+          if (terminal.includes(result.status.toLowerCase())) {
+            stopped = true;
+            setConsoleActiveTab("output");
+          }
         }
       } catch {
         // ignore fetch errors silently
@@ -2058,6 +2085,27 @@ export default function UserHome() {
       return;
     }
 
+    // For the GitHub write flow, silently register any new repo the user provides so it
+    // appears in the Connected Repo Context for future sessions. registerRepoConnection
+    // deduplicates internally, so re-calling with an already-connected repo is safe.
+    if (isGithubWriteFlow) {
+      const repoSlug = normalizeGithubRepoInput(String(normalized.repo ?? ""));
+      if (repoSlug) {
+        void registerRepoConnection(
+          {
+            repo: repoSlug,
+            ref: String(normalized.ref ?? ""),
+            path: "",
+            displayName: repoSlug.split("/")[1] ?? repoSlug,
+            description: "",
+          },
+          "chat",
+        ).catch(() => {
+          // silently ignore — don't interrupt the write flow for a background registration failure
+        });
+      }
+    }
+
     setJobDraft((prev) => mergeDraftValues(prev, normalized));
   };
 
@@ -2382,18 +2430,17 @@ export default function UserHome() {
     };
   };
 
-  const runResourceFromUi = async (resourceId: string) => {
-    const resource = jobs.find((item) => item.id === resourceId);
-    if (!resource) {
-      emitConsoleEvent("missing_fields_identified", "Unable to run job because the resource was not found", { resource_id: resourceId });
-      return;
-    }
-
+  const executeRunWithParams = async (resource: JobRecord, extraParams: Record<string, unknown>) => {
+    const resourceId = resource.id;
     setRunningJobIds((current) => Array.from(new Set([...current, resourceId])));
-    emitConsoleEvent("draft_updated", `Started run for ${resource.name}`, { resource_id: resource.id });
-
+    emitConsoleEvent("draft_updated", `Started run for ${resource.name}`, { resource_id: resourceId });
     try {
-      const run = await createJobRun(resource.id, buildRunPayloadFromResource(resource), getAuthToken());
+      const basePayload = buildRunPayloadFromResource(resource);
+      const run = await createJobRun(
+        resource.id,
+        { ...basePayload, params: { ...basePayload.params, ...extraParams } },
+        getAuthToken(),
+      );
       setActiveRunId(run.id);
       setRunLogs([]);
       setConsoleActiveTab("logs");
@@ -2401,13 +2448,49 @@ export default function UserHome() {
       await refreshJobRuns();
     } catch (err) {
       emitConsoleEvent("missing_fields_identified", `Unable to run ${resource.name}`, {
-        resource_id: resource.id,
+        resource_id: resourceId,
         error: err instanceof Error ? err.message : "Unknown error",
       });
     } finally {
       setRunningJobIds((current) => current.filter((id) => id !== resourceId));
     }
   };
+
+  const runResourceFromUi = async (resourceId: string) => {
+    const resource = jobs.find((item) => item.id === resourceId);
+    if (!resource) {
+      emitConsoleEvent("missing_fields_identified", "Unable to run job because the resource was not found", { resource_id: resourceId });
+      return;
+    }
+
+    if (connectorNeedsRunParams(resource)) {
+      setRunParamsJob(resource);
+      return;
+    }
+
+    await executeRunWithParams(resource, {});
+  };
+
+  const handleDeleteJob = async (jobId: string, jobName: string) => {
+    if (!window.confirm(`Delete job "${jobName}"? This will also remove all of its run history and cannot be undone.`)) {
+      return;
+    }
+    try {
+      await deleteJob(jobId, getAuthToken());
+      await refreshJobRuns();
+    } catch (err) {
+      alert(`Failed to delete job: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const handleRunParamsSubmit = (params: Record<string, string>) => {
+    if (!runParamsJob) return;
+    const resource = runParamsJob;
+    setRunParamsJob(null); // close modal immediately — don't block UI on execution
+    void executeRunWithParams(resource, params);
+  };
+
+  // kept for compatibility with the post-creation immediate-run path below
 
   useEffect(() => {
     if (
@@ -4363,14 +4446,23 @@ export default function UserHome() {
                         </span>
                       </div>
                     </button>
-                    <button
-                      onClick={() => void runResourceFromUi(job.id)}
-                      className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-[#ed0923] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#d10820] disabled:cursor-not-allowed disabled:bg-gray-300"
-                      disabled={runningJobIds.includes(job.id)}
-                    >
-                      <PlayCircle className="h-3.5 w-3.5" />
-                      {runningJobIds.includes(job.id) ? "Running..." : "Run manually"}
-                    </button>
+                    <div className="mt-3 flex items-center gap-2">
+                      <button
+                        onClick={() => void runResourceFromUi(job.id)}
+                        className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md bg-[#ed0923] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#d10820] disabled:cursor-not-allowed disabled:bg-gray-300"
+                        disabled={runningJobIds.includes(job.id)}
+                      >
+                        <PlayCircle className="h-3.5 w-3.5" />
+                        {runningJobIds.includes(job.id) ? "Running..." : "Run manually"}
+                      </button>
+                      <button
+                        onClick={() => void handleDeleteJob(job.id, job.name)}
+                        title="Delete job"
+                        className="inline-flex items-center justify-center rounded-md border border-gray-200 p-1.5 text-gray-400 hover:border-red-300 hover:bg-red-50 hover:text-red-600"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </div>
                 ))}
                 {readyJobs.length === 0 && (
@@ -4431,6 +4523,13 @@ export default function UserHome() {
                         >
                           <PlayCircle className="h-3.5 w-3.5" />
                           {runningJobIds.includes(job.id) ? "Running..." : "Run manually"}
+                        </button>
+                        <button
+                          onClick={() => void handleDeleteJob(job.id, job.name)}
+                          title="Delete job"
+                          className="inline-flex items-center justify-center rounded-md border border-gray-200 p-1.5 text-gray-400 hover:border-red-300 hover:bg-red-50 hover:text-red-600"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       </div>
                     </div>
@@ -5180,20 +5279,23 @@ export default function UserHome() {
                       
                       {consoleHeight > 80 && (
                         <div className="flex items-center gap-1 border-l border-gray-300 pl-3">
-                          {["json", "logs", "events"].map((tab) => (
+                          {(["json", "logs", "events", "output"] as const).map((tab) => (
                             <button
                               key={tab}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setConsoleActiveTab(tab as any);
+                                setConsoleActiveTab(tab);
                               }}
-                              className={`px-2.5 py-1 text-xs font-medium rounded transition ${
+                              className={`px-2.5 py-1 text-xs font-medium rounded transition relative ${
                                 consoleActiveTab === tab
                                   ? "text-[#ed0923] bg-[#ed0923]/10"
                                   : "text-gray-600 hover:text-gray-900 hover:bg-gray-100"
                               }`}
                             >
                               {tab.toUpperCase()}
+                              {tab === "output" && getConsoleOutput() && (
+                                <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-green-500" />
+                              )}
                             </button>
                           ))}
                         </div>
@@ -5237,6 +5339,9 @@ export default function UserHome() {
                               </div>
                             ))}
                           </div>
+                        )}
+                        {consoleActiveTab === "output" && (
+                          <ConsoleOutputPanel output={getConsoleOutput()} runId={activeRunId} />
                         )}
                       </div>
                     )}
@@ -5521,20 +5626,23 @@ export default function UserHome() {
                       
                       {consoleHeight > 80 && (
                         <div className="flex items-center gap-1 border-l border-gray-300 pl-3">
-                          {["json", "logs", "events"].map((tab) => (
+                          {(["json", "logs", "events", "output"] as const).map((tab) => (
                             <button
                               key={tab}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setConsoleActiveTab(tab as any);
+                                setConsoleActiveTab(tab);
                               }}
-                              className={`px-2.5 py-1 text-xs font-medium rounded transition ${
+                              className={`px-2.5 py-1 text-xs font-medium rounded transition relative ${
                                 consoleActiveTab === tab
                                   ? "text-[#ed0923] bg-[#ed0923]/10"
                                   : "text-gray-600 hover:text-gray-900 hover:bg-gray-100"
                               }`}
                             >
                               {tab.toUpperCase()}
+                              {tab === "output" && getConsoleOutput() && (
+                                <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-green-500" />
+                              )}
                             </button>
                           ))}
                         </div>
@@ -5578,6 +5686,9 @@ export default function UserHome() {
                               </div>
                             ))}
                           </div>
+                        )}
+                        {consoleActiveTab === "output" && (
+                          <ConsoleOutputPanel output={getConsoleOutput()} runId={activeRunId} />
                         )}
                       </div>
                     )}
@@ -5697,6 +5808,187 @@ export default function UserHome() {
             </p>
           </div>
         </div>
+      )}
+
+      {runParamsJob && (
+        <RunParamsModal
+          job={runParamsJob}
+          onClose={() => setRunParamsJob(null)}
+          onSubmit={handleRunParamsSubmit}
+          isSubmitting={false}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Console Output Panel
+// ---------------------------------------------------------------------------
+
+interface OutputData {
+  final_text: string | null;
+  tool_executions: Array<{
+    framework_name?: string;
+    server_name?: string;
+    remote_name?: string;
+    arguments?: Record<string, unknown>;
+    parsed_result?: unknown;
+  }>;
+  result: unknown;
+  error: string | null;
+  status: string | null;
+}
+
+function tryParseRows(value: unknown): Array<Record<string, unknown>> | null {
+  if (Array.isArray(value) && value.length > 0 && typeof value[0] === "object") {
+    return value as Array<Record<string, unknown>>;
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === "object") {
+        return parsed as Array<Record<string, unknown>>;
+      }
+    } catch {
+      // not JSON
+    }
+  }
+  return null;
+}
+
+function ResultTable({ rows }: { rows: Array<Record<string, unknown>> }) {
+  const cols = Array.from(new Set(rows.flatMap((r) => Object.keys(r))));
+  return (
+    <div className="overflow-x-auto rounded border border-gray-200">
+      <table className="text-xs w-full border-collapse">
+        <thead>
+          <tr className="bg-gray-50">
+            {cols.map((c) => (
+              <th key={c} className="px-3 py-1.5 text-left font-semibold text-gray-700 border-b border-gray-200 whitespace-nowrap">
+                {c}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-gray-50"}>
+              {cols.map((c) => (
+                <td key={c} className="px-3 py-1.5 text-gray-800 border-b border-gray-100 whitespace-nowrap max-w-xs truncate">
+                  {row[c] === null || row[c] === undefined ? (
+                    <span className="text-gray-400 italic">null</span>
+                  ) : (
+                    String(row[c])
+                  )}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="px-3 py-1 text-xs text-gray-400 border-t border-gray-200 bg-gray-50">
+        {rows.length} row{rows.length !== 1 ? "s" : ""}
+      </div>
+    </div>
+  );
+}
+
+function ConsoleOutputPanel({ output, runId }: { output: OutputData | null; runId: string | null }) {
+  if (!output && !runId) {
+    return (
+      <p className="text-xs text-gray-400 py-2">No output yet — run a job to see results here.</p>
+    );
+  }
+  if (!output) {
+    return (
+      <p className="text-xs text-gray-400 py-2">Waiting for job to complete…</p>
+    );
+  }
+
+  const rows = tryParseRows(output.result);
+
+  return (
+    <div className="space-y-4 font-sans text-xs">
+      {/* Error */}
+      {output.error && (
+        <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-red-700">
+          <span className="font-semibold">Error: </span>{output.error}
+        </div>
+      )}
+
+      {/* Final text (agent summary) */}
+      {output.final_text && (
+        <div className="rounded border border-gray-200 bg-white px-3 py-2">
+          <p className="text-xs font-semibold text-gray-500 mb-1">Result</p>
+          <p className="whitespace-pre-wrap text-gray-900 leading-relaxed">{output.final_text}</p>
+        </div>
+      )}
+
+      {/* GitHub write result */}
+      {!output.final_text && rows === null && output.result && (
+        <div className="rounded border border-gray-200 bg-white px-3 py-2">
+          <p className="text-xs font-semibold text-gray-500 mb-1">Result</p>
+          <pre className="whitespace-pre-wrap text-gray-900">{JSON.stringify(output.result, null, 2)}</pre>
+        </div>
+      )}
+
+      {/* Direct result as table */}
+      {rows && (
+        <div>
+          <p className="text-xs font-semibold text-gray-500 mb-1">Query Results</p>
+          <ResultTable rows={rows} />
+        </div>
+      )}
+
+      {/* Tool executions */}
+      {output.tool_executions.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-gray-500">Tool Executions ({output.tool_executions.length})</p>
+          {output.tool_executions.map((te, i) => {
+            const teRows = tryParseRows(te.parsed_result);
+            return (
+              <div key={i} className="rounded border border-gray-200 bg-gray-50 px-3 py-2 space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-gray-700">{te.remote_name ?? te.framework_name ?? "tool"}</span>
+                  {te.server_name && (
+                    <span className="text-gray-400">({te.server_name})</span>
+                  )}
+                </div>
+                {te.arguments && Object.keys(te.arguments).length > 0 && (
+                  <div>
+                    <p className="text-gray-400 mb-0.5">Arguments</p>
+                    <pre className="bg-white rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 whitespace-pre-wrap overflow-x-auto">
+                      {JSON.stringify(te.arguments, null, 2)}
+                    </pre>
+                  </div>
+                )}
+                {teRows ? (
+                  <div>
+                    <p className="text-gray-400 mb-0.5">Result</p>
+                    <ResultTable rows={teRows} />
+                  </div>
+                ) : te.parsed_result !== undefined && te.parsed_result !== null ? (
+                  <div>
+                    <p className="text-gray-400 mb-0.5">Result</p>
+                    <pre className="bg-white rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 whitespace-pre-wrap overflow-x-auto">
+                      {typeof te.parsed_result === "string"
+                        ? te.parsed_result
+                        : JSON.stringify(te.parsed_result, null, 2)}
+                    </pre>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Empty state when run succeeded but no output captured */}
+      {!output.error && !output.final_text && output.tool_executions.length === 0 && !output.result && (
+        <p className="text-xs text-gray-400 py-2">
+          Job completed but produced no captured output.
+        </p>
       )}
     </div>
   );

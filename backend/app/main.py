@@ -17,6 +17,7 @@ from app.core.logging import setup_logging
 from app.middleware.audit_middleware import AuditMiddleware
 from app.middleware.request_id import RequestIdMiddleware
 from app.workers.tasks import scheduler_loop
+from app.services.run_service import cleanup_orphaned_runs
 
 
 def create_app() -> FastAPI:
@@ -56,6 +57,14 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def start_scheduler() -> None:
         nonlocal scheduler_stop_event, scheduler_task
+        from app.api.deps import get_db
+        db = next(get_db())
+        try:
+            cleanup_orphaned_runs(db)
+        except Exception:
+            _logger.exception("Failed to clean up orphaned runs on startup")
+        finally:
+            db.close()
         if not settings.job_scheduler_enabled:
             return
         scheduler_stop_event = asyncio.Event()

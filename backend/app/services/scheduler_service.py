@@ -122,14 +122,21 @@ def _recent_duplicate_exists(db: Session, job_id: str, fire_key: str) -> bool:
 
 def _run_payload_for_job(job: Job, fire_key: str) -> RunCreate:
     config = job.config or {}
+    is_github_write = job.type == "sql" and str(job.connector or "").lower() == "github"
+    params: dict = {}
+    if config.get("query"):
+        params["query"] = config["query"]
+    if config.get("connection_id"):
+        params["connection_id"] = config["connection_id"]
+    if is_github_write:
+        for key in ("github_token", "repo", "path", "file_path", "ref", "branch"):
+            if config.get(key):
+                params[key] = config[key]
     return RunCreate(
         job_id=job.id,
         action="run",
         target_environment=job.environment or "dev",
-        params={
-            **({"query": config.get("query")} if config.get("query") else {}),
-            **({"connection_id": config.get("connection_id")} if config.get("connection_id") else {}),
-        },
+        params=params,
         job_config={
             "intent": "scheduled_run",
             "schedule": config.get("schedule"),

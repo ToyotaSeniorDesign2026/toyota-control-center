@@ -19,12 +19,15 @@ from app.services.chat_service import get_chat_service
 from app.services.field_extraction_service import get_field_extraction_service
 from app.services.chat_job_service import (
     get_chat_actor,
+    get_github_token_for_repo,
     maybe_run_sql_job_from_chat,
     register_github_write_job_from_chat,
     register_sql_job_from_chat,
     run_job_by_id,
+    save_github_token_for_repo,
     update_sql_job_from_chat,
 )
+from app.services.job_service import delete_job as delete_job_service, list_jobs as list_jobs_service
 from app.services.chat_mcp_service import run_prompt_native_mcp, github_write_file
 from app.services.run_service import list_runs
 
@@ -189,6 +192,12 @@ RECENT_RUNS_QUESTION_PATTERN = re.compile(
     r"\b(recent|latest|last)\b.{0,40}\b(jobs|runs)\b"
     r"|\bwhat jobs have i run\b"
     r"|\bshow my recent runs\b",
+    re.IGNORECASE,
+)
+DELETE_JOB_PATTERN = re.compile(
+    r"\b(delete|remove|destroy|drop)\b.{0,60}\bjob\b"
+    r"|\bdelete\b.{0,60}\b(script|workflow|task)\b"
+    r"|\bget rid of\b.{0,60}\bjob\b",
     re.IGNORECASE,
 )
 REPO_ENV_DISCOVERY_FILES = [
@@ -390,7 +399,7 @@ def _openai_extract_sql_fields(message: str, draft: dict, history: list[dict] | 
             "You are a field extractor for SQL job creation. "
             "Given the user's message, extract ONLY fields that are explicitly stated or clearly described.\n"
             "Extractable fields: job_name, owner, run_type (manual|scheduled), schedule, "
-            "query (valid SQL), database, connection_id, username, password, host, port.\n"
+            "query (valid SQL), database, connection_id, username, password, host, port, folder_hint.\n"
             "Rules:\n"
             "- ONLY extract a field if the user's message directly provides or clearly describes its value.\n"
             "- For 'query': if the user provides actual SQL, return it exactly. If they describe an "
@@ -399,6 +408,10 @@ def _openai_extract_sql_fields(message: str, draft: dict, history: list[dict] | 
             "(e.g. 'SELECT * FROM orders;', 'CREATE TABLE customers (id SERIAL PRIMARY KEY, name VARCHAR(100));'). "
             "NEVER invent a query from vague intents with no specific target (e.g. 'run a SQL query').\n"
             "- For 'run_type': output exactly 'manual' or 'scheduled'.\n"
+            "- For 'folder_hint': extract the Git folder path the user wants to save the file in. "
+            "Examples: 'under a collections jobs folder' → 'collections_jobs', "
+            "'in the reporting directory' → 'reporting', 'save to etl/jobs' → 'etl/jobs', "
+            "'in a scripts folder' → 'scripts'. Use snake_case. Only set if user mentions a folder.\n"
             "- If unsure, omit the field entirely. Returning an empty object {} is perfectly valid.\n"
             "- Return a JSON object with only the found fields.\n"
             f"Already-known fields (do not repeat unless the user explicitly changes them): {existing}"
@@ -422,7 +435,8 @@ def _openai_extract_sql_fields(message: str, draft: dict, history: list[dict] | 
             return {}
         # Sanitise: only accept known field names, apply _coerce_to_sql for query
         allowed = {"job_name", "owner", "run_type", "schedule", "query",
-                   "database", "connection_id", "username", "password", "host", "port"}
+                   "database", "connection_id", "username", "password", "host", "port",
+                   "folder_hint"}
         result: dict[str, Any] = {}
         for k, v in raw.items():
             if k not in allowed or not isinstance(v, str) or not v.strip():
@@ -697,6 +711,43 @@ def _suggest_sql_filename(query: str) -> str:
         return f"{op}_{'_'.join(tables[:2])}.sql"
     return f"{op}.sql"
 
+
+_SCHEDULE_HAS_TIME_PATTERN = re.compile(
+    r"\b(\d{1,2})(:\d{2})?\s*(am|pm)\b"           # "9am", "6:30pm"
+    r"|\b(\d{1,2}):\d{2}\b"                         # "09:00", "18:30"
+    r"|\b(noon|midnight|midday)\b"                   # named times
+    r"|\b(\d{1,2})\s+o[''']?clock\b"                # "9 o'clock"
+    r"|\b(cron|[0-5]?\d\s+[01]?\d\s+[\*\d])",       # raw cron expression
+    re.IGNORECASE,
+)
+_SCHEDULE_VAGUE_PATTERN = re.compile(
+    r"^\s*(daily|every\s+day|weekly|every\s+week|monthly|every\s+month"
+    r"|hourly|every\s+hour|each\s+day|each\s+week|weekdays?|weekends?)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _schedule_needs_time(schedule: str) -> bool:
+    """Return True when the schedule string is too vague — has a cadence but no time-of-day."""
+    s = schedule.strip()
+    if _SCHEDULE_HAS_TIME_PATTERN.search(s):
+        return False  # already has a time component
+    return bool(_SCHEDULE_VAGUE_PATTERN.match(s))
+
+
+def _suggest_gw_file_path(query: str, folder_hint: str | None) -> str:
+    """Build a Git file path from a pre-extracted folder hint and the SQL query.
+
+    ``folder_hint`` comes from the field extractor that already ran on this request,
+    so no additional OpenAI call is needed here.
+    """
+    folder = (folder_hint or "").strip().strip("/")
+    if not folder:
+        folder = "queries"
+    # sanitize folder: allow alphanumeric, underscores, hyphens, slashes
+    folder = re.sub(r"[^a-z0-9_\-/]", "_", folder.lower())
+    filename = _suggest_sql_filename(query)
+    return f"{folder}/{filename}"
 
 
 def _openai_classify_abandonment(message: str, draft_type: str, awaiting_confirmation: bool) -> bool:
@@ -1264,6 +1315,23 @@ def _connected_github_repos(available_resources: list[dict[str, Any]] | None) ->
     return options
 
 
+def _get_stored_github_token(available_resources: list[dict[str, Any]] | None, repo: str) -> str | None:
+    """Return a previously-saved GitHub PAT for *repo* if one exists in available_resources."""
+    if not available_resources or not repo:
+        return None
+    for resource in available_resources:
+        connector = str(resource.get("connector") or "").strip().lower()
+        rtype = str(resource.get("type") or "").strip().lower()
+        if connector != "github" and rtype != "repo_connection":
+            continue
+        config = resource.get("config") or {}
+        if str(config.get("repo") or "").strip() == repo:
+            token = str(config.get("github_token") or "").strip()
+            if token:
+                return token
+    return None
+
+
 async def _list_github_repository_options(personal_access_token: str) -> list[RepositoryOption]:
     headers = {
         "Accept": "application/vnd.github+json",
@@ -1611,6 +1679,65 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                 job_creation_intent=False,
             )
 
+        # --- Delete job intent ---
+        if DELETE_JOB_PATTERN.search(request.message) and not draft:
+            actor = get_chat_actor(db)
+            all_jobs = list_jobs_service(db, actor)
+            # Try to match a job name from the message
+            msg_lower = request.message.lower()
+            matched = None
+            for j in all_jobs:
+                if str(j.name or "").lower() in msg_lower:
+                    matched = j
+                    break
+            if not matched:
+                # Ask which job
+                job_names = ", ".join(f"`{j.name}`" for j in all_jobs) if all_jobs else "none"
+                return ChatResponse(
+                    response=(
+                        f"Which job would you like to delete? Your current jobs are: {job_names}. "
+                        "Please tell me the exact job name."
+                    ),
+                    job_creation_intent=False,
+                )
+            matched_name = str(matched.name or "")
+            matched_id = str(matched.id or "")
+            # Check if the previous bot turn was already a delete confirmation prompt for this job
+            history_msgs = request.conversation_history or []
+            last_bot = next(
+                (m.content for m in reversed(history_msgs) if m.role == "assistant"), ""
+            ) or ""
+            if f'"{matched_name}"' in last_bot and "confirm" in last_bot.lower():
+                # User replied after confirmation prompt — treat any affirmative as yes
+                affirmatives = {"yes", "yeah", "yep", "confirm", "do it", "sure", "ok", "okay", "delete it", "proceed"}
+                if any(a in msg_lower for a in affirmatives):
+                    try:
+                        delete_job_service(db, actor, matched_id)
+                        return ChatResponse(
+                            response=f'Job **"{matched_name}"** has been deleted along with its run history.',
+                            job_creation_intent=False,
+                        )
+                    except Exception as exc:
+                        logger.exception("Failed to delete job %s from chat", matched_id)
+                        return ChatResponse(
+                            response=f"Sorry, I couldn't delete the job: {exc}",
+                            job_creation_intent=False,
+                        )
+                else:
+                    return ChatResponse(
+                        response=f'Got it — I won\'t delete **"{matched_name}"**. Let me know if there\'s anything else I can help with.',
+                        job_creation_intent=False,
+                    )
+            # First time — ask for confirmation
+            return ChatResponse(
+                response=(
+                    f'Are you sure you want to delete job **"{matched_name}"**? '
+                    "This will permanently remove the job and all of its run history. "
+                    "Reply **yes** to confirm or **no** to cancel."
+                ),
+                job_creation_intent=False,
+            )
+
         # Detect job creation intent from user message
         job_creation_intent = detect_job_creation_intent(request.message)
         deterministic_repo_fields = _deterministic_repo_connection_fields(request)
@@ -1741,12 +1868,24 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
             # Extract/generate SQL from the current message.
             # Run when: (a) no query yet and the user hasn't been asked yet, OR
             #           (b) the bot just asked for the query (user may have replied in natural language).
+            folder_hint: str | None = _non_empty_str(merged_gw.get("folder_hint"))
             if not gw_query or last_asked_gw == "query":
                 ai_q = _openai_extract_sql_fields(request.message, merged_gw, history_dicts)
                 if ai_q.get("query"):
                     gw_query = ai_q["query"]
                     new_gw["query"] = gw_query
                     base_ef["query"] = gw_query
+                if ai_q.get("folder_hint"):
+                    folder_hint = ai_q["folder_hint"]
+                    new_gw["folder_hint"] = folder_hint
+                # Persist any other inferred fields (run_type, schedule, job_name, owner)
+                # so we don't ask for things the user already told us
+                for _f in ("run_type", "schedule", "job_name", "owner"):
+                    if ai_q.get(_f) and not _non_empty_str(merged_gw.get(_f)):
+                        new_gw[_f] = str(ai_q[_f]).strip()
+                        base_ef[_f] = new_gw[_f]
+                # Refresh merged_gw so field-checks below see the inferred values
+                merged_gw = {**merged_gw, **new_gw}
 
             if not gw_query:
                 return ChatResponse(
@@ -1760,7 +1899,7 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
             if explicit_file:
                 gw_file = explicit_file
             else:
-                gw_file = f"queries/{_suggest_sql_filename(gw_query)}"
+                gw_file = _suggest_gw_file_path(gw_query, folder_hint)
                 base_ef["file_path"] = gw_file
 
             # No repo chosen yet — offer connected repos first, then fall back to PAT
@@ -1811,7 +1950,8 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                     repository_options=repo_options,
                 )
 
-            # Both query and repo are known — collect universal job fields before writing
+            # Both query and repo are known — collect universal job fields before writing.
+            # merged_gw was refreshed above after AI extraction, so inferred values are visible here.
             gw_job_name = _non_empty_str(merged_gw.get("job_name") or merged_gw.get("name"))
             gw_owner_field = _non_empty_str(merged_gw.get("owner"))
             gw_run_type = str(merged_gw.get("run_type") or "").strip().lower()
@@ -1841,8 +1981,21 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                     job_creation_intent=True,
                     extracted_fields={**base_ef, "query": gw_query, "repo": gw_repo, "_pending_field": "schedule"},
                 )
+            # If a schedule was inferred but is too vague (no time-of-day), ask for clarification
+            if gw_run_type == "scheduled" and gw_schedule and _schedule_needs_time(gw_schedule):
+                return ChatResponse(
+                    response=(
+                        f"I see you want to run this **{gw_schedule}** — what time of day should it run? "
+                        "(e.g., `every day at 9am`, `daily at 6pm`)"
+                    ),
+                    job_creation_intent=True,
+                    extracted_fields={**base_ef, "query": gw_query, "repo": gw_repo, "_pending_field": "schedule"},
+                )
 
-            # All fields collected — request PAT if not yet provided, then write + register
+            # All fields collected — look up a stored PAT from the database first
+            if not github_token:
+                github_token = get_github_token_for_repo(db, gw_repo)
+
             if not github_token:
                 return ChatResponse(
                     response=(
@@ -1858,42 +2011,65 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                     ),
                 )
 
-            gw_owner, _, gw_repo_name = gw_repo.partition("/")
-            commit_msg = f"Add SQL script {gw_file}"
-            try:
-                await github_write_file(
-                    owner=gw_owner,
-                    repo=gw_repo_name,
-                    path=gw_file,
-                    content=gw_query,
-                    commit_message=commit_msg,
-                    branch=gw_ref or None,
-                    github_token=github_token,
-                )
-            except Exception as exc:
-                logger.exception("GitHub write via MCP failed")
-                return ChatResponse(
-                    response=f"I ran into an issue writing to GitHub: {exc}. Please verify the token has repository write access.",
-                    job_creation_intent=False,
-                )
-
             try:
                 reg = register_github_write_job_from_chat(
                     db,
                     extracted_fields={**base_ef, "query": gw_query, "repo": gw_repo},
                     current_draft=merged_gw,
+                    github_token=github_token,
                 )
             except Exception:
                 logger.exception("GitHub write job registration failed")
                 return ChatResponse(
-                    response=f"I've written `{gw_file}` to `{gw_repo}`, but ran into an error registering the job. Please try again.",
+                    response="I ran into an error registering the job. Please try again.",
                     job_creation_intent=False,
                     extracted_fields={"sql_subtype": "sql_github_write"},
-                    mcp_tool_executed=True,
-                    mcp_servers=["github"],
                 )
+
+            # Store the PAT in the repo_connection job so future chat sessions skip the credential prompt
+            try:
+                save_github_token_for_repo(db, gw_repo, gw_ref, github_token)
+            except Exception:
+                logger.warning("Failed to save GitHub token for repo %s", gw_repo)
+
+            # Scheduled jobs: just confirm registration — the scheduler will run them at the right time.
+            # One-time (manual) jobs: execute immediately so the file is committed now.
+            if gw_run_type == "scheduled":
+                schedule_desc = gw_schedule or "the configured schedule"
+                return ChatResponse(
+                    response=(
+                        f"Done! I've registered **{reg.job_name}** as a scheduled job. "
+                        f"It will write `{gw_file}` to `{gw_repo}` according to: *{schedule_desc}*."
+                    ),
+                    job_creation_intent=False,
+                    extracted_fields={"sql_subtype": "sql_github_write"},
+                    job_id=reg.job_id,
+                )
+
+            run_result = run_job_by_id(
+                db,
+                job_id=reg.job_id,
+                extra_params={
+                    "github_token": github_token,
+                    "query": gw_query,
+                    "path": gw_file,
+                    "repo": gw_repo,
+                    "branch": gw_ref or "main",
+                },
+            )
+            if not run_result.executed:
+                return ChatResponse(
+                    response=f"Job **{reg.job_name}** was registered, but I couldn't start the run: {run_result.message}",
+                    job_creation_intent=False,
+                    extracted_fields={"sql_subtype": "sql_github_write"},
+                    job_id=reg.job_id,
+                )
+
             return ChatResponse(
-                response=f"Done! I've written `{gw_file}` to `{gw_repo}` and registered the job as **{reg.resource_name}**.",
+                response=(
+                    f"Done! I've registered **{reg.job_name}** and started a run to write "
+                    f"`{gw_file}` to `{gw_repo}`.\n\n{run_result.message}"
+                ),
                 job_creation_intent=False,
                 extracted_fields={"sql_subtype": "sql_github_write"},
                 mcp_tool_executed=True,

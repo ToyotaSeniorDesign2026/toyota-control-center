@@ -432,6 +432,7 @@ def register_github_write_job_from_chat(
     *,
     extracted_fields: dict[str, Any] | None,
     current_draft: dict[str, Any] | None,
+    github_token: str | None = None,
 ) -> ChatJobRegistrationResult:
     actor = get_chat_actor(db)
     merged = _merge_dicts(current_draft, extracted_fields)
@@ -452,10 +453,18 @@ def register_github_write_job_from_chat(
     tags = _coerce_string_list(merged.get("tags"))
 
     resource_config: dict[str, Any] = {}
-    for field in ("query", "repo", "ref", "file_path", "path", "schedule"):
+    for field in ("query", "repo", "ref", "schedule"):
         val = _non_empty_string(merged.get(field))
         if val:
             resource_config[field] = val
+    # Normalize file_path → path (both may appear depending on chat flow)
+    path_val = _non_empty_string(merged.get("path")) or _non_empty_string(merged.get("file_path"))
+    if path_val:
+        resource_config["path"] = path_val
+    # Store the PAT so scheduled runs can use it without prompting again
+    token_val = github_token or _non_empty_string(merged.get("github_token"))
+    if token_val:
+        resource_config["github_token"] = token_val
 
     job_out = create_job(
         db,
@@ -477,6 +486,80 @@ def register_github_write_job_from_chat(
         job_name=resource_name,
         job_created=True,
     )
+
+
+def get_github_token_for_repo(db: Session, repo: str) -> str | None:
+    """Look up a stored GitHub PAT for the given repo slug directly from the database.
+
+    Checks both ``repo_connection`` jobs (created by the connection flow) and SQL/github
+    write jobs (where the token is stored at registration time).  Returns the first
+    non-empty token found, or None.
+    """
+    if not repo:
+        return None
+    candidates = (
+        db.query(Job)
+        .filter(Job.connector == "github")
+        .all()
+    )
+    for job in candidates:
+        cfg = job.config or {}
+        if str(cfg.get("repo") or "").strip() != repo:
+            continue
+        token = str(cfg.get("github_token") or "").strip()
+        if token:
+            return token
+    return None
+
+
+def save_github_token_for_repo(db: Session, repo: str, ref: str | None, github_token: str) -> None:
+    """Persist a GitHub PAT into the repo_connection job for this repo.
+
+    On the first successful write the token is stored so future writes to the same
+    repo can reuse it without asking the user again.  If no repo_connection job
+    exists yet, one is created.  Existing repo_connection jobs are updated in-place.
+    """
+    if not repo or not github_token:
+        return
+
+    actor = get_chat_actor(db)
+
+    existing = (
+        db.query(Job)
+        .filter(Job.type == "repo_connection", Job.connector == "github")
+        .all()
+    )
+    target: Job | None = None
+    for job in existing:
+        cfg = job.config or {}
+        if str(cfg.get("repo") or "").strip() == repo:
+            target = job
+            break
+
+    if target:
+        config = dict(target.config or {})
+        config["github_token"] = github_token
+        update_job(db, actor, target.id, JobUpdate(config=config))
+    else:
+        create_job(
+            db,
+            actor,
+            JobCreate(
+                name=repo.split("/")[-1] or repo,
+                kind="runtime",
+                type="repo_connection",
+                connector="github",
+                environment="dev",
+                config={
+                    "repo": repo,
+                    "ref": ref or "main",
+                    "github_token": github_token,
+                    "server_names": ["github", "filesystem", "fastmcp-docs", "fetch"],
+                },
+                data_sensitivity="low",
+                tags=[],
+            ),
+        )
 
 
 def maybe_run_sql_job_from_chat(
@@ -614,6 +697,7 @@ def maybe_run_sql_job_from_chat(
 def run_job_by_id(
     db: Session,
     job_id: str,
+    extra_params: dict | None = None,
 ) -> ChatJobExecutionResult:
     """Run any existing job by its ID, regardless of type."""
     actor = get_chat_actor(db)
@@ -631,7 +715,7 @@ def run_job_by_id(
             job_id=job.id,
             action="run",
             target_environment=job.environment or "dev",
-            params={},
+            params=extra_params or {},
         ),
     )
 

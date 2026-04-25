@@ -157,12 +157,31 @@ async function request<T>(path: string, options: RequestInit = {}, token?: strin
     },
   });
 
+  const responseText = await response.text();
+
   if (!response.ok) {
-    const message = await response.text();
+    let message = responseText;
+    if (responseText) {
+      try {
+        const errorBody = JSON.parse(responseText) as { detail?: unknown; message?: unknown };
+        const detail = errorBody.detail ?? errorBody.message;
+        if (typeof detail === "string") {
+          message = detail;
+        } else if (detail) {
+          message = JSON.stringify(detail);
+        }
+      } catch {
+        // Keep the raw response text for non-JSON error bodies.
+      }
+    }
     throw new Error(message || `Request failed with status ${response.status}`);
   }
 
-  return response.json() as Promise<T>;
+  if (response.status === 204 || !responseText) {
+    return undefined as T;
+  }
+
+  return JSON.parse(responseText) as T;
 }
 
 export function listJobs(token?: string | null) {
@@ -178,6 +197,10 @@ export function createJob(payload: JobCreatePayload, token?: string | null) {
     },
     token,
   );
+}
+
+export function deleteJob(jobId: string, token?: string | null) {
+  return request<void>(`/jobs/${jobId}`, { method: "DELETE" }, token);
 }
 
 export function listRuns(token?: string | null) {

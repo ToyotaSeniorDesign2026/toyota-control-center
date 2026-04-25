@@ -49,10 +49,16 @@ class MCPJobExecutor(BaseJobExecutor):
             except BaseException as exc:  # pragma: no cover - defensive handoff from worker thread
                 error_holder["error"] = exc
 
+        timeout_s = int(os.getenv("MCP_EXECUTION_TIMEOUT_SECONDS", "120"))
         thread = threading.Thread(target=_runner, daemon=True)
         thread.start()
-        thread.join()
+        thread.join(timeout=timeout_s)
 
+        if thread.is_alive():
+            raise RuntimeError(
+                f"MCP execution timed out after {timeout_s}s. "
+                "Check that the target database is reachable and credentials are correct."
+            )
         if "error" in error_holder:
             raise error_holder["error"]
         return result_holder["execution"]
@@ -103,17 +109,20 @@ class MCPJobExecutor(BaseJobExecutor):
             await runtime_client.cleanup()
 
     def _sql_server_env_overrides(self, execution_request: ExecutionRequest) -> dict[str, dict[str, str]] | None:
-        """Build server_env_overrides for sql-dab from the resource's connection config."""
+        """Build server_env_overrides for sql-dab from run params (preferred) or job config."""
         config = {}
         if hasattr(execution_request.resource, "config"):
             cfg = execution_request.resource.config
             config = cfg if isinstance(cfg, dict) else {}
 
-        host = str(config.get("host") or "").strip()
-        port = str(config.get("port") or "").strip()
-        database = str(config.get("database") or "").strip()
-        username = str(config.get("username") or "").strip()
-        password = str(config.get("password") or "").strip()
+        params = execution_request.params or {}
+
+        # run-time params take precedence so UI-supplied credentials override stored config
+        host = str(params.get("host") or config.get("host") or "").strip()
+        port = str(params.get("port") or config.get("port") or "").strip()
+        database = str(params.get("database") or config.get("database") or "").strip()
+        username = str(params.get("username") or config.get("username") or "").strip()
+        password = str(params.get("password") or config.get("password") or "").strip()
 
         if not all([host, port, database, username, password]):
             return None
@@ -185,8 +194,53 @@ class MCPJobExecutor(BaseJobExecutor):
         finally:
             await agent.cleanup()
 
+    async def _execute_github_write(self, execution_request: ExecutionRequest) -> dict[str, Any]:
+        """Write a SQL script to GitHub. Token and file details come from run params."""
+        from app.services.chat_mcp_service import github_write_file
+
+        params = execution_request.params
+        job_config = execution_request.resource.config or {}
+
+        github_token = str(params.get("github_token") or job_config.get("github_token") or "").strip()
+        if not github_token:
+            return {"status": "failed", "error": "Missing github_token in run params.", "result": None}
+
+        repo = str(params.get("repo") or job_config.get("repo") or "").strip()
+        if not repo or "/" not in repo:
+            return {"status": "failed", "error": "Missing or invalid repo (expected owner/name).", "result": None}
+
+        path = str(params.get("path") or job_config.get("path") or job_config.get("file_path") or "").strip()
+        if not path:
+            return {"status": "failed", "error": "Missing file path for GitHub write.", "result": None}
+
+        content = str(params.get("query") or job_config.get("query") or "").strip()
+        if not content:
+            return {"status": "failed", "error": "Missing SQL content to write.", "result": None}
+
+        branch = str(params.get("branch") or job_config.get("ref") or "main").strip() or "main"
+        owner, _, repo_name = repo.partition("/")
+        commit_message = f"Add SQL script {path}"
+
+        try:
+            result = await github_write_file(
+                owner=owner,
+                repo=repo_name,
+                path=path,
+                content=content,
+                commit_message=commit_message,
+                branch=branch,
+                github_token=github_token,
+                environment=execution_request.target_environment,
+            )
+            return {"status": "succeeded", "result": result, "error": None}
+        except Exception as exc:
+            return {"status": "failed", "error": str(exc), "result": None}
+
     async def _execute_async(self, execution_request: ExecutionRequest) -> dict[str, Any]:
-        if execution_request.execution_mode == "direct_tool":
+        resource = execution_request.resource
+        if resource.type == "sql" and (resource.connector or "").lower() == "github":
+            execution = await self._execute_github_write(execution_request)
+        elif execution_request.execution_mode == "direct_tool":
             execution = await self._execute_direct_tool(execution_request)
         else:
             execution = await self._execute_agent(execution_request)
@@ -197,14 +251,14 @@ class MCPJobExecutor(BaseJobExecutor):
     def execute(self, execution_request: ExecutionRequest) -> dict[str, Any]:
         execution = self._run_async_execution(execution_request)
         metadata = {
-            "resource_id": execution_request.resource.resource_id,
-            "resource_type": execution_request.resource.type,
+            "job_id": execution_request.resource.job_id,
+            "job_type": execution_request.resource.type,
             "execution_request": execution_request.model_dump(),
             "job_spec": execution.pop("job_spec"),
             "execution": execution,
         }
         return {
-            "connector_run_id": f"mcp-{execution_request.resource.resource_id}",
+            "connector_run_id": f"mcp-{execution_request.resource.job_id}",
             "status": execution.get("status", "failed"),
             "duration_ms": 0,
             "metadata": metadata,
