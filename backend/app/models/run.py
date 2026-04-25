@@ -10,7 +10,7 @@ class Run(Base):
     __tablename__ = "runs"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    resource_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     requested_by: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     domain: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
     action: Mapped[str] = mapped_column(String(64), nullable=False)

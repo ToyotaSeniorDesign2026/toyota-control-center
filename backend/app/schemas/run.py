@@ -30,7 +30,7 @@ class RunCreateRequest(BaseModel):
 
 
 class RunCreate(BaseModel):
-    resource_id: str
+    job_id: str
     action: str = Field(default="run")
     target_environment: str = Field(default="dev")
     params: dict = Field(default_factory=dict)
@@ -42,7 +42,7 @@ class RunOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
-    resource_id: str
+    job_id: str
     requested_by: str
     domain: str
     action: str

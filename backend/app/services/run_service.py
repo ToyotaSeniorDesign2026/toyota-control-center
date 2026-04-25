@@ -6,7 +6,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.db import new_id, now_iso
-from app.models.resource import Resource
+from app.models.job import Job
 from app.models.run import Run
 from app.schemas.run import RunCreate
 from app.services.approval_service import create_approval_request
@@ -45,8 +45,8 @@ def _assert_run_access(user, run: Run):
 
 
 def _run_kind(db: Session, run: Run) -> str:
-    resource = db.get(Resource, run.resource_id)
-    return resource.kind if resource and resource.kind else "runtime"
+    job = db.get(Job, run.job_id)
+    return job.kind if job and job.kind else "runtime"
 
 
 def _successful_completion_status(
@@ -86,7 +86,7 @@ def _transition_run_or_409(db: Session, run: Run, new_status: str):
 def _run_to_out(run: Run) -> dict:
     return {
         "id": run.id,
-        "resource_id": run.resource_id,
+        "job_id": run.job_id,
         "requested_by": run.requested_by,
         "domain": run.domain,
         "action": run.action,
@@ -115,9 +115,9 @@ def _run_to_out(run: Run) -> dict:
 
 
 def create_run_and_maybe_execute(db: Session, user, payload: RunCreate, trigger_source: str = "api"):
-    resource = db.get(Resource, payload.resource_id)
+    resource = db.get(Job, payload.job_id)
     if not resource:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
 
     if user.role != "root" and resource.owner_domain != user.domain and resource.owner_id != user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
@@ -126,7 +126,7 @@ def create_run_and_maybe_execute(db: Session, user, payload: RunCreate, trigger_
     ts = now_iso()
     run = Run(
         id=run_id,
-        resource_id=payload.resource_id,
+        job_id=payload.job_id,
         requested_by=user.id,
         domain=resource.owner_domain,
         action=payload.action,
@@ -156,7 +156,7 @@ def create_run_and_maybe_execute(db: Session, user, payload: RunCreate, trigger_
     db.commit()
     db.refresh(run)
     sync_run_execution_status(db, run)
-    append_run_log(db, run_id, "INFO", "Run created", {"resource_id": payload.resource_id})
+    append_run_log(db, run_id, "INFO", "Run created", {"job_id": payload.job_id})
 
     decision = evaluate_run_request(db, user, _run_to_out(run))
     run.risk_level = decision.risk_level
@@ -298,7 +298,7 @@ def list_runs(db: Session, user):
 def query_runs(
     db: Session,
     user,
-    resource_id: str | None = None,
+    job_id: str | None = None,
     status: str | None = None,
     updated_since: str | None = None,
     limit: int = 200,
@@ -306,8 +306,8 @@ def query_runs(
 ):
     runs = sorted(list_runs(db, user), key=lambda r: r["updated_at"], reverse=True)
 
-    if resource_id:
-        runs = [r for r in runs if r["resource_id"] == resource_id]
+    if job_id:
+        runs = [r for r in runs if r["job_id"] == job_id]
     if status:
         runs = [r for r in runs if r["status"].lower() == status.lower()]
     if updated_since:
@@ -354,7 +354,7 @@ def retry_run(db: Session, user, run_id: str):
 
     submitted = run.submitted_config_json or {}
     payload = RunCreate(
-        resource_id=run.resource_id,
+        job_id=run.job_id,
         action=submitted.get("action", run.action),
         target_environment=submitted.get("target_environment", run.target_environment),
         params=submitted.get("params", {}),

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-"""Lightweight resource scheduler for runtime jobs.
+"""Lightweight job scheduler for runtime jobs.
 
-Schedules are stored on ``Resource.config["schedule"]`` as either natural
+Schedules are stored on ``Job.config["schedule"]`` as either natural
 language used by the UI/chat ("daily at 7:30 PM") or simple cron
 ("30 19 * * *"). The scheduler stores its own cursor in the same JSON config
 so the existing schema can support scheduled execution without a migration.
@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.db import now_iso
-from app.models.resource import Resource
+from app.models.job import Job
 from app.models.run import Run
 from app.models.user import User
 from app.schemas.run import RunCreate
@@ -93,20 +93,20 @@ def next_daily_occurrence(schedule: str, now: datetime | None = None, timezone_n
     )
 
 
-def _scheduled_resources(db: Session) -> list[Resource]:
+def _scheduled_jobs(db: Session) -> list[Job]:
     rows = (
-        db.query(Resource)
-        .filter(Resource.kind == "runtime")
-        .filter(Resource.status.in_(["healthy", "ready", "active"]))
+        db.query(Job)
+        .filter(Job.kind == "runtime")
+        .filter(Job.status.in_(["healthy", "ready", "active"]))
         .all()
     )
-    return [resource for resource in rows if isinstance(resource.config, dict) and resource.config.get("schedule")]
+    return [job for job in rows if isinstance(job.config, dict) and job.config.get("schedule")]
 
 
-def _recent_duplicate_exists(db: Session, resource_id: str, fire_key: str) -> bool:
+def _recent_duplicate_exists(db: Session, job_id: str, fire_key: str) -> bool:
     runs = (
         db.query(Run)
-        .filter(Run.resource_id == resource_id)
+        .filter(Run.job_id == job_id)
         .filter(Run.trigger_source == "schedule")
         .order_by(Run.created_at.desc())
         .limit(50)
@@ -120,12 +120,12 @@ def _recent_duplicate_exists(db: Session, resource_id: str, fire_key: str) -> bo
     return False
 
 
-def _run_payload_for_resource(resource: Resource, fire_key: str) -> RunCreate:
-    config = resource.config or {}
+def _run_payload_for_job(job: Job, fire_key: str) -> RunCreate:
+    config = job.config or {}
     return RunCreate(
-        resource_id=resource.id,
+        job_id=job.id,
         action="run",
-        target_environment=resource.environment or "dev",
+        target_environment=job.environment or "dev",
         params={
             **({"query": config.get("query")} if config.get("query") else {}),
             **({"connection_id": config.get("connection_id")} if config.get("connection_id") else {}),
@@ -135,12 +135,12 @@ def _run_payload_for_resource(resource: Resource, fire_key: str) -> RunCreate:
             "schedule": config.get("schedule"),
             "metadata": {
                 "created_via": "scheduler",
-                "job_type": resource.type,
+                "job_type": job.type,
                 "schedule_fire_key": fire_key,
             },
         },
         mcp_config={
-            "server_names": [resource.connector] if resource.connector else [],
+            "server_names": [job.connector] if job.connector else [],
             "allow_auto_selection": False,
         },
     )
@@ -162,8 +162,8 @@ def run_due_scheduled_jobs(db: Session, now: datetime | None = None) -> list[dic
     current = now or datetime.now(timezone.utc)
     fired: list[dict] = []
 
-    for resource in _scheduled_resources(db):
-        config = dict(resource.config or {})
+    for job in _scheduled_jobs(db):
+        config = dict(job.config or {})
         occurrence = next_daily_occurrence(
             str(config.get("schedule") or ""),
             now=current,
@@ -171,36 +171,36 @@ def run_due_scheduled_jobs(db: Session, now: datetime | None = None) -> list[dic
         )
         if not occurrence or occurrence.due_at > current:
             continue
-        schedule_active_at = _parse_iso_datetime(str(config.get("schedule_updated_at") or "")) or _parse_iso_datetime(resource.created_at)
+        schedule_active_at = _parse_iso_datetime(str(config.get("schedule_updated_at") or "")) or _parse_iso_datetime(job.created_at)
         if schedule_active_at and occurrence.due_at < schedule_active_at:
             continue
         if config.get("schedule_last_fire_key") == occurrence.fire_key:
             continue
-        if _recent_duplicate_exists(db, resource.id, occurrence.fire_key):
+        if _recent_duplicate_exists(db, job.id, occurrence.fire_key):
             config["schedule_last_fire_key"] = occurrence.fire_key
-            resource.config = config
-            resource.updated_at = now_iso()
-            db.add(resource)
+            job.config = config
+            job.updated_at = now_iso()
+            db.add(job)
             db.commit()
             continue
 
-        owner = db.get(User, resource.owner_id)
+        owner = db.get(User, job.owner_id)
         if not owner or not owner.is_active:
             continue
 
         run = create_run_and_maybe_execute(
             db,
             owner,
-            _run_payload_for_resource(resource, occurrence.fire_key),
+            _run_payload_for_job(job, occurrence.fire_key),
             trigger_source="schedule",
         )
         config["schedule_last_fire_key"] = occurrence.fire_key
         config["schedule_last_run_at"] = now_iso()
-        resource.config = config
-        resource.updated_at = now_iso()
-        db.add(resource)
+        job.config = config
+        job.updated_at = now_iso()
+        db.add(job)
         db.commit()
-        write_audit(db, owner, "SCHEDULED_RUN_CREATED", {"resource_id": resource.id, "run_id": run["id"]})
-        fired.append({"resource_id": resource.id, "run_id": run["id"], "fire_key": occurrence.fire_key})
+        write_audit(db, owner, "SCHEDULED_RUN_CREATED", {"job_id": job.id, "run_id": run["id"]})
+        fired.append({"job_id": job.id, "run_id": run["id"], "fire_key": occurrence.fire_key})
 
     return fired

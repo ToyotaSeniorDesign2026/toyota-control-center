@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 
 _logger = logging.getLogger(__name__)
 
-from app.api.routers import audit, auth, chat, integrations, policy, resource_types, resources, runs
+from app.api.routers import audit, auth, chat, connectors, integrations, job_types, jobs, policy, runs
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.logging import setup_logging
@@ -40,8 +40,9 @@ def create_app() -> FastAPI:
     app.add_middleware(AuditMiddleware)
 
     app.include_router(auth.router, prefix="/auth", tags=["auth"])
-    app.include_router(resource_types.router, prefix="/resource-types", tags=["resource-types"])
-    app.include_router(resources.router, prefix="/resources", tags=["resources-registry"])
+    app.include_router(job_types.router, prefix="/job-types", tags=["job-types"])
+    app.include_router(jobs.router, prefix="/jobs", tags=["jobs-registry"])
+    app.include_router(connectors.router, prefix="/connectors", tags=["connectors"])
     app.include_router(runs.router, prefix="/runs", tags=["run-orchestration"])
 
     app.include_router(policy.router, prefix="/policy", tags=["policy"])

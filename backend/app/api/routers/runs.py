@@ -35,7 +35,7 @@ def read_run(run_id: str, db=Depends(get_db), user=Depends(get_current_user)):
 
 @router.get("", response_model=RunListOut)
 def read_runs(
-    resource_id: str | None = Query(default=None),
+    job_id: str | None = Query(default=None),
     status: str | None = Query(default=None),
     updated_since: str | None = Query(default=None),
     limit: int = Query(default=200, ge=1, le=1000),
@@ -46,7 +46,7 @@ def read_runs(
     return query_runs(
         db,
         user,
-        resource_id=resource_id,
+        job_id=job_id,
         status=status,
         updated_since=updated_since,
         limit=limit,

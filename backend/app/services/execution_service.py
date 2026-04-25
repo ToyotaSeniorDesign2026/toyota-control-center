@@ -26,8 +26,8 @@ def ensure_control_center_importable() -> None:
         sys.path.insert(0, src_root_str)
 
 
-class ResourceExecutionTarget(BaseModel):
-    resource_id: str
+class JobExecutionTarget(BaseModel):
+    job_id: str
     name: str
     kind: str
     type: str
@@ -45,7 +45,7 @@ class ExecutionRequest(BaseModel):
     target_environment: str
     execution_backend: ExecutionBackend
     execution_mode: ExecutionMode
-    resource: ResourceExecutionTarget
+    resource: JobExecutionTarget
     params: dict = Field(default_factory=dict)
     job_config: MCPJobConfig = Field(default_factory=MCPJobConfig)
     mcp_config: MCPExecutionConfig = Field(default_factory=MCPExecutionConfig)
@@ -101,11 +101,11 @@ def build_job_spec(resource, payload: RunCreate, resolved_mcp_config: MCPExecuti
     mcp_config = resolved_mcp_config or payload.mcp_config or MCPExecutionConfig()
 
     metadata = {
-        "resource_id": resource.id,
-        "resource_name": resource.name,
-        "resource_type": resource.type,
+        "job_id": resource.id,
+        "job_name": resource.name,
+        "job_type": resource.type,
         "connector": resource.connector,
-        "resource_config": getattr(resource, "config", {}) or {},
+        "job_config_data": getattr(resource, "config", {}) or {},
         "params": payload.params,
         "job_config": job_config.model_dump(),
         "mcp_config": mcp_config.model_dump(),
@@ -188,8 +188,8 @@ def build_execution_request(
     resolved_mcp_config = resolve_effective_mcp_config(resource, payload)
     if not resolved_mcp_config.server_names:
         raise RuntimeError(
-            f"Resource '{resource.id}' is not associated with an approved MCP server. "
-            "Set resource.connector or mcp_config.server_names."
+            f"Job '{resource.id}' is not associated with an approved MCP server. "
+            "Set job.connector or mcp_config.server_names."
         )
 
     backend: ExecutionBackend = "mcp"
@@ -203,8 +203,8 @@ def build_execution_request(
         target_environment=payload.target_environment,
         execution_backend=backend,
         execution_mode=mode,
-        resource=ResourceExecutionTarget(
-            resource_id=resource.id,
+        resource=JobExecutionTarget(
+            job_id=resource.id,
             name=resource.name,
             kind=resource.kind,
             type=resource.type,
@@ -219,7 +219,7 @@ def build_execution_request(
         mcp_config=resolved_mcp_config,
         job_spec=job_spec,
         metadata={
-            "resource_owner_id": resource.owner_id,
-            "resource_owner_domain": resource.owner_domain,
+            "job_owner_id": resource.owner_id,
+            "job_owner_domain": resource.owner_domain,
         },
     )

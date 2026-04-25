@@ -1,8 +1,8 @@
-import type { ResourceRecord } from "./controlCenterApi";
+import type { JobRecord } from "./controlCenterApi";
 
 export interface ScheduledOccurrence {
   id: string;
-  resourceId: string;
+  jobId: string;
   jobName: string;
   jobType: string;
   scheduledTime: Date;
@@ -102,15 +102,15 @@ function dateKey(date: Date) {
 }
 
 export function createScheduledRunProjections(
-  resources: ResourceRecord[],
+  jobs: JobRecord[],
   now = new Date(),
   daysAhead = 90,
 ): ScheduledOccurrence[] {
   const occurrences: ScheduledOccurrence[] = [];
 
-  for (const resource of resources) {
+  for (const job of jobs) {
     const schedule =
-      typeof resource.config?.schedule === "string" ? resource.config.schedule.trim() : "";
+      typeof job.config?.schedule === "string" ? job.config.schedule.trim() : "";
     if (!schedule) continue;
 
     const parsedTime = parseScheduleTime(schedule);
@@ -129,10 +129,10 @@ export function createScheduledRunProjections(
         scheduledTime.setDate(first.getDate() + index);
         if (scheduledTime > cutoff) break;
         occurrences.push({
-          id: `schedule-${resource.id}-${dateKey(scheduledTime)}`,
-          resourceId: resource.id,
-          jobName: resource.name,
-          jobType: resource.type.toUpperCase(),
+          id: `schedule-${job.id}-${dateKey(scheduledTime)}`,
+          jobId: job.id,
+          jobName: job.name,
+          jobType: job.type.toUpperCase(),
           scheduledTime,
         });
       }
@@ -158,10 +158,10 @@ export function createScheduledRunProjections(
         scheduledTime.setDate(first.getDate() + week * 7);
         if (scheduledTime > cutoff) break;
         occurrences.push({
-          id: `schedule-${resource.id}-${dateKey(scheduledTime)}`,
-          resourceId: resource.id,
-          jobName: resource.name,
-          jobType: resource.type.toUpperCase(),
+          id: `schedule-${job.id}-${dateKey(scheduledTime)}`,
+          jobId: job.id,
+          jobName: job.name,
+          jobType: job.type.toUpperCase(),
           scheduledTime,
         });
       }

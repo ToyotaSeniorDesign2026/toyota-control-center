@@ -14,7 +14,7 @@ import httpx
 from pydantic import BaseModel
 
 from app.api.deps import get_db
-from app.models.resource import Resource
+from app.models.job import Job
 from app.services.chat_service import get_chat_service
 from app.services.field_extraction_service import get_field_extraction_service
 from app.services.chat_job_service import (
@@ -22,8 +22,8 @@ from app.services.chat_job_service import (
     maybe_run_sql_job_from_chat,
     register_github_write_job_from_chat,
     register_sql_job_from_chat,
-    run_resource_by_id,
-    update_sql_resource_from_chat,
+    run_job_by_id,
+    update_sql_job_from_chat,
 )
 from app.services.chat_mcp_service import run_prompt_native_mcp, github_write_file
 from app.services.run_service import list_runs
@@ -1024,7 +1024,7 @@ def _is_explicit_sql_run_request(request: "ChatRequest") -> bool:
     draft = request.current_draft_data or {}
     if not _has_sql_draft(request):
         return False
-    if draft.get("resource_id") and AFFIRMATIVE_RUN_RESPONSE_PATTERN.search(message.strip()):
+    if draft.get("job_id") and AFFIRMATIVE_RUN_RESPONSE_PATTERN.search(message.strip()):
         return True
     return bool(SQL_RUN_REQUEST_PATTERN.search(message) and SQL_RUN_CONTEXT_PATTERN.search(message))
 
@@ -1173,7 +1173,7 @@ class ChatResponse(BaseModel):
     response: str
     job_creation_intent: Optional[bool] = None
     extracted_fields: Optional[dict[str, Any]] = None
-    resource_id: Optional[str] = None
+    job_id: Optional[str] = None
     run_id: Optional[str] = None
     run_status: Optional[str] = None
     sql_job_executed: Optional[bool] = None
@@ -1187,15 +1187,15 @@ class ChatResponse(BaseModel):
     reset_session_env: Optional[bool] = None  # True when frontend should clear stored DB credentials
 
 
-def _resource_name_for_run(db, resource_id: str) -> str:
-    resource = db.get(Resource, resource_id)
-    if resource and getattr(resource, "name", None):
-        return str(resource.name)
-    return resource_id
+def _job_name_for_run(db, job_id: str) -> str:
+    job = db.get(Job, job_id)
+    if job and getattr(job, "name", None):
+        return str(job.name)
+    return job_id
 
 
-def _find_named_resource_in_message(db, message: str) -> "Resource | None":
-    """Try to find an existing resource whose name appears in an update message."""
+def _find_named_job_in_message(db, message: str) -> "Job | None":
+    """Try to find an existing job whose name appears in an update message."""
     candidates: list[str] = []
     for m in _NAMED_RESOURCE_REF_PATTERN.finditer(message):
         name = m.group(1) or m.group(2)
@@ -1205,13 +1205,13 @@ def _find_named_resource_in_message(db, message: str) -> "Resource | None":
         return None
     from sqlalchemy import func
     for name in candidates:
-        resource = (
-            db.query(Resource)
-            .filter(func.lower(Resource.name) == name.lower())
+        job = (
+            db.query(Job)
+            .filter(func.lower(Job.name) == name.lower())
             .first()
         )
-        if resource:
-            return resource
+        if job:
+            return job
     return None
 
 
@@ -1224,7 +1224,7 @@ def _answer_run_history_question(db, message: str) -> str | None:
     key = lambda run: run["updated_at"]  # noqa: E731
     if LAST_RUN_QUESTION_PATTERN.search(message):
         last_run = nlargest(1, runs, key=key)[0]
-        resource_name = _resource_name_for_run(db, last_run["resource_id"])
+        resource_name = _job_name_for_run(db, last_run["job_id"])
         return (
             f"Your most recent run was `{resource_name}`. "
             f"It is currently `{last_run['status']}` in `{last_run['target_environment']}` "
@@ -1233,7 +1233,7 @@ def _answer_run_history_question(db, message: str) -> str | None:
 
     lines = ["Here are your most recent runs:"]
     for index, run in enumerate(nlargest(5, runs, key=key), start=1):
-        resource_name = _resource_name_for_run(db, run["resource_id"])
+        resource_name = _job_name_for_run(db, run["job_id"])
         lines.append(
             f"{index}. `{resource_name}` — status `{run['status']}` — environment `{run['target_environment']}` — updated `{run['updated_at']}`"
         )
@@ -1659,16 +1659,16 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
             )
 
         # --- Named resource update: "change the query for create-tables-3" → skip connection form ---
-        if _UPDATE_RESOURCE_PATTERN.search(request.message) and not draft.get("resource_id"):
-            named_resource = _find_named_resource_in_message(db, request.message)
+        if _UPDATE_RESOURCE_PATTERN.search(request.message) and not draft.get("job_id"):
+            named_resource = _find_named_job_in_message(db, request.message)
             if named_resource is not None:
                 ai_fields = _openai_extract_sql_fields(request.message, draft, history_dicts)
-                update_msg, draft_updates = update_sql_resource_from_chat(
+                update_msg, draft_updates = update_sql_job_from_chat(
                     db, named_resource.id, ai_fields
                 )
                 seed_draft: dict[str, Any] = {
                     "job_type": "SQL",
-                    "resource_id": named_resource.id,
+                    "job_id": named_resource.id,
                     "job_name": named_resource.name,
                     "name": named_resource.name,
                 }
@@ -1898,7 +1898,7 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                 extracted_fields={"sql_subtype": "sql_github_write"},
                 mcp_tool_executed=True,
                 mcp_servers=["github"],
-                resource_id=reg.resource_id,
+                job_id=reg.job_id,
             )
 
         # --- SQL flow: structured state machine (universal fields → SQL fields → confirm → run) ---
@@ -1985,7 +1985,7 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                         schedule_msg = f" It is scheduled to run `{schedule}`." if schedule else ""
                         reg_msg = (
                             f"Registered SQL job `{job_label}`.{schedule_msg}"
-                            if registration_result.resource_id
+                            if registration_result.job_id
                             else registration_result.message
                         )
                         return ChatResponse(
@@ -1994,10 +1994,10 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                             extracted_fields=_clear_sql_transient_fields({
                                 **merged,
                                 "config": cfg,
-                                "resource_id": registration_result.resource_id,
-                                "name": registration_result.resource_name or merged.get("job_name") or merged.get("name"),
+                                "job_id": registration_result.job_id,
+                                "name": registration_result.job_name or merged.get("job_name") or merged.get("name"),
                             }),
-                            resource_id=registration_result.resource_id,
+                            job_id=registration_result.job_id,
                         )
 
                     exec_fields: dict[str, Any] = {
@@ -2010,7 +2010,7 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                         "connection_id": merged.get("connection_id") or cfg.get("connection_id"),
                         "query": merged.get("query") or cfg.get("query"),
                         "target_environment": _resolved_job_environment(merged),
-                        "resource_id": merged.get("resource_id"),
+                        "job_id": merged.get("job_id"),
                         "action": "run",
                     }
                     try:
@@ -2042,10 +2042,10 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                             job_creation_intent=False,
                             extracted_fields=_clear_sql_transient_fields({
                                 **merged,
-                                "resource_id": sql_result.resource_id,
+                                "job_id": sql_result.job_id,
                                 "name": merged.get("job_name") or merged.get("name"),
                             }),
-                            resource_id=sql_result.resource_id,
+                            job_id=sql_result.job_id,
                             run_id=sql_result.run_id,
                             run_status=sql_result.run_status,
                             sql_job_executed=sql_result.executed,
@@ -2126,7 +2126,7 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
             explicit_run_request = _is_explicit_sql_run_request(request)
             explicit_create_request = _is_explicit_sql_create_request(request.message)
 
-            if explicit_create_request and not explicit_run_request and not merged.get("resource_id"):
+            if explicit_create_request and not explicit_run_request and not merged.get("job_id"):
                 cfg = _sql_config_with_session_env(merged, session_env)
                 registration_result = register_sql_job_from_chat(
                     db,
@@ -2145,11 +2145,11 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                     extracted_fields=_clear_sql_transient_fields({
                         **merged,
                         "config": cfg,
-                        "resource_id": registration_result.resource_id,
-                        "name": registration_result.resource_name or merged.get("job_name") or merged.get("name"),
+                        "job_id": registration_result.job_id,
+                        "name": registration_result.job_name or merged.get("job_name") or merged.get("name"),
                         "creation_requested": True,
                     }),
-                    resource_id=registration_result.resource_id,
+                    job_id=registration_result.job_id,
                 )
 
             # 3: TCP reachability check — verify host:port is accessible
@@ -2194,16 +2194,16 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                         job_creation_intent=False,
                         extracted_fields={
                             **merged,
-                            "resource_id": sql_result.resource_id,
+                            "job_id": sql_result.job_id,
                             "name": merged.get("job_name") or merged.get("name"),
                         },
-                        resource_id=sql_result.resource_id,
+                        job_id=sql_result.job_id,
                         run_id=sql_result.run_id,
                         run_status=sql_result.run_status,
                         sql_job_executed=sql_result.executed,
                     )
 
-            if explicit_create_request and not merged.get("resource_id"):
+            if explicit_create_request and not merged.get("job_id"):
                 registration_result = register_sql_job_from_chat(
                     db,
                     extracted_fields={
@@ -2217,22 +2217,22 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                     job_creation_intent=True,
                     extracted_fields=_clear_sql_transient_fields({
                         **merged,
-                        "resource_id": registration_result.resource_id,
-                        "name": registration_result.resource_name or merged.get("job_name") or merged.get("name"),
+                        "job_id": registration_result.job_id,
+                        "name": registration_result.job_name or merged.get("job_name") or merged.get("name"),
                         "creation_requested": True,
                     }),
-                    resource_id=registration_result.resource_id,
+                    job_id=registration_result.job_id,
                 )
 
             # Job already registered — update fields, run it, or inform the user
-            if merged.get("resource_id"):
+            if merged.get("job_id"):
                 msg = request.message.strip()
 
                 # Update request: "change the schedule to...", "update the query", etc.
                 if _UPDATE_RESOURCE_PATTERN.search(msg):
                     ai_fields = _openai_extract_sql_fields(msg, merged, history_dicts)
-                    update_msg, draft_updates = update_sql_resource_from_chat(
-                        db, merged["resource_id"], ai_fields
+                    update_msg, draft_updates = update_sql_job_from_chat(
+                        db, merged["job_id"], ai_fields
                     )
                     new_draft = _clear_sql_transient_fields({**merged, **draft_updates})
                     # Merge updated config fields back into draft["config"] so frontend reflects changes
@@ -2257,16 +2257,16 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                     or (SQL_RUN_REQUEST_PATTERN.search(msg) and not _UPDATE_RESOURCE_PATTERN.search(msg))
                 )
                 if wants_run:
-                    run_result = run_resource_by_id(db, merged["resource_id"])
+                    run_result = run_job_by_id(db, merged["job_id"])
                     return ChatResponse(
                         response=run_result.message,
                         job_creation_intent=False,
                         extracted_fields=_clear_sql_transient_fields({
                             **merged,
-                            "resource_id": run_result.resource_id,
+                            "job_id": run_result.job_id,
                             "name": merged.get("job_name") or merged.get("name"),
                         }),
-                        resource_id=run_result.resource_id,
+                        job_id=run_result.job_id,
                         run_id=run_result.run_id,
                         run_status=run_result.run_status,
                         sql_job_executed=run_result.executed,
@@ -2350,7 +2350,7 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                 response=preflight_sql_job_result.message,
                 job_creation_intent=job_creation_intent,
                 extracted_fields=None,
-                resource_id=preflight_sql_job_result.resource_id,
+                job_id=preflight_sql_job_result.job_id,
                 run_id=preflight_sql_job_result.run_id,
                 run_status=preflight_sql_job_result.run_status,
                 sql_job_executed=preflight_sql_job_result.executed,
@@ -2365,20 +2365,20 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
             available_resources=request.available_resources,
         )
         
-        # Handle [RUN_JOB:resource_id] marker emitted by the LLM
+        # Handle [RUN_JOB:job_id] marker emitted by the LLM
         sql_flow_active = _has_sql_draft(request) or _looks_like_sql_connect_request(request)
         run_marker_match = RUN_JOB_MARKER_PATTERN.search(response)
         if run_marker_match:
-            resource_id_to_run = run_marker_match.group(1)
+            job_id_to_run = run_marker_match.group(1)
             clean_response = RUN_JOB_MARKER_PATTERN.sub("", response).strip()
             if not sql_flow_active:
-                run_result = run_resource_by_id(db, resource_id_to_run)
+                run_result = run_job_by_id(db, job_id_to_run)
                 final_response = f"{clean_response}\n\n{run_result.message}".strip()
                 return ChatResponse(
                     response=final_response,
                     job_creation_intent=job_creation_intent,
                     extracted_fields=None,
-                    resource_id=run_result.resource_id,
+                    job_id=run_result.job_id,
                     run_id=run_result.run_id,
                     run_status=run_result.run_status,
                     sql_job_executed=run_result.executed,
@@ -2473,7 +2473,7 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
             response=response,
             job_creation_intent=job_creation_intent,
             extracted_fields=extracted_fields,
-            resource_id=sql_job_result.resource_id if sql_job_result is not None else None,
+            job_id=sql_job_result.job_id if sql_job_result is not None else None,
             run_id=sql_job_result.run_id if sql_job_result is not None else None,
             run_status=sql_job_result.run_status if sql_job_result is not None else None,
             sql_job_executed=sql_job_result.executed if sql_job_result is not None else None,

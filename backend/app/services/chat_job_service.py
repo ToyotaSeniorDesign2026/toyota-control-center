@@ -8,12 +8,12 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.audit_event import RunLog
-from app.models.resource import Resource
+from app.models.job import Job
 from app.models.run import Run
 from app.models.user import User
-from app.schemas.resource import ResourceCreate, ResourceUpdate
+from app.schemas.job import JobCreate, JobUpdate
 from app.schemas.run import RunCreate
-from app.services.resource_service import create_resource, update_resource
+from app.services.job_service import create_job, update_job
 from app.services.run_service import create_run_and_maybe_execute
 
 
@@ -41,19 +41,19 @@ SQL_EXECUTION_CONTEXT_PATTERN = re.compile(r"\b(sql|query|job|resource)\b")
 class ChatJobExecutionResult:
     executed: bool
     message: str
-    resource_id: str | None = None
+    job_id: str | None = None
     run_id: str | None = None
     run_status: str | None = None
-    resource_created: bool = False
+    job_created: bool = False
     result_preview: str | None = None
 
 
 @dataclass(frozen=True)
 class ChatJobRegistrationResult:
     message: str
-    resource_id: str | None = None
-    resource_name: str | None = None
-    resource_created: bool = False
+    job_id: str | None = None
+    job_name: str | None = None
+    job_created: bool = False
 
 
 def _non_empty_string(value: Any) -> str | None:
@@ -134,17 +134,17 @@ def _message_requests_sql_execution(
     return False
 
 
-def _find_sql_resource_for_actor(db: Session, actor: User, resource_name: str) -> Resource | None:
-    normalized_name = resource_name.strip().lower()
+def _find_sql_job_for_actor(db: Session, actor: User, job_name: str) -> Job | None:
+    normalized_name = job_name.strip().lower()
     if not normalized_name:
         return None
 
-    query = db.query(Resource).filter(func.lower(Resource.name) == normalized_name, func.lower(Resource.type) == "sql")
+    query = db.query(Job).filter(func.lower(Job.name) == normalized_name, func.lower(Job.type) == "sql")
     if actor.role != "root":
         query = query.filter(
-            (Resource.owner_id == actor.id) | (Resource.owner_domain == actor.domain)
+            (Job.owner_id == actor.id) | (Job.owner_domain == actor.domain)
         )
-    return query.order_by(Resource.updated_at.desc()).first()
+    return query.order_by(Job.updated_at.desc()).first()
 
 
 def _infer_sql_connector(merged_fields: dict[str, Any]) -> str:
@@ -173,7 +173,7 @@ def _resolved_sql_connector(merged_fields: dict[str, Any]) -> str:
     return "sql-dab"
 
 
-def _normalize_sql_resource_connector(resource: Resource | Any, fallback_fields: dict[str, Any]) -> None:
+def _normalize_sql_job_connector(resource: Job | Any, fallback_fields: dict[str, Any]) -> None:
     connector = _infer_sql_connector({"connector": getattr(resource, "connector", None), **fallback_fields})
     if getattr(resource, "connector", None) != connector:
         resource.connector = connector
@@ -271,14 +271,14 @@ def _mark_run_failed(db: Session, run_id: str) -> None:
         db.commit()
 
 
-def update_sql_resource_from_chat(
+def update_sql_job_from_chat(
     db: Session,
-    resource_id: str,
+    job_id: str,
     new_fields: dict[str, Any],
 ) -> tuple[str, dict[str, Any]]:
-    """Update a registered SQL resource's config from chat. Returns (message, updated_fields_for_draft)."""
+    """Update a registered SQL job's config from chat. Returns (message, updated_fields_for_draft)."""
     actor = get_chat_actor(db)
-    resource = db.get(Resource, resource_id)
+    resource = db.get(Job, job_id)
     if resource is None:
         return "I couldn't find the registered job to update.", {}
 
@@ -316,10 +316,10 @@ def update_sql_resource_from_chat(
         payload_kwargs: dict[str, Any] = {"config": config}
         if name_val:
             payload_kwargs["name"] = name_val
-        payload = ResourceUpdate(**payload_kwargs)
-        update_resource(db, actor, resource_id, payload)
+        payload = JobUpdate(**payload_kwargs)
+        update_job(db, actor, job_id, payload)
     except Exception as exc:
-        return f"Couldn't update the resource: {exc}", {}
+        return f"Couldn't update the job: {exc}", {}
 
     parts: list[str] = []
     if "schedule" in changed:
@@ -383,16 +383,16 @@ def register_sql_job_from_chat(
     )
     if not resource_name:
         return ChatJobRegistrationResult(
-            message="I can create the SQL job from chat, but I still need the job/resource name.",
+            message="I can create the SQL job from chat, but I still need the job name.",
         )
 
-    resource = _find_sql_resource_for_actor(db, actor, resource_name)
+    resource = _find_sql_job_for_actor(db, actor, resource_name)
     if resource is not None:
         return ChatJobRegistrationResult(
             message=f"The SQL job `{resource.name}` is already registered and ready to run.",
-            resource_id=resource.id,
-            resource_name=resource.name,
-            resource_created=False,
+            job_id=resource.id,
+            job_name=resource.name,
+            job_created=False,
         )
 
     connector = _resolved_sql_connector(merged)
@@ -405,10 +405,10 @@ def register_sql_job_from_chat(
     tags = _coerce_string_list(merged.get("tags"))
     resource_config = _build_sql_resource_config(merged, config)
 
-    resource_out = create_resource(
+    job_out = create_job(
         db,
         actor,
-        ResourceCreate(
+        JobCreate(
             name=resource_name,
             kind="runtime",
             type="sql",
@@ -420,10 +420,10 @@ def register_sql_job_from_chat(
         ),
     )
     return ChatJobRegistrationResult(
-        message=f"Created SQL job `{resource_name}` and saved it as a Control Center resource. Do you want me to run it now?",
-        resource_id=resource_out["id"],
-        resource_name=resource_name,
-        resource_created=True,
+        message=f"Created SQL job `{resource_name}` and saved it as a Control Center job. Do you want me to run it now?",
+        job_id=job_out["id"],
+        job_name=resource_name,
+        job_created=True,
     )
 
 
@@ -457,10 +457,10 @@ def register_github_write_job_from_chat(
         if val:
             resource_config[field] = val
 
-    resource_out = create_resource(
+    job_out = create_job(
         db,
         actor,
-        ResourceCreate(
+        JobCreate(
             name=resource_name,
             kind="runtime",
             type="sql",
@@ -473,9 +473,9 @@ def register_github_write_job_from_chat(
     )
     return ChatJobRegistrationResult(
         message=f"Registered SQL write job `{resource_name}`.",
-        resource_id=resource_out["id"],
-        resource_name=resource_name,
-        resource_created=True,
+        job_id=job_out["id"],
+        job_name=resource_name,
+        job_created=True,
     )
 
 
@@ -498,7 +498,7 @@ def maybe_run_sql_job_from_chat(
         extracted_fields.get("config") if isinstance(extracted_fields, dict) else None,
     )
 
-    if merged.get("creation_requested") and not _non_empty_string((current_draft or {}).get("resource_id")):
+    if merged.get("creation_requested") and not _non_empty_string((current_draft or {}).get("job_id")):
         return None
 
     resource_name = (
@@ -506,14 +506,14 @@ def maybe_run_sql_job_from_chat(
         or _non_empty_string(merged.get("job_name"))
     )
 
-    resource = _find_sql_resource_for_actor(db, actor, resource_name) if resource_name else None
-    created_resource = False
+    resource = _find_sql_job_for_actor(db, actor, resource_name) if resource_name else None
+    created_job = False
 
     if resource is None:
         if not resource_name:
             return ChatJobExecutionResult(
                 executed=False,
-                message="I can run a SQL job from chat, but I still need the job/resource name.",
+                message="I can run a SQL job from chat, but I still need the job name.",
             )
 
         connector = _resolved_sql_connector(merged)
@@ -523,10 +523,10 @@ def maybe_run_sql_job_from_chat(
 
         config = _build_sql_resource_config(merged, config)
 
-        resource_out = create_resource(
+        job_out = create_job(
             db,
             actor,
-            ResourceCreate(
+            JobCreate(
                 name=resource_name,
                 kind="runtime",
                 type="sql",
@@ -537,10 +537,10 @@ def maybe_run_sql_job_from_chat(
                 tags=tags,
             ),
         )
-        resource = db.get(Resource, resource_out["id"])
-        created_resource = True
+        resource = db.get(Job, job_out["id"])
+        created_job = True
     elif resource is not None:
-        _normalize_sql_resource_connector(resource, merged)
+        _normalize_sql_job_connector(resource, merged)
         if hasattr(db, "add") and hasattr(db, "commit"):
             db.add(resource)
             db.commit()
@@ -558,9 +558,9 @@ def maybe_run_sql_job_from_chat(
     if not params.get("query") and not resource_query:
         return ChatJobExecutionResult(
             executed=False,
-            message=f"I found the SQL resource `{resource.name}`, but it does not have a default query and you did not provide a query override.",
-            resource_id=resource.id,
-            resource_created=created_resource,
+            message=f"I found the SQL job `{resource.name}`, but it does not have a default query and you did not provide a query override.",
+            job_id=resource.id,
+            job_created=created_job,
         )
 
     target_environment = (
@@ -575,21 +575,12 @@ def maybe_run_sql_job_from_chat(
         db,
         actor,
         RunCreate(
-            resource_id=resource.id,
+            job_id=resource.id,
             action=action,
             target_environment=target_environment,
             params=params,
         ),
     )
-
-    summary = (
-        f"I {'registered and ' if created_resource else ''}started the SQL job for resource "
-        f"`{resource.name}`. Run ID: `{run['id']}`. Current status: `{run['status']}`."
-    )
-    if params.get("query"):
-        summary += " This run used a query override from chat."
-    elif resource_query:
-        summary += " This run used the resource's registered default query."
 
     result_preview = _extract_sql_result_preview(db, run["id"])
     effective_status = run["status"]
@@ -598,13 +589,13 @@ def maybe_run_sql_job_from_chat(
         _mark_run_failed(db, run["id"])
 
     summary = (
-        f"I {'registered and ' if created_resource else ''}started the SQL job for resource "
+        f"I {'registered and ' if created_job else ''}started the SQL job "
         f"`{resource.name}`. Run ID: `{run['id']}`. Status: `{effective_status}`."
     )
     if params.get("query"):
         summary += " This run used a query override from chat."
     elif resource_query:
-        summary += " This run used the resource's registered default query."
+        summary += " This run used the job's registered default query."
 
     if result_preview:
         summary += f"\n\nSQL result:\n{result_preview}"
@@ -612,36 +603,34 @@ def maybe_run_sql_job_from_chat(
     return ChatJobExecutionResult(
         executed=True,
         message=summary,
-        resource_id=resource.id,
+        job_id=resource.id,
         run_id=run["id"],
         run_status=effective_status,
-        resource_created=created_resource,
+        job_created=created_job,
         result_preview=result_preview,
     )
 
 
-def run_resource_by_id(
+def run_job_by_id(
     db: Session,
-    resource_id: str,
+    job_id: str,
 ) -> ChatJobExecutionResult:
-    """Run any existing resource by its ID, regardless of type."""
-    from app.models.resource import Resource
-
+    """Run any existing job by its ID, regardless of type."""
     actor = get_chat_actor(db)
-    resource = db.get(Resource, resource_id)
-    if resource is None:
+    job = db.get(Job, job_id)
+    if job is None:
         return ChatJobExecutionResult(
             executed=False,
-            message=f"I couldn't find a job with ID `{resource_id}`. It may have been deleted.",
+            message=f"I couldn't find a job with ID `{job_id}`. It may have been deleted.",
         )
 
     run = create_run_and_maybe_execute(
         db,
         actor,
         RunCreate(
-            resource_id=resource.id,
+            job_id=job.id,
             action="run",
-            target_environment=resource.environment or "dev",
+            target_environment=job.environment or "dev",
             params={},
         ),
     )
@@ -653,7 +642,7 @@ def run_resource_by_id(
         _mark_run_failed(db, run["id"])
 
     message = (
-        f"Started a new run for **{resource.name}** ({resource.type}). "
+        f"Started a new run for **{job.name}** ({job.type}). "
         f"Run ID: `{run['id']}`. Status: `{effective_status}`."
     )
     if result_preview:
@@ -662,7 +651,7 @@ def run_resource_by_id(
     return ChatJobExecutionResult(
         executed=True,
         message=message,
-        resource_id=resource.id,
+        job_id=job.id,
         run_id=run["id"],
         run_status=effective_status,
         result_preview=result_preview,

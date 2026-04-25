@@ -32,15 +32,15 @@ import PowerPointForm from "../components/user/PowerPointForm";
 import { useCalendarOverlay } from "../contexts/CalendarContext";
 import { useJobRuns } from "../contexts/JobRunContext";
 import {
-  createResource,
-  createResourceRun,
+  createJob,
+  createJobRun,
   getRunLogs,
   listMcpRepoBundles,
   listMcpServers,
   type MCPConnectionBundleSummary,
   type MCPServerSummary,
-  type ResourceCreatePayload,
-  type ResourceRecord,
+  type JobCreatePayload,
+  type JobRecord,
   type RunCreatePayload,
   type RunLogEntry,
   type RunRecord,
@@ -326,7 +326,7 @@ const getRunMetadata = (run: RunRecord) => {
   return { submitted, resolved, draft, jobConfig, metadata };
 };
 
-const resolveRunJobName = (run: RunRecord, resource?: ResourceRecord) => {
+const resolveRunJobName = (run: RunRecord, resource?: JobRecord) => {
   const { resolved, draft, metadata } = getRunMetadata(run);
   return (
     getString(resource?.name) ||
@@ -338,7 +338,7 @@ const resolveRunJobName = (run: RunRecord, resource?: ResourceRecord) => {
   );
 };
 
-const resolveRunJobType = (run: RunRecord, resource?: ResourceRecord) => {
+const resolveRunJobType = (run: RunRecord, resource?: JobRecord) => {
   const { draft, metadata } = getRunMetadata(run);
   return normalizeResourceType(
     getString(resource?.type) ||
@@ -349,7 +349,7 @@ const resolveRunJobType = (run: RunRecord, resource?: ResourceRecord) => {
   );
 };
 
-const resolveRunSchedule = (run: RunRecord, resource?: ResourceRecord) => {
+const resolveRunSchedule = (run: RunRecord, resource?: JobRecord) => {
   const { resolved, jobConfig } = getRunMetadata(run);
   const resourceConfig = isRecord(resource?.config) ? resource.config : null;
   return (
@@ -417,7 +417,7 @@ const createWorkspaceJobPayloadFromStoredJob = (job: StoredJob): WorkspaceJobPay
   };
 };
 
-const createWorkspaceJobPayloadFromRun = (run: RunRecord, resource?: ResourceRecord): WorkspaceJobPayload => {
+const createWorkspaceJobPayloadFromRun = (run: RunRecord, resource?: JobRecord): WorkspaceJobPayload => {
   const name = resolveRunJobName(run, resource);
   const type = resolveRunJobType(run, resource);
   const schedule = resolveRunSchedule(run, resource);
@@ -426,7 +426,7 @@ const createWorkspaceJobPayloadFromRun = (run: RunRecord, resource?: ResourceRec
   const tasks = Array.isArray(resolved?.tasks) ? resolved.tasks : [];
 
   return {
-    job_id: resource?.id ?? run.resource_id,
+    job_id: resource?.id ?? run.job_id,
     name,
     type: type as WorkspaceJobPayload["type"],
     schedule,
@@ -436,7 +436,7 @@ const createWorkspaceJobPayloadFromRun = (run: RunRecord, resource?: ResourceRec
       getString(resolved?.intent) ||
       `Latest database run ${run.id} for ${name}.`,
     inputs: [
-      `Resource ID: ${run.resource_id}`,
+      `Resource ID: ${run.job_id}`,
       `Environment: ${run.target_environment}`,
       `Action: ${run.action}`,
     ],
@@ -459,7 +459,7 @@ const createWorkspaceJobPayloadFromRun = (run: RunRecord, resource?: ResourceRec
   };
 };
 
-const createWorkspaceJobPayloadFromResource = (resource: ResourceRecord): WorkspaceJobPayload => {
+const createWorkspaceJobPayloadFromResource = (resource: JobRecord): WorkspaceJobPayload => {
   const config = resource.config ?? {};
   const schedule = getString(config.schedule) || "Manual run";
   const type = normalizeResourceType(resource.type);
@@ -484,16 +484,16 @@ const createWorkspaceJobPayloadFromResource = (resource: ResourceRecord): Worksp
   };
 };
 
-const createDashboardJobs = (runs: RunRecord[], resources: ResourceRecord[]): DashboardJobListItem[] => {
-  const jobResources = resources.filter((resource) => resource.type !== "repo_connection");
+const createDashboardJobs = (runs: RunRecord[], jobs: JobRecord[]): DashboardJobListItem[] => {
+  const jobResources = jobs.filter((job) => job.type !== "repo_connection");
   const resourceById = new Map(jobResources.map((resource) => [resource.id, resource]));
   const latestRunByResource = new Map<string, RunRecord>();
 
   [...runs]
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
     .forEach((run) => {
-      if (!latestRunByResource.has(run.resource_id)) {
-        latestRunByResource.set(run.resource_id, run);
+      if (!latestRunByResource.has(run.job_id)) {
+        latestRunByResource.set(run.job_id, run);
       }
     });
 
@@ -512,10 +512,10 @@ const createDashboardJobs = (runs: RunRecord[], resources: ResourceRecord[]): Da
       };
     }
 
-    const resolvedResource = resourceById.get(run.resource_id);
+    const resolvedResource = resourceById.get(run.job_id);
     const payload = createWorkspaceJobPayloadFromRun(run, resolvedResource);
     return {
-      id: run.resource_id,
+      id: run.job_id,
       name: payload.name,
       type: payload.type,
       schedule: payload.schedule,
@@ -564,15 +564,15 @@ const getRepoConnectionName = (repoSlug: string, explicitName?: string): string 
   return `${repoName}-repo`;
 };
 
-const createDashboardRuns = (runs: RunRecord[], resources: ResourceRecord[], scheduledOccurrences: ScheduledOccurrence[] = []) => {
-  const resourceById = new Map(resources.map((resource) => [resource.id, resource]));
+const createDashboardRuns = (runs: RunRecord[], jobs: JobRecord[], scheduledOccurrences: ScheduledOccurrence[] = []) => {
+  const resourceById = new Map(jobs.map((job) => [job.id, job]));
   const mappedRuns = runs.map((run) => {
-    const resource = resourceById.get(run.resource_id);
+    const resource = resourceById.get(run.job_id);
     const status = mapRunStatusToRunItemStatus(run.status);
     const scheduledTime = new Date(run.created_at);
     return {
       id: run.id,
-      resourceId: run.resource_id,
+      resourceId: run.job_id,
       jobName: resolveRunJobName(run, resource),
       jobType: resolveRunJobType(run, resource),
       status,
@@ -582,7 +582,7 @@ const createDashboardRuns = (runs: RunRecord[], resources: ResourceRecord[], sch
   });
   const projectedRuns = scheduledOccurrences.map((occurrence) => ({
     id: occurrence.id,
-    resourceId: occurrence.resourceId,
+    resourceId: occurrence.jobId,
     jobName: occurrence.jobName,
     jobType: occurrence.jobType,
     status: "scheduled" as const,
@@ -838,7 +838,7 @@ interface WorkspaceState {
 export default function UserHome() {
   const navigate = useNavigate();
   const {
-    resources,
+    jobs,
     runs,
     loading: jobRunsLoading,
     error: jobRunsError,
@@ -940,10 +940,10 @@ export default function UserHome() {
     },
   ]);
   const [aiInput, setAiInput] = useState("");
-  const baseDashboardJobs = useMemo(() => createDashboardJobs(runs, resources), [runs, resources]);
+  const baseDashboardJobs = useMemo(() => createDashboardJobs(runs, jobs), [runs, jobs]);
   const connectedRepoResources = useMemo(
-    () => resources.filter((resource) => resource.type === "repo_connection"),
-    [resources],
+    () => jobs.filter((job) => job.type === "repo_connection"),
+    [jobs],
   );
   const dashboardJobs = useMemo(
     () =>
@@ -957,8 +957,8 @@ export default function UserHome() {
       ),
     [baseDashboardJobs, runningJobIds],
   );
-  const scheduledRunProjections = useMemo(() => createScheduledRunProjections(resources), [resources]);
-  const dashboardRuns = useMemo(() => createDashboardRuns(runs, resources, scheduledRunProjections), [runs, resources, scheduledRunProjections]);
+  const scheduledRunProjections = useMemo(() => createScheduledRunProjections(jobs), [jobs]);
+  const dashboardRuns = useMemo(() => createDashboardRuns(runs, jobs, scheduledRunProjections), [runs, jobs, scheduledRunProjections]);
   const activeDashboardJobs = useMemo(
     () => dashboardJobs.filter((job) => job.status === "Running" || job.status === "Healthy"),
     [dashboardJobs],
@@ -1033,13 +1033,13 @@ export default function UserHome() {
   );
   const filteredDashboardRuns = useMemo(() => {
     if (!selectedResourceId) return dashboardRuns;
-    const filtered = runs.filter((r) => r.resource_id === selectedResourceId);
-    const projected = scheduledRunProjections.filter((run) => run.resourceId === selectedResourceId);
-    return createDashboardRuns(filtered, resources, projected);
-  }, [runs, resources, selectedResourceId, dashboardRuns, scheduledRunProjections]);
+    const filtered = runs.filter((r) => r.job_id === selectedResourceId);
+    const projected = scheduledRunProjections.filter((run) => run.jobId === selectedResourceId);
+    return createDashboardRuns(filtered, jobs, projected);
+  }, [runs, jobs, selectedResourceId, dashboardRuns, scheduledRunProjections]);
   const selectedResourceName = useMemo(
-    () => resources.find((r) => r.id === selectedResourceId)?.name ?? null,
-    [resources, selectedResourceId]
+    () => jobs.find((r) => r.id === selectedResourceId)?.name ?? null,
+    [jobs, selectedResourceId]
   );
   const [customFormBuilder, setCustomFormBuilder] = useState<CustomFormBuilderState>({
     formName: "",
@@ -2124,7 +2124,7 @@ export default function UserHome() {
     }));
   };
 
-  const buildRepoConnectionPayload = (form: RepoConnectionFormState): ResourceCreatePayload => {
+  const buildRepoConnectionPayload = (form: RepoConnectionFormState): JobCreatePayload => {
     const repo = normalizeGithubRepoInput(form.repo);
     if (!isValidGithubRepoSlug(repo)) {
       throw new Error("Enter a GitHub repo as owner/repo or a full GitHub URL.");
@@ -2169,7 +2169,7 @@ export default function UserHome() {
     setRepoConnectionSuccess(null);
 
     try {
-      const resource = existing ?? await createResource(payload, getAuthToken());
+      const resource = existing ?? await createJob(payload, getAuthToken());
       await refreshJobRuns();
       setRepoConnectionForm((prev) => ({
         ...DEFAULT_REPO_CONNECTION_FORM,
@@ -2215,7 +2215,7 @@ export default function UserHome() {
     return "sql-dab";
   };
 
-  const buildResourcePayloadFromDraft = (draft: Record<string, any>): ResourceCreatePayload => {
+  const buildResourcePayloadFromDraft = (draft: Record<string, any>): JobCreatePayload => {
     const jobType = String(draft.job_type ?? "").trim();
     const schedule = String(draft.schedule ?? draft.config?.schedule ?? "").trim();
     const timezone = typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "America/Chicago";
@@ -2295,16 +2295,16 @@ export default function UserHome() {
     }
 
     const payload = buildResourcePayloadFromDraft(jobDraft);
-    const existingResource = resources.find(
-      (resource) => resource.name === payload.name && resource.type === payload.type && resource.connector === payload.connector
+    const existingResource = jobs.find(
+      (job) => job.name === payload.name && job.type === payload.type && job.connector === payload.connector
     );
 
     setIsRegisteringJob(true);
     try {
-      const resource = existingResource ?? await createResource(payload, getAuthToken());
+      const resource = existingResource ?? await createJob(payload, getAuthToken());
       setJobDraft((prev) => ({
         ...prev,
-        resource_id: resource.id,
+        job_id: resource.id,
         name: resource.name,
         connector: resource.connector,
         connection_id: resource.config?.connection_id ?? prev.connection_id,
@@ -2326,7 +2326,7 @@ export default function UserHome() {
       });
 
       if (options.autoRun) {
-        const run = await createResourceRun(resource.id, buildRunPayloadFromResource(resource), getAuthToken());
+        const run = await createJobRun(resource.id, buildRunPayloadFromResource(resource), getAuthToken());
         setActiveRunId(run.id);
         setRunLogs([]);
         setConsoleActiveTab("logs");
@@ -2358,7 +2358,7 @@ export default function UserHome() {
     }
   };
 
-  const buildRunPayloadFromResource = (resource: ResourceRecord): RunCreatePayload => {
+  const buildRunPayloadFromResource = (resource: JobRecord): RunCreatePayload => {
     const config = resource.config ?? {};
     return {
       action: "run",
@@ -2383,7 +2383,7 @@ export default function UserHome() {
   };
 
   const runResourceFromUi = async (resourceId: string) => {
-    const resource = resources.find((item) => item.id === resourceId);
+    const resource = jobs.find((item) => item.id === resourceId);
     if (!resource) {
       emitConsoleEvent("missing_fields_identified", "Unable to run job because the resource was not found", { resource_id: resourceId });
       return;
@@ -2393,7 +2393,7 @@ export default function UserHome() {
     emitConsoleEvent("draft_updated", `Started run for ${resource.name}`, { resource_id: resource.id });
 
     try {
-      const run = await createResourceRun(resource.id, buildRunPayloadFromResource(resource), getAuthToken());
+      const run = await createJobRun(resource.id, buildRunPayloadFromResource(resource), getAuthToken());
       setActiveRunId(run.id);
       setRunLogs([]);
       setConsoleActiveTab("logs");
@@ -2414,7 +2414,7 @@ export default function UserHome() {
       jobDraft.job_type !== "SQL" ||
       !jobDraft.creation_requested ||
       !isCreateJobDraftComplete(jobDraft) ||
-      jobDraft.resource_id ||
+      jobDraft.job_id ||
       isRegisteringJob
     ) {
       return;
@@ -2442,7 +2442,7 @@ export default function UserHome() {
       });
       autoRegisteredDraftKeyRef.current = null;
     });
-  }, [jobDraft, isRegisteringJob, resources]);
+  }, [jobDraft, isRegisteringJob, jobs]);
 
   // Render tab content - shared across all panes
   const renderTabContent = (tab: WorkspaceTab | undefined) => {
@@ -2454,7 +2454,7 @@ export default function UserHome() {
       ? ((tab.payload as WorkspaceJobPayload | undefined) ?? (currentJobName ? mockJobSpecs[currentJobName] : null))
       : null;
     const currentJobResource = currentJobSpec
-      ? resources.find((resource) => resource.id === currentJobSpec.job_id || resource.id === tab.id)
+      ? jobs.find((job) => job.id === currentJobSpec.job_id || job.id === tab.id)
       : null;
     
     // Get template if needed
@@ -3157,7 +3157,7 @@ export default function UserHome() {
                 const resourceId = tab.payload?.job_id as string | undefined;
                 const jobRuns = resourceId
                   ? [...runs]
-                      .filter((r) => r.resource_id === resourceId)
+                      .filter((r) => r.job_id === resourceId)
                       .sort((a, b) => b.created_at.localeCompare(a.created_at))
                   : [];
 
@@ -5611,7 +5611,7 @@ export default function UserHome() {
               currentDraftData={jobDraft}
               assistantNotices={chatAssistantNotices}
               onConsoleEvent={emitConsoleEvent}
-              resources={resources.map((r) => ({
+              resources={jobs.map((r) => ({
                 id: r.id,
                 name: r.name,
                 type: r.type ?? "Custom",

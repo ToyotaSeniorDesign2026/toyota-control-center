@@ -1,10 +1,10 @@
 import type { components } from "../../../../generated/types/api-types";
 
-type ResourceOutBase = components["schemas"]["ResourceOut"];
-type ResourceCreateBase = components["schemas"]["ResourceCreate"];
+type JobOutBase = components["schemas"]["ResourceOut"];
+type JobCreateBase = components["schemas"]["ResourceCreate"];
 type RunOutBase = components["schemas"]["RunOut"];
 
-export type ResourceRecord = ResourceOutBase & {
+export type JobRecord = JobOutBase & {
   kind: "runtime" | "artifact";
   tags: string[];
 };
@@ -17,7 +17,7 @@ export type RunRecord = RunOutBase & {
   resolved_job_spec_json?: Record<string, unknown> | null;
 };
 
-export type ResourceCreatePayload = ResourceCreateBase & {
+export type JobCreatePayload = JobCreateBase & {
   kind: "runtime" | "artifact";
   config: Record<string, unknown>;
   tags: string[];
@@ -43,8 +43,8 @@ export interface RunCreatePayload {
   };
 }
 
-export interface ResourceListResponse {
-  items: ResourceRecord[];
+export interface JobListResponse {
+  items: JobRecord[];
   total: number;
   page: number;
   page_size: number;
@@ -54,6 +54,36 @@ export interface ResourceListResponse {
 export interface RunListResponse {
   items: RunRecord[];
   next_cursor?: string | null;
+}
+
+export interface ConnectorRecord {
+  id: string;
+  name: string;
+  connector_type: string;
+  owner_id: string;
+  owner_domain: string;
+  environment: string;
+  status: string;
+  config: Record<string, unknown>;
+  is_shared: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConnectorListResponse {
+  items: ConnectorRecord[];
+  total: number;
+  page: number;
+  page_size: number;
+  has_more: boolean;
+}
+
+export interface ConnectorCreatePayload {
+  name: string;
+  connector_type: string;
+  environment: string;
+  config: Record<string, unknown>;
+  is_shared: boolean;
 }
 
 export interface OpenAIChatMessage {
@@ -135,13 +165,13 @@ async function request<T>(path: string, options: RequestInit = {}, token?: strin
   return response.json() as Promise<T>;
 }
 
-export function listResources(token?: string | null) {
-  return request<ResourceListResponse>("/resources?page=1&page_size=200", {}, token);
+export function listJobs(token?: string | null) {
+  return request<JobListResponse>("/jobs?page=1&page_size=200", {}, token);
 }
 
-export function createResource(payload: ResourceCreatePayload, token?: string | null) {
-  return request<ResourceRecord>(
-    "/resources",
+export function createJob(payload: JobCreatePayload, token?: string | null) {
+  return request<JobRecord>(
+    "/jobs",
     {
       method: "POST",
       body: JSON.stringify(payload),
@@ -154,9 +184,24 @@ export function listRuns(token?: string | null) {
   return request<RunListResponse>("/runs?limit=200", {}, token);
 }
 
-export function createResourceRun(resourceId: string, payload: RunCreatePayload, token?: string | null) {
+export function createJobRun(jobId: string, payload: RunCreatePayload, token?: string | null) {
   return request<RunRecord>(
-    `/resources/${resourceId}/runs`,
+    `/jobs/${jobId}/runs`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+    token,
+  );
+}
+
+export function listConnectors(token?: string | null) {
+  return request<ConnectorListResponse>("/connectors?page=1&page_size=200", {}, token);
+}
+
+export function createConnector(payload: ConnectorCreatePayload, token?: string | null) {
+  return request<ConnectorRecord>(
+    "/connectors",
     {
       method: "POST",
       body: JSON.stringify(payload),
