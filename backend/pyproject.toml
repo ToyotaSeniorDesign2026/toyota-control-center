@@ -24,6 +24,9 @@ dependencies = [
   "openai>=1.0.0",
 ]
 
+[project.optional-dependencies]
+snowflake = ["snowflake-sqlalchemy>=1.6"]
+
 [tool.uv]
 dev-dependencies = [
   "pytest>=8.0",

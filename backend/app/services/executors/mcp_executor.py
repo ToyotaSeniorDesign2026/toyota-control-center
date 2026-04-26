@@ -3,9 +3,12 @@ from __future__ import annotations
 """MCP-backed executor implementation."""
 
 import asyncio
+import logging
 import os
 import threading
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from app.services.execution_service import ExecutionRequest, ensure_control_center_importable
 
@@ -109,7 +112,7 @@ class MCPJobExecutor(BaseJobExecutor):
             await runtime_client.cleanup()
 
     def _sql_server_env_overrides(self, execution_request: ExecutionRequest) -> dict[str, dict[str, str]] | None:
-        """Build server_env_overrides for sql-dab from run params (preferred) or job config."""
+        """Build server_env_overrides for sql-mcp from run params (preferred) or job config."""
         config = {}
         if hasattr(execution_request.resource, "config"):
             cfg = execution_request.resource.config
@@ -118,26 +121,47 @@ class MCPJobExecutor(BaseJobExecutor):
         params = execution_request.params or {}
 
         # run-time params take precedence so UI-supplied credentials override stored config
+        driver = str(params.get("db_driver") or config.get("db_driver") or "").strip().lower()
+        database = str(params.get("database") or config.get("database") or "").strip()
+
+        if driver == "sqlite":
+            if not database:
+                logger.warning("SQLite driver detected but database path is empty — no env overrides applied")
+                return None
+            logger.info("SQL env overrides: driver=sqlite database=%s", database)
+            return {
+                "sql-mcp": {
+                    "SQL_DB_DRIVER": "sqlite",
+                    "SQL_DB_DATABASE": database,
+                }
+            }
+
         host = str(params.get("host") or config.get("host") or "").strip()
         port = str(params.get("port") or config.get("port") or "").strip()
-        database = str(params.get("database") or config.get("database") or "").strip()
         username = str(params.get("username") or config.get("username") or "").strip()
         password = str(params.get("password") or config.get("password") or "").strip()
+        warehouse = str(params.get("warehouse") or config.get("warehouse") or "").strip()
 
-        if not all([host, port, database, username, password]):
+        if not all([host, database, username, password]):
             return None
 
-        conn_str = f"Host={host};Port={port};Database={database};Username={username};Password={password}"
-        return {
-            "sql-dab": {
-                "SQL_CONNECTION_STRING": conn_str,
-                "SQL_DB_HOST": host,
-                "SQL_DB_PORT": port,
-                "SQL_DB_DATABASE": database,
-                "SQL_DB_USERNAME": username,
-                "SQL_DB_PASSWORD": password,
-            }
+        overrides: dict[str, str] = {
+            "SQL_DB_HOST": host,
+            "SQL_DB_DATABASE": database,
+            "SQL_DB_USERNAME": username,
+            "SQL_DB_PASSWORD": password,
         }
+        if driver:
+            overrides["SQL_DB_DRIVER"] = driver
+        if warehouse:
+            overrides["SQL_DB_WAREHOUSE"] = warehouse
+        if port:
+            overrides["SQL_DB_PORT"] = port
+            overrides["SQL_CONNECTION_STRING"] = (
+                f"Host={host};Port={port};Database={database};Username={username};Password={password}"
+            )
+
+        return {"sql-mcp": overrides}
 
     async def _execute_agent(self, execution_request: ExecutionRequest) -> dict[str, Any]:
         ensure_control_center_importable()

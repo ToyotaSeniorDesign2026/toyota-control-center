@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y \
 COPY pyproject.toml ./
 
 # Install dependencies
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir -e ".[snowflake]"
 
 # Copy application code
 COPY . .

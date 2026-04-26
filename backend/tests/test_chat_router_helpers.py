@@ -137,7 +137,7 @@ class ChatRouterHelperTests(unittest.TestCase):
 
         response = _sql_followup_response(
             request,
-            extracted_fields={"job_type": "SQL", "connector": "sql-dab", "connection_id": "postgres"},
+            extracted_fields={"job_type": "SQL", "connector": "sql-mcp", "connection_id": "postgres"},
             session_env=request.session_env or {},
         )
 
@@ -174,7 +174,7 @@ class ChatRouterHelperTests(unittest.TestCase):
             request,
             extracted_fields={
                 "job_type": "SQL",
-                "connector": "sql-dab",
+                "connector": "sql-mcp",
                 "connection_id": "postgres",
                 "query": "SELECT * FROM users",
             },

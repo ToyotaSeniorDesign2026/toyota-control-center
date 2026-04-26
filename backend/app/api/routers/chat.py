@@ -260,12 +260,84 @@ SQL_SESSION_ENV_FIELDS = [
         "required": False,
     },
 ]
+_SQLITE_SESSION_ENV_FIELDS: list[dict] = [
+    {
+        "key": "SQL_DB_DATABASE",
+        "label": "SQLite database file path",
+        "placeholder": "e.g. /path/to/database.db  (or :memory: for in-memory)",
+        "secret": False,
+        "required": True,
+        "group": "sql_connection_string",
+    },
+]
+_SNOWFLAKE_SESSION_ENV_FIELDS: list[dict] = [
+    {
+        "key": "SQL_DB_HOST",
+        "label": "Snowflake account identifier",
+        "placeholder": "e.g. myaccount.snowflakecomputing.com",
+        "secret": False,
+        "required": True,
+        "group": "sql_connection_string",
+    },
+    {
+        "key": "SQL_DB_DATABASE",
+        "label": "Database and schema",
+        "placeholder": "e.g. MY_DATABASE/PUBLIC",
+        "secret": False,
+        "required": True,
+        "group": "sql_connection_string",
+    },
+    {
+        "key": "SQL_DB_WAREHOUSE",
+        "label": "Warehouse",
+        "placeholder": "e.g. COMPUTE_WH",
+        "secret": False,
+        "required": True,
+        "group": "sql_connection_string",
+    },
+    {
+        "key": "SQL_DB_USERNAME",
+        "label": "Username",
+        "placeholder": "e.g. my_snowflake_user",
+        "secret": False,
+        "required": True,
+        "group": "sql_connection_string",
+    },
+    {
+        "key": "SQL_DB_PASSWORD",
+        "label": "Password",
+        "placeholder": "Enter your Snowflake password",
+        "secret": True,
+        "required": True,
+        "group": "sql_connection_string",
+    },
+]
 SQL_REQUIRED_JOB_FIELDS = [
     ("job_name", "job/resource name"),
     ("owner", "owner"),
     ("target_environment", "target environment"),
     ("run_type", "run type"),
 ]
+_SQL_DRIVER_DISPLAY: dict[str, str] = {
+    "sqlite": "SQLite",
+    "snowflake": "Snowflake",
+    "postgresql+psycopg": "PostgreSQL",
+    "mysql+pymysql": "MySQL",
+}
+
+
+def _detect_sql_driver(message: str) -> str | None:
+    """Return a SQLAlchemy driver string inferred from keywords in message, or None."""
+    lower = (message or "").lower()
+    if re.search(r"\bsqlite\b", lower):
+        return "sqlite"
+    if re.search(r"\bsnowflake\b", lower):
+        return "snowflake"
+    if re.search(r"\bpostgres(?:ql)?\b|\bpsycopg\b", lower):
+        return "postgresql+psycopg"
+    if re.search(r"\bmysql\b|\bmariadb\b", lower):
+        return "mysql+pymysql"
+    return None
 
 
 def _should_extract_fields(request: "ChatRequest", job_creation_intent: bool) -> bool:
@@ -399,9 +471,13 @@ def _openai_extract_sql_fields(message: str, draft: dict, history: list[dict] | 
             "You are a field extractor for SQL job creation. "
             "Given the user's message, extract ONLY fields that are explicitly stated or clearly described.\n"
             "Extractable fields: job_name, owner, run_type (manual|scheduled), schedule, "
-            "query (valid SQL), database, connection_id, username, password, host, port, folder_hint.\n"
+            "query (valid SQL), database, connection_id, username, password, host, port, folder_hint, "
+            "db_driver (one of: sqlite, snowflake, postgresql+psycopg, mysql+pymysql).\n"
             "Rules:\n"
             "- ONLY extract a field if the user's message directly provides or clearly describes its value.\n"
+            "- For 'db_driver': set to 'sqlite' if the user mentions SQLite, 'snowflake' for Snowflake, "
+            "'postgresql+psycopg' for PostgreSQL/Postgres/pg, 'mysql+pymysql' for MySQL/MariaDB. "
+            "Only set if the user explicitly names a database type.\n"
             "- For 'query': if the user provides actual SQL, return it exactly. If they describe an "
             "operation in natural language (e.g. 'get all orders', 'create a table called customers', "
             "'show me all users', 'delete old records from logs'), GENERATE the correct SQL for it "
@@ -436,7 +512,8 @@ def _openai_extract_sql_fields(message: str, draft: dict, history: list[dict] | 
         # Sanitise: only accept known field names, apply _coerce_to_sql for query
         allowed = {"job_name", "owner", "run_type", "schedule", "query",
                    "database", "connection_id", "username", "password", "host", "port",
-                   "folder_hint"}
+                   "folder_hint", "db_driver"}
+        _valid_drivers = {"sqlite", "snowflake", "postgresql+psycopg", "mysql+pymysql"}
         result: dict[str, Any] = {}
         for k, v in raw.items():
             if k not in allowed or not isinstance(v, str) or not v.strip():
@@ -444,6 +521,16 @@ def _openai_extract_sql_fields(message: str, draft: dict, history: list[dict] | 
             result[k] = _coerce_to_sql(v) if k == "query" else v.strip()
         if "run_type" in result and result["run_type"] not in {"manual", "scheduled", "triggered"}:
             del result["run_type"]
+        if "db_driver" in result and result["db_driver"] not in _valid_drivers:
+            del result["db_driver"]
+        # Reject driver keywords being misidentified as the database name
+        _driver_words = {"sqlite", "postgresql", "postgres", "snowflake", "mysql", "mariadb"}
+        if result.get("database", "").strip().lower() in _driver_words:
+            del result["database"]
+        # connection_id is not applicable for SQLite
+        existing_driver = str(draft.get("db_driver") or result.get("db_driver") or "").strip().lower()
+        if existing_driver == "sqlite" and "connection_id" in result:
+            del result["connection_id"]
         return result
     except Exception:
         logger.debug("OpenAI SQL field extraction failed", exc_info=True)
@@ -475,6 +562,8 @@ def _extract_sql_field_value(field: str, message: str) -> str | None:
     stripped = message.strip()
     if not stripped:
         return None
+    if field == "db_driver":
+        return _detect_sql_driver(stripped)
     if field == "run_type":
         lower = stripped.lower()
         if any(w in lower for w in ("schedule", "recurring", "cron", "periodic", "repeating")):
@@ -509,7 +598,9 @@ def _next_missing_sql_field(draft: dict, session_env: dict) -> str | None:
             return field
     if str(draft.get("run_type") or "").strip().lower() == "scheduled" and not _sql_field_has_value("schedule", draft, session_env):
         return "schedule"
-    if not draft.get("_connection_id_asked") and not _sql_field_has_value("connection_id", draft, session_env):
+    driver = _non_empty_str(draft.get("db_driver") or (draft.get("config") or {}).get("db_driver")) or ""
+    _no_connection_id_drivers = {"sqlite", "snowflake", "snowflake+snowflake-sqlalchemy"}
+    if driver.lower() not in _no_connection_id_drivers and not draft.get("_connection_id_asked") and not _sql_field_has_value("connection_id", draft, session_env):
         return "connection_id"
     return None
 
@@ -517,6 +608,8 @@ def _next_missing_sql_field(draft: dict, session_env: dict) -> str | None:
 def _build_sql_job_summary(draft: dict, session_env: dict) -> str:
     """Build the confirmation summary shown before creating the job."""
     config = draft.get("config") if isinstance(draft.get("config"), dict) else {}
+    db_driver = _non_empty_str(draft.get("db_driver") or config.get("db_driver")) or ""
+    driver_label = _SQL_DRIVER_DISPLAY.get(db_driver.lower(), db_driver.capitalize() if db_driver else "SQL")
     job_name = _non_empty_str(draft.get("job_name") or draft.get("name")) or "—"
     owner = _non_empty_str(draft.get("owner")) or "—"
     run_type = str(draft.get("run_type") or "manual").strip().lower()
@@ -535,15 +628,27 @@ def _build_sql_job_summary(draft: dict, session_env: dict) -> str:
         f"**Job Name:** {job_name}",
         f"**Owner:** {owner}",
         f"**Run Type:** {run_type_display}",
+        f"**Database Type:** {driver_label}",
         "",
         "**SQL Query:**",
         f"```sql\n{query}\n```",
-        f"**Database:** {database}",
-        f"**Host:** {host}:{port}",
-        f"**Username:** {username}",
     ]
-    if connection_id:
-        lines.append(f"**Connection ID:** {connection_id}")
+    if db_driver == "sqlite":
+        lines.append(f"**Database file:** {database}")
+    elif db_driver in ("snowflake", "snowflake+snowflake-sqlalchemy"):
+        lines += [
+            f"**Snowflake account:** {host}",
+            f"**Database/Schema:** {database}",
+            f"**Username:** {username}",
+        ]
+    else:
+        lines += [
+            f"**Database:** {database}",
+            f"**Host:** {host}:{port}",
+            f"**Username:** {username}",
+        ]
+        if connection_id:
+            lines.append(f"**Connection ID:** {connection_id}")
     lines.append("")
     if run_type == "scheduled":
         lines.append("Shall I create this scheduled job? (yes / no)")
@@ -566,11 +671,15 @@ def _sql_config_with_session_env(merged: dict[str, Any], session_env: dict[str, 
     ):
         if not cfg.get(fld) and session_env.get(env_key):
             cfg[fld] = session_env[env_key]
-    for fld in ("query", "database", "username", "password", "host", "port", "connection_id"):
+    for fld in ("query", "database", "username", "password", "host", "port", "connection_id", "db_driver"):
         if merged.get(fld) and not cfg.get(fld):
             cfg[fld] = merged[fld]
     if merged.get("schedule"):
         cfg["schedule"] = merged["schedule"]
+    # connection_id is only meaningful for PostgreSQL managed connections; remove it for other drivers
+    _driver = _non_empty_str(cfg.get("db_driver") or merged.get("db_driver") or "")
+    if _driver.lower() in {"sqlite", "snowflake", "snowflake+snowflake-sqlalchemy"}:
+        cfg.pop("connection_id", None)
     return cfg
 
 
@@ -919,7 +1028,7 @@ def _sql_ordered_required_fields() -> list[str]:
     registry = _load_registry()
     universal = registry.get("universal_job_fields", {}) if isinstance(registry.get("universal_job_fields"), dict) else {}
     approved = registry.get("approved_servers", {}) if isinstance(registry.get("approved_servers"), dict) else {}
-    sql_server = approved.get("sql-dab", {}) if isinstance(approved.get("sql-dab"), dict) else {}
+    sql_server = approved.get("sql-mcp", {}) if isinstance(approved.get("sql-mcp"), dict) else {}
     fields: list[str] = []
     for field in [*(universal.get("required") or []), *(sql_server.get("required_fields") or [])]:
         if isinstance(field, str) and field not in fields:
@@ -1008,7 +1117,7 @@ def _ask_llm_for_next_field(
             "- Be conversational. You may include a brief hint or example in backticks if helpful.\n"
             "- Do NOT re-ask or mention fields already collected.\n"
             "- Do NOT list all the fields — only ask about the one field requested.\n"
-            "- NEVER ask about the connector or database type — the connector is always `sql-dab` and is set automatically. Database connection details (host, port, database name, username, password) are collected via a form, not conversationally.\n"
+            "- NEVER ask about the connector or database type — the connector is always `sql-mcp` and is set automatically. Database connection details (host, port, database name, username, password) are collected via a form, not conversationally.\n"
             f"Already collected: {json.dumps(collected)}\n"
             f"Next field to ask about: {field_label} (key: {next_field})"
         )
@@ -1208,6 +1317,24 @@ class ConfigRequest(BaseModel):
 _ALL_SQL_CONNECTION_FIELDS: list[ConfigRequestField] = [
     ConfigRequestField(**field) for field in SQL_SESSION_ENV_FIELDS
 ]
+_SQLITE_CONNECTION_FIELDS: list[ConfigRequestField] = [
+    ConfigRequestField(**f) for f in _SQLITE_SESSION_ENV_FIELDS
+]
+_SNOWFLAKE_CONNECTION_FIELDS: list[ConfigRequestField] = [
+    ConfigRequestField(**f) for f in _SNOWFLAKE_SESSION_ENV_FIELDS
+]
+
+
+def _connection_fields_for_driver(driver: str) -> list[ConfigRequestField]:
+    """Return the connection form fields appropriate for the given SQL driver."""
+    d = (driver or "").strip().lower()
+    if d == "sqlite":
+        return _SQLITE_CONNECTION_FIELDS
+    if d in ("snowflake", "snowflake+snowflake-sqlalchemy"):
+        return _SNOWFLAKE_CONNECTION_FIELDS
+    # PostgreSQL, MySQL, and other network databases — full set minus optional connection_id
+    pg_fields = [f for f in SQL_SESSION_ENV_FIELDS if f["key"] != "SQL_CONNECTION_ID"]
+    return [ConfigRequestField(**f) for f in pg_fields]
 
 
 def _sql_connection_config_request(prompt: str, fields: list[ConfigRequestField] | None = None) -> ConfigRequest:
@@ -1419,10 +1546,17 @@ def _build_sql_connection_string(session_env: dict[str, str]) -> str | None:
     return f"Host={host};Port={port};Database={database};Username={username};Password={password}"
 
 
-def _missing_sql_session_env(session_env: dict[str, str]) -> list[ConfigRequestField]:
+def _missing_sql_session_env(session_env: dict[str, str], db_driver: str = "") -> list[ConfigRequestField]:
+    driver = (db_driver or "").strip().lower()
+    if driver == "sqlite":
+        fields_to_check = _SQLITE_SESSION_ENV_FIELDS
+    elif driver in ("snowflake", "snowflake+snowflake-sqlalchemy"):
+        fields_to_check = _SNOWFLAKE_SESSION_ENV_FIELDS
+    else:
+        fields_to_check = SQL_SESSION_ENV_FIELDS
     missing: list[ConfigRequestField] = []
-    derived_connection_string = _build_sql_connection_string(session_env)
-    for field in SQL_SESSION_ENV_FIELDS:
+    derived_connection_string = _build_sql_connection_string(session_env) if driver not in ("sqlite",) else None
+    for field in fields_to_check:
         key = field["key"]
         if session_env.get(key):
             continue
@@ -1815,28 +1949,42 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                     extracted_fields=new_draft,
                 )
 
-        missing_sql_session_fields = _missing_sql_session_env(session_env)
+        _early_draft = request.current_draft_data or {}
+        _early_db_driver = _non_empty_str(_early_draft.get("db_driver") or (_early_draft.get("config") or {}).get("db_driver")) or ""
+        # If the driver isn't in the draft yet, detect it from the current message so
+        # the connection form shows the right fields before field extraction runs.
+        if not _early_db_driver:
+            _detected_early = _detect_sql_driver(request.message)
+            if _detected_early:
+                _early_db_driver = _detected_early
+                _early_draft = {**_early_draft, "db_driver": _detected_early}
+        missing_sql_session_fields = _missing_sql_session_env(session_env, _early_db_driver)
         if (
             missing_sql_session_fields
             and not _form_already_shown
             and (_looks_like_live_sql_lookup(request) or is_sql_job_flow)
             and not _is_sql_github_write_request(request)
         ):
+            _early_driver_label = _SQL_DRIVER_DISPLAY.get(_early_db_driver.lower(), "SQL")
+            _skip_conn_id = _early_db_driver.lower() in {"sqlite", "snowflake", "snowflake+snowflake-sqlalchemy"}
             ef = {
-                **(request.current_draft_data or {}),
+                **_early_draft,
                 "job_type": "SQL",
                 "_connection_form_shown": True,
-                "_connection_id_asked": True,
+                "_connection_id_asked": _skip_conn_id,
             }
             return ChatResponse(
                 response=(
+                    f"Before we proceed, I need the **{_early_driver_label}** connection details for this session. "
+                    "Please fill in the form below."
+                    if _early_db_driver else
                     "Before I can run a live SQL query in this chat, I need the database connection details "
                     "for this session. Please provide the host, port, database name, username, and password."
                 ),
                 job_creation_intent=is_sql_job_flow,
                 extracted_fields=ef if is_sql_job_flow else None,
                 config_request=_sql_connection_config_request(
-                    "Enter the database connection details for this chat session.",
+                    f"Enter the {_early_driver_label} connection details for this chat session.",
                     fields=missing_sql_session_fields,
                 ),
             )
@@ -2107,20 +2255,19 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                 if "connection_id" in ai_fields:
                     new_ef["_connection_id_asked"] = True
 
-                # Deterministic fallback: if OpenAI didn't capture the specifically-asked field, extract it
+                # Deterministic fallback: always apply for the specifically-asked field so the
+                # user's direct answer overrides anything the LLM inferred from draft context.
                 if last_asked:
-                    already_set = new_ef.get(last_asked) or (new_ef.get("config") or {}).get(last_asked)
-                    if not already_set:
-                        value = _extract_sql_field_value(last_asked, request.message)
-                        if value is not None:
-                            if last_asked == "connection_id":
-                                new_ef["_connection_id_asked"] = True
-                                if value != "__skip__":
-                                    new_ef["connection_id"] = value
-                            elif last_asked in {"host", "port", "database", "username", "password"}:
-                                new_ef.setdefault("config", {})[last_asked] = value
-                            else:
-                                new_ef[last_asked] = value
+                    value = _extract_sql_field_value(last_asked, request.message)
+                    if value is not None:
+                        if last_asked == "connection_id":
+                            new_ef["_connection_id_asked"] = True
+                            if value != "__skip__":
+                                new_ef["connection_id"] = value
+                        elif last_asked in {"host", "port", "database", "username", "password"}:
+                            new_ef.setdefault("config", {})[last_asked] = value
+                        else:
+                            new_ef[last_asked] = value
                     if last_asked == "connection_id":
                         new_ef["_connection_id_asked"] = True
 
@@ -2133,8 +2280,37 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
             if not _non_empty_str(merged.get("target_environment")) and _non_empty_str(merged.get("environment")):
                 merged["target_environment"] = merged["environment"]
             merged.pop("environment", None)
+            # Keep db_driver in sync between top-level draft and config so the executor always sees it
+            if merged.get("db_driver") and not (merged.get("config") or {}).get("db_driver"):
+                merged.setdefault("config", {})["db_driver"] = merged["db_driver"]
+            # Strip connection_id and connector from the draft for non-PostgreSQL drivers — they are
+            # not needed and confuse the agent prompt.  The frontend echoes back old state so we must
+            # remove it here on every turn, not just at extraction time.
+            _active_driver = _non_empty_str(merged.get("db_driver") or (merged.get("config") or {}).get("db_driver") or "")
+            if _active_driver.lower() in {"sqlite", "snowflake", "snowflake+snowflake-sqlalchemy"}:
+                merged.pop("connection_id", None)
+                merged.pop("connector", None)
+                if isinstance(merged.get("config"), dict):
+                    merged["config"].pop("connection_id", None)
+                if isinstance(merged.get("params"), dict):
+                    merged["params"].pop("connection_id", None)
+            # Persist session_env connection values into the draft so they survive across turns.
+            # session_env is only present in the turn where the form is submitted; without this,
+            # the database path / credentials are gone by the "yes" confirmation turn.
+            if merged.get("_connection_form_shown") and session_env:
+                for _fld, _env_key in (
+                    ("database", "SQL_DB_DATABASE"),
+                    ("host", "SQL_DB_HOST"),
+                    ("port", "SQL_DB_PORT"),
+                    ("warehouse", "SQL_DB_WAREHOUSE"),
+                    ("username", "SQL_DB_USERNAME"),
+                    ("password", "SQL_DB_PASSWORD"),
+                ):
+                    _env_val = _non_empty_str(session_env.get(_env_key))
+                    if _env_val and not _non_empty_str((merged.get("config") or {}).get(_fld)):
+                        merged.setdefault("config", {})[_fld] = _env_val
             if last_asked not in (None, "confirm"):
-                if last_asked == "connection_id" or _sql_field_has_value(last_asked, merged, session_env):
+                if last_asked in ("connection_id", "db_driver") or _sql_field_has_value(last_asked, merged, session_env):
                     merged.pop("_pending_field", None)
             if "awaiting_confirmation" in merged and last_asked != "confirm":
                 merged.pop("awaiting_confirmation", None)
@@ -2181,7 +2357,7 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                         "name": merged.get("job_name") or merged.get("name"),
                         "owner": merged.get("owner"),
                         "run_type": run_type,
-                        "connector": "sql-dab",
+                        "connector": "sql-mcp",
                         "config": cfg,
                         "connection_id": merged.get("connection_id") or cfg.get("connection_id"),
                         "query": merged.get("query") or cfg.get("query"),
@@ -2256,16 +2432,68 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                         extracted_fields=merged,
                     )
 
+            # Determine SQL driver — ask if not yet known (only before connection form is shown)
+            if not merged.get("_connection_form_shown"):
+                db_driver = _non_empty_str(merged.get("db_driver") or (merged.get("config") or {}).get("db_driver"))
+                if not db_driver:
+                    # Try to auto-detect from the current or initial message
+                    detected = _detect_sql_driver(request.message)
+                    if not detected:
+                        for _hm in reversed(history_dicts or []):
+                            if _hm.get("role") == "user":
+                                detected = _detect_sql_driver(str(_hm.get("content") or ""))
+                                if detected:
+                                    break
+                    if detected:
+                        merged["db_driver"] = detected
+                        merged.setdefault("config", {})["db_driver"] = detected
+                    elif last_asked == "db_driver":
+                        # User just answered but we still couldn't detect — ask again
+                        return ChatResponse(
+                            response=(
+                                "I didn't catch that. Which database type would you like to use?\n\n"
+                                "- **PostgreSQL** — standard relational database\n"
+                                "- **SQLite** — local file-based database (no server needed)\n"
+                                "- **Snowflake** — cloud data warehouse"
+                            ),
+                            job_creation_intent=True,
+                            extracted_fields={**merged, "_pending_field": "db_driver"},
+                        )
+                    else:
+                        # No type known yet — ask the user
+                        return ChatResponse(
+                            response=(
+                                "What type of SQL database would you like to connect to?\n\n"
+                                "- **PostgreSQL** — standard relational database\n"
+                                "- **SQLite** — local file-based database (no server needed)\n"
+                                "- **Snowflake** — cloud data warehouse"
+                            ),
+                            job_creation_intent=True,
+                            extracted_fields={**merged, "_pending_field": "db_driver"},
+                        )
+
             # Show the connection form on first entry; merged preserves any fields already collected.
             if not merged.get("_connection_form_shown"):
+                db_driver = _non_empty_str(merged.get("db_driver") or (merged.get("config") or {}).get("db_driver")) or ""
+                driver_label = _SQL_DRIVER_DISPLAY.get(db_driver.lower(), db_driver.capitalize() if db_driver else "SQL")
+                connection_prompt = f"Enter the {driver_label} connection details for this job."
+                connection_response = (
+                    f"Great, I'll set up a **{driver_label}** SQL job. "
+                    "Please fill in the connection details below."
+                )
+                skip_connection_id = db_driver.lower() in {"sqlite", "snowflake", "snowflake+snowflake-sqlalchemy"}
                 return ChatResponse(
-                    response=(
-                        "Before we proceed with this SQL job, I'll need the database connection details. "
-                        "Please fill in the form below."
-                    ),
+                    response=connection_response,
                     job_creation_intent=True,
-                    extracted_fields={**merged, "_connection_form_shown": True, "_connection_id_asked": True},
-                    config_request=_sql_connection_config_request("Enter the database connection details for this job."),
+                    extracted_fields={
+                        **merged,
+                        "_connection_form_shown": True,
+                        "_connection_id_asked": skip_connection_id,
+                    },
+                    config_request=_sql_connection_config_request(
+                        connection_prompt,
+                        fields=_connection_fields_for_driver(db_driver),
+                    ),
                     reset_session_env=True,
                 )
 
@@ -2283,7 +2511,7 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
 
             # All fields collected — validate before showing confirmation
             cfg: dict[str, Any] = merged.get("config") or {}
-            connector = str(merged.get("connector") or "sql-dab").strip().lower()
+            connector = str(merged.get("connector") or "sql-mcp").strip().lower()
             environment = _resolved_job_environment(merged).strip().lower()
 
             # 1 & 2: Registry checks — connector active + environment allowed
@@ -2575,7 +2803,7 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
             database_username = str(session_env.get("SQL_DB_USERNAME") or "").strip()
             extracted_fields = {
                 **extracted_fields,
-                "connector": extracted_fields.get("connector") or "sql-dab",
+                "connector": extracted_fields.get("connector") or "sql-mcp",
                 "config": {
                     **(extracted_fields.get("config") or {}),
                     "session_env_keys": sorted(session_env.keys()),

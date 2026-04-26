@@ -1937,15 +1937,15 @@ export default function UserHome() {
       const normalized = value.trim().toLowerCase();
       return normalized === "production" ? "prod" : normalized;
     };
-    const sqlConnectors = ["sql-dab", "sql-dab-analytics"];
+    const sqlConnectors = ["sql-mcp", "sql-mcp-analytics"];
     const defaultConnectionIdForConnector = (connector: string) => {
-      if (connector === "sql-dab") return "postgres";
-      if (connector === "sql-dab-analytics") return "analytics";
+      if (connector === "sql-mcp") return "postgres";
+      if (connector === "sql-mcp-analytics") return "analytics";
       return "";
     };
     const normalizeConnector = (connector: any) => {
       const normalized = typeof connector === "string" ? connector.trim().toLowerCase() : "";
-      return sqlConnectors.includes(normalized) ? normalized : "sql-dab";
+      return sqlConnectors.includes(normalized) ? normalized : "sql-mcp";
     };
     const normalizedType = String(fields.job_type ?? fields.type ?? "").trim().toLowerCase();
     const isSql =
@@ -2254,13 +2254,13 @@ export default function UserHome() {
 
   const normalizeSqlConnectorForResource = (connector: unknown) => {
     const normalized = typeof connector === "string" ? connector.trim().toLowerCase() : "";
-    if (normalized === "sql-dab" || normalized === "control center dev database" || normalized === "control-center dev database") {
-      return "sql-dab";
+    if (normalized === "sql-mcp" || normalized === "control center dev database" || normalized === "control-center dev database") {
+      return "sql-mcp";
     }
-    if (normalized === "sql-dab-analytics" || normalized === "analytics reporting database") {
-      return "sql-dab-analytics";
+    if (normalized === "sql-mcp-analytics" || normalized === "analytics reporting database") {
+      return "sql-mcp-analytics";
     }
-    return "sql-dab";
+    return "sql-mcp";
   };
 
   const buildResourcePayloadFromDraft = (draft: Record<string, any>): JobCreatePayload => {
@@ -2281,7 +2281,7 @@ export default function UserHome() {
 
     if (jobType === "SQL") {
       const connector = normalizeSqlConnectorForResource(draft.connector);
-      const connectionId = String(draft.connection_id ?? draft.config?.connection_id ?? (connector === "sql-dab" ? "postgres" : "analytics")).trim();
+      const connectionId = String(draft.connection_id ?? draft.config?.connection_id ?? (connector === "sql-mcp" ? "postgres" : "analytics")).trim();
       const query = String(draft.query ?? draft.config?.query ?? draft.params?.query ?? "").trim();
       return {
         ...basePayload,

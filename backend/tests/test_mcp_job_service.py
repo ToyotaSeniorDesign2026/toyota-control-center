@@ -114,11 +114,11 @@ class MCPJobServiceTests(unittest.TestCase):
                 id="res_sql_mcp",
                 name="sql-mcp-job",
                 type="sql",
-                connector="sql-dab",
+                connector="sql-mcp",
                 data_sensitivity="low",
                 kind="runtime",
                 environment="dev",
-                config={"connection_id": "sql-dab"},
+                config={"connection_id": "sql-mcp"},
                 tags=[],
                 owner_id="u_analyst",
                 owner_domain="collections",
@@ -128,7 +128,7 @@ class MCPJobServiceTests(unittest.TestCase):
                 target_environment="dev",
                 params={"prompt": "Show me the latest open orders."},
                 mcp_config=MCPExecutionConfig(
-                    server_names=["sql-dab"],
+                    server_names=["sql-mcp"],
                     prompt="Show me the latest open orders.",
                     allow_auto_selection=True,
                 ),
@@ -138,7 +138,7 @@ class MCPJobServiceTests(unittest.TestCase):
 
         self.assertEqual(execution_request.execution_backend, "mcp")
         self.assertEqual(execution_request.execution_mode, "agent")
-        self.assertEqual(execution_request.mcp_config.server_names, ["sql-dab"])
+        self.assertEqual(execution_request.mcp_config.server_names, ["sql-mcp"])
 
     def test_sql_resource_uses_registered_query_to_build_agent_prompt(self) -> None:
         execution_request = build_execution_request(
@@ -147,7 +147,7 @@ class MCPJobServiceTests(unittest.TestCase):
                 id="res_sql_registered",
                 name="dealer-sales-summary",
                 type="sql",
-                connector="sql-dab-analytics",
+                connector="sql-mcp-analytics",
                 data_sensitivity="low",
                 kind="runtime",
                 environment="dev",
@@ -169,7 +169,7 @@ class MCPJobServiceTests(unittest.TestCase):
 
         self.assertEqual(execution_request.execution_backend, "mcp")
         self.assertEqual(execution_request.execution_mode, "agent")
-        self.assertEqual(execution_request.mcp_config.server_names, ["sql-dab-analytics"])
+        self.assertEqual(execution_request.mcp_config.server_names, ["sql-mcp-analytics"])
         self.assertIn("analytics-readonly", execution_request.mcp_config.prompt)
         self.assertIn("select dealer_id", execution_request.mcp_config.prompt)
 
@@ -179,7 +179,7 @@ class MCPJobServiceTests(unittest.TestCase):
                 id="res_sql_override",
                 name="dealer-sales-summary",
                 type="sql",
-                connector="sql-dab",
+                connector="sql-mcp",
                 config={
                     "connection_id": "analytics-readonly",
                     "query": "select * from sales",
@@ -193,7 +193,7 @@ class MCPJobServiceTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(effective.server_names, ["sql-dab"])
+        self.assertEqual(effective.server_names, ["sql-mcp"])
         self.assertIn("sale_date = current_date", effective.prompt)
         self.assertNotIn("select * from sales\n```", effective.prompt)
 
@@ -203,7 +203,7 @@ class MCPJobServiceTests(unittest.TestCase):
                 id="res_sql_tool",
                 name="sql-tool-job",
                 type="sql",
-                connector="sql-dab",
+                connector="sql-mcp",
                 config={"connection_id": "analytics-readonly"},
                 data_sensitivity="low",
             ),
@@ -218,7 +218,7 @@ class MCPJobServiceTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(effective.server_names, ["sql-dab"])
+        self.assertEqual(effective.server_names, ["sql-mcp"])
         self.assertEqual(effective.tool_name, "execute_sql")
         self.assertEqual(effective.tool_arguments["query"], "select 1")
         self.assertEqual(effective.tool_arguments["connection_id"], "analytics-readonly")

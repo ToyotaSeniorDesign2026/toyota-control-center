@@ -143,8 +143,20 @@ def resolve_effective_mcp_config(resource, payload: RunCreate) -> MCPExecutionCo
 
     if resource_type == "sql":
         query = _non_empty_string(payload.params.get("query")) or _non_empty_string(resource_config.get("query"))
-        connection_id = _non_empty_string(payload.params.get("connection_id")) or _non_empty_string(
-            resource_config.get("connection_id")
+        db_driver = (
+            _non_empty_string(payload.params.get("db_driver"))
+            or _non_empty_string(resource_config.get("db_driver"))
+            or ""
+        ).lower()
+        # connection_id is only meaningful for PostgreSQL managed connections
+        _pg_driver = db_driver not in {"sqlite", "snowflake", "snowflake+snowflake-sqlalchemy"}
+        connection_id = (
+            (
+                _non_empty_string(payload.params.get("connection_id"))
+                or _non_empty_string(resource_config.get("connection_id"))
+            )
+            if _pg_driver
+            else None
         )
 
         if tool_name:

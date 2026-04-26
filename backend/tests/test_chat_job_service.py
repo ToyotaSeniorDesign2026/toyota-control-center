@@ -35,7 +35,7 @@ class ChatJobServiceTests(unittest.TestCase):
         self.assertEqual(result.resource_id, "res_get_users")
         self.assertTrue(result.resource_created)
         self.assertEqual(create_resource_mock.call_args.args[2].name, "get-users-10")
-        self.assertEqual(create_resource_mock.call_args.args[2].connector, "sql-dab")
+        self.assertEqual(create_resource_mock.call_args.args[2].connector, "sql-mcp")
         self.assertEqual(create_resource_mock.call_args.args[2].environment, "dev")
         self.assertEqual(create_resource_mock.call_args.args[2].config["query"], "SELECT * FROM users;")
         self.assertNotIn("target_environment", create_resource_mock.call_args.args[2].config)
@@ -107,7 +107,7 @@ class ChatJobServiceTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertTrue(result.executed)
         self.assertTrue(result.resource_created)
-        self.assertEqual(create_resource_mock.call_args.args[2].connector, "sql-dab")
+        self.assertEqual(create_resource_mock.call_args.args[2].connector, "sql-mcp")
         self.assertEqual(create_run_mock.call_args.args[2].resource_id, "res_new_1")
 
     def test_non_execution_chat_message_does_not_trigger_sql_run(self) -> None:
@@ -164,7 +164,7 @@ class ChatJobServiceTests(unittest.TestCase):
                 current_draft={
                     "job_type": "SQL",
                     "job_name": "get-runs",
-                    "connector": "sql-dab",
+                    "connector": "sql-mcp",
                     "connection_id": "postgres",
                     "query": "SELECT * FROM runs",
                     "target_environment": "dev",
@@ -176,7 +176,7 @@ class ChatJobServiceTests(unittest.TestCase):
         self.assertTrue(result.executed)
         self.assertTrue(result.resource_created)
         self.assertEqual(create_resource_mock.call_args.args[2].name, "get-runs")
-        self.assertEqual(create_resource_mock.call_args.args[2].connector, "sql-dab")
+        self.assertEqual(create_resource_mock.call_args.args[2].connector, "sql-mcp")
         self.assertEqual(create_resource_mock.call_args.args[2].config["connection_id"], "postgres")
         self.assertEqual(create_run_mock.call_args.args[2].target_environment, "dev")
 
@@ -215,7 +215,7 @@ class ChatJobServiceTests(unittest.TestCase):
             )
 
         self.assertIsNotNone(result)
-        self.assertEqual(create_resource_mock.call_args.args[2].connector, "sql-dab")
+        self.assertEqual(create_resource_mock.call_args.args[2].connector, "sql-mcp")
 
 
 if __name__ == "__main__":

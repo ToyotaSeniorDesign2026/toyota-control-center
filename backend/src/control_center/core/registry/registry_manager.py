@@ -56,6 +56,7 @@ class ApprovedServerDef(BaseModel):
     job_type: str | None = None
     required_fields: list[str] = Field(default_factory=list)
     optional_fields: list[str] = Field(default_factory=list)
+    drivers: dict[str, Any] | None = None
 
     @field_validator("config_type", mode="before")
     def normalize_config_type(cls, value: str | None) -> str:

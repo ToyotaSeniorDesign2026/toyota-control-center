@@ -21,6 +21,8 @@ On first start Docker automatically:
 - Builds the API image (Python 3.11 + Node 20)
 - Runs the app via Uvicorn
 
+`mcp_servers/sql-mcp-server/` is bind-mounted into the container, so changes to `server.py` or the SQLite `test.db` take effect immediately without a rebuild.
+
 > Migrations run automatically on startup — `alembic upgrade head` executes before the API process starts.
 
 ### Stopping and restarting
@@ -175,28 +177,48 @@ Once the API is running:
 
 ## SQL MCP Server
 
-The backend ships a custom FastMCP SQL server at [mcp_servers/sql-mcp-server/server.py](mcp_servers/sql-mcp-server/server.py). It wraps a PostgreSQL database and exposes three MCP tools to the AI agent:
+The backend ships a custom FastMCP SQL server at [mcp_servers/sql-mcp-server/server.py](mcp_servers/sql-mcp-server/server.py). It supports **PostgreSQL, SQLite, and Snowflake** (any SQLAlchemy dialect) and exposes three MCP tools to the AI agent:
 
 | Tool | Description |
 |---|---|
-| `list_tables` | Returns all user tables in the `public` schema |
+| `list_tables` | Returns all user tables in the connected database |
 | `execute_query` | Executes any SQL statement; returns up to 500 rows with a `truncated` flag |
 | `execute_sql` | Compatibility alias for `execute_query` used by the direct-tool execution path |
 
 ### Connection configuration
 
-The server reads connection details from environment variables at startup. You can provide either a single ADO.NET-style connection string or individual vars:
+Set `SQL_DB_DRIVER` to select the dialect (default: `postgresql+psycopg`), then provide credentials via a connection string or individual vars.
+
+**PostgreSQL**
 
 ```bash
-# Option A — single connection string (ADO.NET format)
+SQL_DB_DRIVER=postgresql+psycopg
 SQL_CONNECTION_STRING=Host=localhost;Port=5432;Database=control_center;Username=postgres;Password=postgres
+# or individual vars: SQL_DB_HOST, SQL_DB_PORT, SQL_DB_DATABASE, SQL_DB_USERNAME, SQL_DB_PASSWORD
+```
 
-# Option B — individual vars
-SQL_DB_HOST=localhost
-SQL_DB_PORT=5432
-SQL_DB_DATABASE=control_center
-SQL_DB_USERNAME=postgres
-SQL_DB_PASSWORD=postgres
+**SQLite** (file-based stub — no server required)
+
+```bash
+SQL_DB_DRIVER=sqlite
+SQL_DB_DATABASE=/path/to/file.db   # or :memory: for an in-memory database
+```
+
+**Snowflake**
+
+```bash
+SQL_DB_DRIVER=snowflake
+SQL_DB_HOST=<account>.snowflakecomputing.com
+SQL_DB_DATABASE=<database>/<schema>
+SQL_DB_WAREHOUSE=<warehouse>
+SQL_DB_USERNAME=<user>
+SQL_DB_PASSWORD=<password>
+```
+
+The Snowflake driver (`snowflake-sqlalchemy`) is installed by default in the Docker image. For local dev without Docker:
+
+```bash
+pip install -e ".[snowflake]"
 ```
 
 Optional timeouts (seconds):
@@ -217,7 +239,7 @@ source .venv/bin/activate   # or use the backend venv
 python server.py
 ```
 
-The MCP config that tells the agent how to launch it is at [mcp_servers/configs/sql-dab.json](mcp_servers/configs/sql-dab.json):
+The MCP config that tells the agent how to launch it is at [mcp_servers/configs/sql-mcp.json](mcp_servers/configs/sql-mcp.json):
 
 ```json
 {
@@ -232,11 +254,147 @@ The MCP config that tells the agent how to launch it is at [mcp_servers/configs/
 }
 ```
 
-For a remote/HTTP-backed analytics variant, see [mcp_servers/configs/sql-dab-analytics.json](mcp_servers/configs/sql-dab-analytics.json), which uses the `streamable-http` transport and reads `SQL_ANALYTICS_MCP_SERVER_URL` / `SQL_ANALYTICS_MCP_SERVER_BEARER_TOKEN` from `.env`.
+For a remote/HTTP-backed analytics variant, see [mcp_servers/configs/sql-mcp-analytics.json](mcp_servers/configs/sql-mcp-analytics.json), which uses the `streamable-http` transport and reads `SQL_ANALYTICS_MCP_SERVER_URL` / `SQL_ANALYTICS_MCP_SERVER_BEARER_TOKEN` from `.env`.
 
 ### How it integrates with job execution
 
-When a job's `connector` field is `sql-dab`, the execution service routes the run through this MCP server. The agent receives a prompt built around the job's SQL query and calls `execute_query` (or `execute_sql`) to run it, then returns the results as structured output attached to the run log.
+When a job's `connector` field is `sql-mcp`, the execution service routes the run through this MCP server. The agent receives a prompt built around the job's SQL query and calls `execute_query` (or `execute_sql`) to run it, then returns the results as structured output attached to the run log.
+
+---
+
+## Testing SQL Jobs (Chat UI)
+
+Use the AI chat assistant (`POST /api/chat` or the frontend chat page) to create and run SQL jobs against each supported driver. The chat flow will detect the driver from your message and prompt for the appropriate connection fields.
+
+> **Docker path note:** The SQL MCP server runs as a subprocess inside the `control_center_api` container. SQLite database paths must be container-internal paths — Mac host paths (e.g. `/Users/...`) are not visible to the container.
+
+---
+
+### SQLite
+
+A bundled `test.db` is included at `mcp_servers/sql-mcp-server/test.db` and is mounted into the running container at `/app/mcp_servers/sql-mcp-server/test.db`.
+
+**Chat prompt to create a job:**
+
+```
+Create a SQL job that lists all tables in the SQLite database
+```
+
+**Connection fields (when prompted):**
+
+| Field | Value |
+|---|---|
+| Driver | `sqlite` |
+| Database | `/app/mcp_servers/sql-mcp-server/test.db` |
+
+**Sample queries:**
+
+```sql
+-- List existing tables
+SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;
+
+-- Create a table
+CREATE TABLE IF NOT EXISTS delinquency_risk (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id TEXT NOT NULL,
+    risk_level TEXT NOT NULL,
+    score REAL,
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Insert a row
+INSERT INTO delinquency_risk (account_id, risk_level, score) VALUES ('ACC-001', 'high', 0.87);
+
+-- Query results
+SELECT * FROM delinquency_risk;
+```
+
+**Local dev (without Docker):** use the absolute path on your machine, e.g. `/Users/<you>/CS5351/toyota-control-center/backend/mcp_servers/sql-mcp-server/test.db`.
+
+---
+
+### PostgreSQL
+
+The `control_center_postgres` container started by `docker compose` is a valid test target. When both containers are on the same Compose network, the API container reaches Postgres via the service hostname `postgres`.
+
+**Chat prompt to create a job:**
+
+```
+Create a SQL job that lists all tables in the PostgreSQL database
+```
+
+**Connection fields (when prompted):**
+
+| Field | Value |
+|---|---|
+| Driver | `postgresql` |
+| Host | `postgres` (Docker) or `localhost` (local dev) |
+| Port | `5432` |
+| Database | `control_center` |
+| Username | `postgres` |
+| Password | `postgres` |
+
+**Sample queries:**
+
+```sql
+-- List user tables
+SELECT table_name
+FROM information_schema.tables
+WHERE table_schema = 'public'
+ORDER BY table_name;
+
+-- Inspect a specific table
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_name = 'jobs'
+ORDER BY ordinal_position;
+
+-- Count rows per table (useful sanity check)
+SELECT 'jobs' AS tbl, COUNT(*) FROM jobs
+UNION ALL
+SELECT 'runs', COUNT(*) FROM runs
+UNION ALL
+SELECT 'users', COUNT(*) FROM users;
+```
+
+---
+
+### Snowflake
+
+Requires a Snowflake account. The `snowflake-sqlalchemy` driver is bundled in the Docker image. For local dev without Docker, install it first:
+
+```bash
+pip install -e ".[snowflake]"
+```
+
+**Chat prompt to create a job:**
+
+```
+Create a SQL job that queries our Snowflake data warehouse
+```
+
+**Connection fields (when prompted):**
+
+| Field | Value |
+|---|---|
+| Driver | `snowflake` |
+| Host | `<account>.snowflakecomputing.com` |
+| Database | `<DATABASE>/<SCHEMA>` (e.g. `TEST_DB/PUBLIC`) |
+| Warehouse | your Snowflake warehouse (e.g. `COMPUTE_WH`) |
+| Username | your Snowflake username |
+| Password | your Snowflake password |
+
+**Sample queries:**
+
+```sql
+-- List tables in the current schema
+SHOW TABLES;
+
+-- Basic query
+SELECT COUNT(*) FROM <your_table> LIMIT 1;
+```
+
+> Port is not required for Snowflake — the driver handles it automatically.
 
 ---
 

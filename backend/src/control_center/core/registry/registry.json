@@ -82,17 +82,38 @@
       "config_path": "configs/wordsmith-mcp.json",
       "active": true
     },
-    "sql-dab": {
-      "description": "Generic SQL MCP server that connects to any user-supplied database via Azure Data API Builder. Connection details (host, port, database, username, password) are provided at job creation time.",
+    "sql-mcp": {
+      "description": "Custom FastMCP SQL server that connects to any user-supplied database (PostgreSQL, SQLite, Snowflake). Connection details are provided at job creation time; the driver is selected via SQL_DB_DRIVER.",
       "display_name": "SQL Database",
       "allowed_environments": ["dev", "semi-prod", "prod"],
-      "config_path": "configs/sql-dab.json",
-      "version": "1.7",
-      "tags": ["sql", "database", "mcp", "remote"],
+      "config_path": "configs/sql-mcp.json",
+      "version": "2.0",
+      "tags": ["sql", "database", "mcp", "fastmcp"],
       "active": true,
       "job_type": "sql",
-      "required_fields": ["query", "database", "host", "port", "username", "password"],
-      "optional_fields": ["connection_id", "schedule", "timezone"]
+      "required_fields": ["query", "database"],
+      "optional_fields": ["db_driver", "schedule", "timezone"],
+      "drivers": {
+        "sqlite": {
+          "description": "File-based database. No server required.",
+          "required_fields": ["database"],
+          "optional_fields": [],
+          "notes": "database = absolute file path or ':memory:'"
+        },
+        "postgresql": {
+          "description": "Standard relational database server.",
+          "db_driver_value": "postgresql+psycopg",
+          "required_fields": ["host", "port", "database", "username", "password"],
+          "optional_fields": ["connection_id"]
+        },
+        "snowflake": {
+          "description": "Cloud data warehouse.",
+          "db_driver_value": "snowflake",
+          "required_fields": ["host", "database", "username", "password"],
+          "optional_fields": [],
+          "notes": "host = <account>.snowflakecomputing.com, database = <DATABASE>/<SCHEMA>"
+        }
+      }
     }
   }
 

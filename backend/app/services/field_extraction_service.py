@@ -103,7 +103,8 @@ IMPORTANT:
   - name, kind, type, environment, data_sensitivity, tags
   - config.query, config.schedule
   - action, target_environment, params.query for run-specific overrides
-- For SQL jobs, the connector is ALWAYS "sql-dab" — do NOT extract or set the connector field from user input. Do NOT set connection_id or any database credentials from conversation; those are collected separately via a connection form.
+- For SQL jobs, the connector is ALWAYS "sql-mcp" — do NOT extract or set the connector field from user input. Do NOT set connection_id or any database credentials from conversation; those are collected separately via a connection form.
+- For SQL jobs, extract db_driver if the user mentions a database type: "PostgreSQL" or "postgres" → "postgresql+psycopg", "SQLite" or "sqlite" → "sqlite", "Snowflake" or "snowflake" → "snowflake". If no database type is mentioned, omit db_driver.
 - If the user says the job should run manually, extract run_type as "manual" and do not invent a schedule
 - If the user wants to connect a GitHub repo, use resource-oriented fields like type "repo_connection", connector "github", config.repo, and config.provider "github"
 
@@ -133,9 +134,10 @@ Backend resource fields:
 
 SQL-specific backend fields:
 - query (string)
+- db_driver (string: "postgresql+psycopg", "sqlite", or "snowflake" — extracted from user's mention of database type)
 - output_destination (string)
 - result_limit (string or number)
-Note: connector (always "sql-dab"), connection_id, host, port, database, username, password are NOT extracted from conversation — they are collected via a dedicated connection form.
+Note: connector (always "sql-mcp"), connection_id, host, port, database, username, password are NOT extracted from conversation — they are collected via a dedicated connection form.
 
 Repo connection backend fields:
 - repo (string in owner/repo format)
@@ -190,8 +192,8 @@ EXTRACTION EXAMPLES:
   → {{"job_type": "SQL", "query": "SELECT * FROM users"}}
 - User: "please run it manually"
   → {{"run_type": "manual"}}
-- User: "Extract data from Snowflake table customers"
-  → {{"data_sources": ["Snowflake table customers"]}}
+- User: "Create a SQL job that queries our Snowflake data warehouse"
+  → {{"job_type": "SQL", "db_driver": "snowflake"}}
 - User: "Im the owner and schedule it for monday at 3am"
   → {{"owner": "user", "schedule": "every Monday at 3am"}}
 - User: "Add metrics like revenue, growth, and margin"
@@ -205,8 +207,9 @@ USER MESSAGE:
 Extract fields as JSON. Return ONLY valid JSON, no markdown, no explanation.
 
 For SQL resource setup, prefer backend-aligned shapes such as:
-- {{"name": "...", "kind": "runtime", "type": "sql", "connector": "...", "environment": "dev", "config": {{"query": "...", "connection_id": "...", "schedule": "..."}}}}
+- {{"name": "...", "kind": "runtime", "type": "sql", "environment": "dev", "config": {{"query": "...", "schedule": "..."}}}}
 - use params.query only when the user clearly means a run-specific override rather than the resource default.
+- NEVER include connection_id, connector, host, port, database, username, or password in the output — these are always collected separately.
 
 For repo connection setup, prefer backend-aligned shapes such as:
 - {{"connection_intent": "connect_repo", "name": "...", "kind": "runtime", "type": "repo_connection", "connector": "github", "repo": "owner/repo", "provider": "github", "ref": "main", "server_names": ["github"]}}
@@ -232,7 +235,23 @@ Use normalized field names like "SQL", "PowerPoint", and convert schedule descri
             
             # Remove any fields that have None or empty string values
             cleaned = {k: v for k, v in extracted.items() if v is not None and v != ""}
-            
+
+            # These fields are ALWAYS collected via dedicated forms, never from conversation
+            _form_only_keys = {"connection_id", "connector", "host", "port", "username", "password"}
+            for key in _form_only_keys:
+                cleaned.pop(key, None)
+            for sub in ("config", "params"):
+                if isinstance(cleaned.get(sub), dict):
+                    for key in _form_only_keys:
+                        cleaned[sub].pop(key, None)
+
+            # Reject driver keywords misidentified as the database name
+            _driver_words = {"sqlite", "postgresql", "postgres", "snowflake", "mysql", "mariadb"}
+            if isinstance(cleaned.get("config"), dict) and cleaned["config"].get("database", "").lower() in _driver_words:
+                del cleaned["config"]["database"]
+            if cleaned.get("database", "").lower() in _driver_words:
+                del cleaned["database"]
+
             return cleaned
             
         except json.JSONDecodeError:

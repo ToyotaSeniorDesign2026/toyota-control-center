@@ -17,7 +17,7 @@ from app.services.job_service import create_job, update_job
 from app.services.run_service import create_run_and_maybe_execute
 
 
-SQL_MCP_CONNECTORS = {"sql-dab"}
+SQL_MCP_CONNECTORS = {"sql-mcp"}
 _SQL_ERROR_INDICATORS = re.compile(
     r"\b(already exists|does not exist|syntax error|permission denied|"
     r"violates|duplicate key|duplicate table|relation .{0,60} already|"
@@ -31,7 +31,7 @@ GITHUB_WRITE_INTENT_PATTERN = re.compile(
     r"|\b(sql|query)\b.{0,60}\b(github|repo|repository|\.sql)\b",
     re.IGNORECASE,
 )
-# Connector for SQL jobs is always sql-dab; no database-specific aliases.
+# Connector for SQL jobs is always sql-mcp; no database-specific aliases.
 SQL_CONNECTOR_ALIASES: dict[str, str] = {}
 RUN_INTENT_PATTERN = re.compile(r"\b(run|execute|launch|trigger|start)\b")
 SQL_EXECUTION_CONTEXT_PATTERN = re.compile(r"\b(sql|query|job|resource)\b")
@@ -170,7 +170,7 @@ def _infer_sql_connector(merged_fields: dict[str, Any]) -> str:
 
 
 def _resolved_sql_connector(merged_fields: dict[str, Any]) -> str:
-    return "sql-dab"
+    return "sql-mcp"
 
 
 def _normalize_sql_job_connector(resource: Job | Any, fallback_fields: dict[str, Any]) -> None:

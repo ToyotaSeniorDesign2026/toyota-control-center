@@ -1,8 +1,26 @@
 """Generic FastMCP SQL server.
 
-Reads SQL_CONNECTION_STRING from env at startup (ADO.NET format:
-  Host=h;Port=p;Database=d;Username=u;Password=pw
-or individual SQL_DB_* vars) and exposes execute_query / list_tables tools.
+Supports PostgreSQL, SQLite, and Snowflake (and any other SQLAlchemy dialect).
+
+Connection configuration (pick one approach):
+
+  PostgreSQL / Snowflake — ADO.NET-style string:
+    SQL_CONNECTION_STRING=Host=h;Port=p;Database=d;Username=u;Password=pw
+
+  PostgreSQL / Snowflake — individual vars:
+    SQL_DB_DRIVER=postgresql+psycopg   # default
+    SQL_DB_HOST, SQL_DB_PORT, SQL_DB_DATABASE, SQL_DB_USERNAME, SQL_DB_PASSWORD
+
+  SQLite — file path:
+    SQL_DB_DRIVER=sqlite
+    SQL_DB_DATABASE=/path/to/file.db   # or ":memory:"
+
+  Snowflake — individual vars:
+    SQL_DB_DRIVER=snowflake
+    SQL_DB_HOST=<account>.snowflakecomputing.com
+    SQL_DB_DATABASE=<database>/<schema>
+    SQL_DB_USERNAME=<user>
+    SQL_DB_PASSWORD=<password>
 """
 
 from __future__ import annotations
@@ -25,8 +43,23 @@ _ADOINET_RE = re.compile(
     re.IGNORECASE,
 )
 
+_CONNECT_TIMEOUT = int(os.environ.get("SQL_CONNECT_TIMEOUT", "15"))
+_QUERY_TIMEOUT = int(os.environ.get("SQL_QUERY_TIMEOUT", "30"))
+
 
 def _build_sqlalchemy_url() -> str:
+    driver = os.environ.get("SQL_DB_DRIVER", "postgresql+psycopg").strip().lower()
+
+    # SQLite — only needs a file path
+    if driver == "sqlite":
+        database = os.environ.get("SQL_DB_DATABASE", "").strip()
+        if not database:
+            raise RuntimeError(
+                "SQLite requires SQL_DB_DATABASE set to a file path or ':memory:'."
+            )
+        return f"sqlite:///{database}" if database != ":memory:" else "sqlite://"
+
+    # All other drivers — try ADO.NET string first, then individual vars
     raw = os.environ.get("SQL_CONNECTION_STRING", "")
     m = _ADOINET_RE.search(raw)
     if m:
@@ -48,22 +81,42 @@ def _build_sqlalchemy_url() -> str:
             "SQL_DB_HOST / SQL_DB_PORT / SQL_DB_DATABASE / SQL_DB_USERNAME / SQL_DB_PASSWORD."
         )
 
+    # Snowflake uses a different URL shape.
+    # The account identifier must not include .snowflakecomputing.com.
+    if driver in ("snowflake", "snowflake+snowflake-sqlalchemy"):
+        from urllib.parse import quote_plus, urlencode
+        account = re.sub(r"\.snowflakecomputing\.com$", "", host, flags=re.IGNORECASE)
+        warehouse = os.environ.get("SQL_DB_WAREHOUSE", "").strip()
+        qs = ("?" + urlencode({"warehouse": warehouse})) if warehouse else ""
+        return (
+            f"snowflake://"
+            f"{quote_plus(username)}:{quote_plus(password)}@{account}/{database}{qs}"
+        )
+
     from urllib.parse import quote_plus
-    return f"postgresql+psycopg://{quote_plus(username)}:{quote_plus(password)}@{host}:{port}/{database}"
-
-
-mcp = FastMCP("sql-mcp-server")
-
-
-_CONNECT_TIMEOUT = int(os.environ.get("SQL_CONNECT_TIMEOUT", "15"))
-_QUERY_TIMEOUT = int(os.environ.get("SQL_QUERY_TIMEOUT", "30"))
+    return f"{driver}://{quote_plus(username)}:{quote_plus(password)}@{host}:{port}/{database}"
 
 
 def _make_engine():
-    return create_engine(
-        _build_sqlalchemy_url(),
-        connect_args={"connect_timeout": _CONNECT_TIMEOUT},
+    url = _build_sqlalchemy_url()
+    driver = os.environ.get("SQL_DB_DRIVER", "postgresql+psycopg").strip().lower()
+    connect_args = {} if driver == "sqlite" else {"connect_timeout": _CONNECT_TIMEOUT}
+    return create_engine(url, connect_args=connect_args)
+
+
+def _list_tables_query() -> str:
+    driver = os.environ.get("SQL_DB_DRIVER", "postgresql+psycopg").strip().lower()
+    if driver == "sqlite":
+        return "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+    # Snowflake and PostgreSQL both support information_schema
+    return (
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema NOT IN ('information_schema', 'pg_catalog', 'INFORMATION_SCHEMA') "
+        "ORDER BY table_name"
     )
+
+
+mcp = FastMCP("sql-mcp-server")
 
 
 @mcp.tool()
@@ -71,12 +124,7 @@ def list_tables() -> list[str]:
     """Return the names of all user tables in the connected database."""
     engine = _make_engine()
     with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = 'public' ORDER BY table_name"
-            )
-        )
+        result = conn.execute(text(_list_tables_query()))
         return [row[0] for row in result]
 
 

@@ -28,6 +28,8 @@ services:
       DB_MAX_OVERFLOW: "20"
       DB_POOL_RECYCLE: "1800"
       DB_POOL_PRE_PING: "true"
+    volumes:
+      - ./mcp_servers/sql-mcp-server:/app/mcp_servers/sql-mcp-server
     ports:
       - "8000:8000"
     command: >
