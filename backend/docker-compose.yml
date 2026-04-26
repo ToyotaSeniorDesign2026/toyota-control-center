@@ -30,7 +30,10 @@ services:
       DB_POOL_PRE_PING: "true"
     ports:
       - "8000:8000"
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    command: >
+      sh -c "until pg_isready -h postgres -U postgres; do sleep 1; done &&
+             alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
 volumes:
   postgres_data:

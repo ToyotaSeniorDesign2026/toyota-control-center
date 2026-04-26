@@ -21,7 +21,7 @@ On first start Docker automatically:
 - Builds the API image (Python 3.11 + Node 20)
 - Runs the app via Uvicorn
 
-> **Migrations are not run automatically by Docker.** After the first `docker compose up`, run migrations from your host (see [Migrations](#migrations) below).
+> Migrations run automatically on startup — `alembic upgrade head` executes before the API process starts.
 
 ### Stopping and restarting
 
@@ -173,42 +173,70 @@ Once the API is running:
 
 ---
 
-## SQL MCP Server (optional)
+## SQL MCP Server
 
-The SQL MCP connector lets the agent execute SQL jobs against a Data API Builder (DAB) endpoint.
+The backend ships a custom FastMCP SQL server at [mcp_servers/sql-mcp-server/server.py](mcp_servers/sql-mcp-server/server.py). It wraps a PostgreSQL database and exposes three MCP tools to the AI agent:
 
-### Install DAB CLI
+| Tool | Description |
+|---|---|
+| `list_tables` | Returns all user tables in the `public` schema |
+| `execute_query` | Executes any SQL statement; returns up to 500 rows with a `truncated` flag |
+| `execute_sql` | Compatibility alias for `execute_query` used by the direct-tool execution path |
+
+### Connection configuration
+
+The server reads connection details from environment variables at startup. You can provide either a single ADO.NET-style connection string or individual vars:
 
 ```bash
-dotnet tool install --global Microsoft.DataApiBuilder
-# If dab is not found after install:
-export PATH="$PATH:$HOME/.dotnet/tools"
+# Option A — single connection string (ADO.NET format)
+SQL_CONNECTION_STRING=Host=localhost;Port=5432;Database=control_center;Username=postgres;Password=postgres
+
+# Option B — individual vars
+SQL_DB_HOST=localhost
+SQL_DB_PORT=5432
+SQL_DB_DATABASE=control_center
+SQL_DB_USERNAME=postgres
+SQL_DB_PASSWORD=postgres
 ```
 
-### Run DAB locally (host)
+Optional timeouts (seconds):
+
+```bash
+SQL_CONNECT_TIMEOUT=15   # default: 15
+SQL_QUERY_TIMEOUT=30     # default: 30
+```
+
+### Running locally (stdio transport)
+
+The server uses **stdio** transport — it is launched as a subprocess by the agent, not run as a standalone HTTP service.
 
 ```bash
 cd backend/mcp_servers/sql-mcp-server
-export SQL_CONNECTION_STRING="Host=localhost;Port=5432;Database=control_center;Username=postgres;Password=postgres"
-dab start --config dab-config.json
+cp .env.example .env        # or edit .env directly
+source .venv/bin/activate   # or use the backend venv
+python server.py
 ```
 
-DAB starts on port 5000 by default. The MCP endpoint is:
+The MCP config that tells the agent how to launch it is at [mcp_servers/configs/sql-dab.json](mcp_servers/configs/sql-dab.json):
 
+```json
+{
+  "command": "python",
+  "args": ["sql-mcp-server/server.py"],
+  "type": "stdio",
+  "env": {
+    "SQL_CONNECTION_STRING": "${SQL_CONNECTION_STRING}",
+    "SQL_DB_HOST": "${SQL_DB_HOST}",
+    ...
+  }
+}
 ```
-http://localhost:5000/mcp
-```
 
-Point the backend at it in `.env`:
+For a remote/HTTP-backed analytics variant, see [mcp_servers/configs/sql-dab-analytics.json](mcp_servers/configs/sql-dab-analytics.json), which uses the `streamable-http` transport and reads `SQL_ANALYTICS_MCP_SERVER_URL` / `SQL_ANALYTICS_MCP_SERVER_BEARER_TOKEN` from `.env`.
 
-```bash
-SQL_MCP_SERVER_URL=http://localhost:5000/mcp
-SQL_MCP_SERVER_BEARER_TOKEN=local-dev-token
-SQL_ANALYTICS_MCP_SERVER_URL=http://localhost:5000/mcp
-SQL_ANALYTICS_MCP_SERVER_BEARER_TOKEN=local-dev-token
-```
+### How it integrates with job execution
 
-`local-dev-token` is a placeholder; DAB in local dev does not enforce bearer validation unless explicitly configured.
+When a job's `connector` field is `sql-dab`, the execution service routes the run through this MCP server. The agent receives a prompt built around the job's SQL query and calls `execute_query` (or `execute_sql`) to run it, then returns the results as structured output attached to the run log.
 
 ---
 
@@ -281,7 +309,7 @@ backend/
 │   │   └── tasks.py              # in-process scheduler loop
 │   └── main.py                   # app factory + router wiring
 ├── alembic/                      # database migrations
-├── mcp_servers/                  # MCP server configs and local DAB setup
+├── mcp_servers/                  # MCP server configs
 ├── scripts/                      # dev utility scripts
 ├── Dockerfile
 ├── docker-compose.yml
