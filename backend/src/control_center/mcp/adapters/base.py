@@ -1,17 +1,11 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
-if TYPE_CHECKING:
-    from mcp.types import Prompt, Resource, Tool
-else:
-    Prompt = Resource = Tool = Any
-
-from control_center.mcp.client import BaseClient
-from control_center.core.specs import BoundCapability
-from control_center.mcp.models import ModelTurnResult
-
+from mcp.types import Prompt, Resource, Tool
+from control_center.specs import BoundCapability
+from control_center.mcp import BaseClient, ModelTurnResult
 T = TypeVar("T")
 
 

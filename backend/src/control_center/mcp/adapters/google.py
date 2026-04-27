@@ -4,20 +4,15 @@ import asyncio
 import json
 import re
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from mcp.types import Prompt, Resource, Tool
-else:
-    Prompt = Resource = Tool = Any
-
-from control_center.core.specs import BoundCapability
-from control_center.mcp.client import BaseClient
-from control_center.mcp.models import ModelTurnResult, RequestedToolCall
+from mcp.types import Prompt, Resource, Tool
+from control_center.specs import BoundCapability
+from control_center.mcp import BaseClient, ModelTurnResult, RequestedToolCall
 
 from .base import BaseAdapter
 
-__all__ = ["GoogleAdapter", "GoogleMCPAdapter"]
+__all__ = ["GoogleAdapter"]
 
 
 def _sanitize_for_tool_name(name: str) -> str:
@@ -255,6 +250,3 @@ class GoogleAdapter(BaseAdapter[dict[str, Any]]):
 
         final_text = "\n".join(fragment for fragment in text_fragments if fragment) or None
         return ModelTurnResult(text=final_text, tool_calls=requested_tools, raw=response)
-
-
-GoogleMCPAdapter = GoogleAdapter

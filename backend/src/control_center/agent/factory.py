@@ -8,12 +8,12 @@ from typing import Any, TypeAlias
 
 from pydantic import BaseModel, Field, create_model, field_validator
 
-from control_center.core.registry import RegistryManager
-from control_center.mcp.adapters.base import BaseAdapter
-from control_center.mcp.adapters.google import GoogleAdapter
-from control_center.mcp.adapters.openai import OpenAIAdapter
-from control_center.mcp.agent import MCPAgent
-from control_center.mcp.client import BaseClient, LLMClient
+from control_center.registry import RegistryManager
+from control_center.mcp.adapters import BaseAdapter
+from control_center.mcp.adapters import GoogleAdapter
+from control_center.mcp.adapters import OpenAIAdapter
+from control_center.agent import MCPAgent
+from control_center.mcp import BaseClient, LLMClient
 
 try:
     import instructor  # type: ignore[import-not-found]

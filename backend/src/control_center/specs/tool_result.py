@@ -3,44 +3,19 @@ from __future__ import annotations
 # Standard Library
 import warnings
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Callable, Final, Generic, Self, TypeVar
+from typing import Any, Callable, Final, Generic, Self, TypeVar
 
-# Third-Party
 import pydantic_core
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
-if TYPE_CHECKING:
-    from mcp.types import AudioContent, CallToolResult, ContentBlock, EmbeddedResource, ImageContent, TextContent
-else:
-    try:  # pragma: no cover
-        from mcp.types import (
-            AudioContent,
-            CallToolResult,
-            ContentBlock,
-            EmbeddedResource,
-            ImageContent,
-            TextContent,
-        )
-    except Exception:  # pragma: no cover
-        class ContentBlock(BaseModel):
-            type: str
-
-        class TextContent(ContentBlock):
-            text: str
-
-        class ImageContent(ContentBlock):
-            pass
-
-        class AudioContent(ContentBlock):
-            pass
-
-        class EmbeddedResource(ContentBlock):
-            pass
-
-        class CallToolResult(BaseModel):
-            content: list[ContentBlock] = Field(default_factory=list)
-            structuredContent: dict[str, Any] | None = None
-            isError: bool = False
+from mcp.types import (
+    AudioContent,
+    CallToolResult,
+    ContentBlock,
+    EmbeddedResource,
+    ImageContent,
+    TextContent,
+)
 
 __all__ = ["ExecutionError", "ExecutionResult", "MCPToolResult"]
 

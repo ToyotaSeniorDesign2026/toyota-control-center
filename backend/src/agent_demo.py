@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from control_center.mcp import MCPAgent, build_agent_from_registry
+from control_center.agent import MCPAgent, build_agent_from_registry
 
 
 async def build_agent(connector_selection_prompt: str | None = None) -> MCPAgent:
@@ -10,6 +10,7 @@ async def build_agent(connector_selection_prompt: str | None = None) -> MCPAgent
         environment="dev",
         selection_prompt=connector_selection_prompt,
         model="gemini-3.1-pro-preview",
+        instructor_model="google/gemini-3.1-pro-preview",
         max_tool_rounds=30,
         verbose=True,
     )

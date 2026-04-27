@@ -227,7 +227,7 @@ class RegistryManager:
         override = os.getenv("CONTROL_CENTER_MCP_CONFIG_DIR")
         if override:
             return Path(override).resolve()
-        return Path(__file__).resolve().parents[4] / "mcp_servers"
+        return Path(__file__).resolve().parents[3] / "mcp_servers"
 
     def get_available_servers(self) -> dict[str, ApprovedServerDef]:
         """Returns all servers active and allowed in the current environment."""
