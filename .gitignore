@@ -46,3 +46,5 @@ generated/types/api-types.ts
 .claude/
 .codex/
 .idea/
+
+*.egg-info/
