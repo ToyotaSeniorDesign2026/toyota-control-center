@@ -9,6 +9,8 @@ export interface PromotionResource {
   lastModified?: string;
   rejectionReason?: string;
   description?: string;
+  scheduleSummary?: string;
+  requestedRunDates?: string[];
 }
 
 export const mockReadyForPromotion: PromotionResource[] = [

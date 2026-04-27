@@ -4,7 +4,7 @@ import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
-import { requiredActionItems } from "./requiredActionsData";
+import { markRequiredActionResolved, requiredActionItems } from "./requiredActionsData";
 
 type ActionTask = {
   id: string;
@@ -54,15 +54,21 @@ export default function RequiredActionForm() {
 
   const handleSubmit = () => {
     const now = new Date();
-    setSubmittedAt(
-      now.toLocaleString("en-US", {
-        month: "short",
-        day: "numeric",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      })
-    );
+    const formattedTimestamp = now.toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    setSubmittedAt(formattedTimestamp);
+    markRequiredActionResolved(task.id);
+    navigate("/required-actions", {
+      state: {
+        successMessage: "Resolved successfully.",
+      },
+      replace: true,
+    });
   };
 
   const isPending = task.state === "pending";
@@ -149,7 +155,7 @@ export default function RequiredActionForm() {
                     className="bg-[#ed0923] text-white hover:bg-[#d10820]"
                     disabled={!notes.trim()}
                   >
-                    Submit Response
+                    Resolve Action
                   </Button>
                   <Button variant="outline" className="border-gray-300" onClick={() => navigate("/user-home")}>Back to Dashboard</Button>
                 </div>
