@@ -39,4 +39,10 @@ generated/openapi/openapi.json
 generated/types/api-types.ts
 
 # MCP-generated directories
-backend/mcp_servers/papers/
+# backend/mcp_servers/papers/
+
+# IDE files
+.vscode/
+.claude/
+.codex/
+.idea/
