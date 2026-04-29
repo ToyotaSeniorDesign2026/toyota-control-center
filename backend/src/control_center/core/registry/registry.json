@@ -25,6 +25,12 @@
     "prod": {"description": "Production environment with full security, isolation, and deployment constraints."}
   },
 
+  "universal_job_fields": {
+    "description": "Fields that apply to every job type regardless of connector.",
+    "required": ["job_name", "owner", "run_type"],
+    "optional": ["schedule", "description", "environment", "tags", "data_sensitivity"]
+  },
+
   "approved_servers": {
     "filesystem": {
       "description": "Local filesystem MCP server used for reading and interacting with files in the current working directory.",
@@ -36,12 +42,8 @@
       "active": true,
       "notes": "Uses the official @modelcontextprotocol/server-filesystem package via npx. Only approved for non-production environments due to data sensitivity.",
       "environment_overrides": {
-        "dev": {
-          "timeout": 60
-        },
-        "staging": {
-          "timeout": 30
-        }
+        "dev": { "timeout": 60 },
+        "staging": { "timeout": 30 }
       }
     },
     "arxiv-research": {
@@ -62,14 +64,48 @@
       "config_path": "configs/fastmcp-docs.json",
       "active": true
     },
+    "github": {
+      "description": "GitHub MCP server for repository, branch, issue, and pull request workflows.",
+      "display_name": "GitHub Repositories",
+      "allowed_environments": ["dev", "staging", "prod"],
+      "config_path": "configs/github.json",
+      "version": "1.0",
+      "tags": ["github", "repo", "source-control", "mcp"],
+      "active": true,
+      "job_type": "repo_connection",
+      "required_fields": ["repo"],
+      "optional_fields": ["ref", "path", "provider"]
+    },
     "wordsmith-mcp": {
       "description": "Query and inspect English words using tools tailored to writers.",
       "allowed_environments": ["dev", "staging", "prod"],
       "config_path": "configs/wordsmith-mcp.json",
       "active": true
+    },
+    "sql-dab": {
+      "description": "Remote SQL MCP server exposed by Azure Data API Builder for approved database access through typed MCP tools.",
+      "display_name": "Control Center Dev Database",
+      "allowed_environments": ["dev", "staging", "prod"],
+      "config_path": "configs/sql-dab.json",
+      "version": "1.7",
+      "tags": ["sql", "database", "mcp", "remote"],
+      "active": true,
+      "job_type": "sql",
+      "required_fields": ["query", "database", "host", "port", "username", "password"],
+      "optional_fields": ["connection_id", "schedule", "timezone"]
+    },
+    "sql-dab-analytics": {
+      "description": "Remote SQL MCP server for the Analytics database, exposed through Azure Data API Builder.",
+      "display_name": "Analytics Reporting Database",
+      "allowed_environments": ["dev", "staging", "prod"],
+      "config_path": "configs/sql-dab-analytics.json",
+      "version": "1.7",
+      "tags": ["sql", "database", "analytics", "mcp", "remote"],
+      "active": true,
+      "job_type": "sql",
+      "required_fields": ["query", "database", "host", "port", "username", "password"],
+      "optional_fields": ["connection_id", "schedule", "timezone"]
     }
-
-
   }
 
 }

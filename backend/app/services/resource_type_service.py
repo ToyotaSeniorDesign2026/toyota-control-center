@@ -9,7 +9,46 @@ _RESOURCE_TYPE_REGISTRY = [
     {
         "type": "sql",
         "kind": "runtime",
-        "required_config_schema": {"required": [], "optional": ["query", "schedule", "connection_id", "repo", "path", "ref"]},
+        "required_config_schema": {"required": [], "optional": ["query", "schedule", "timezone", "connection_id", "repo", "path", "ref"]},
+        "supported_resource_actions": ["activate", "pause", "archive"],
+        "run_capabilities": {
+            "supports_retry": True,
+            "supports_cancel": True,
+            "supports_schedule": True,
+            "supports_heartbeat": False,
+        },
+        "approval_defaults": {"required_above_risk_score": 60, "always_required_environments": ["prod"]},
+    },
+    {
+        "type": "mcp",
+        "kind": "runtime",
+        "required_config_schema": {"required": [], "optional": ["prompt", "description", "schedule", "timezone", "max_results", "connection_id"]},
+        "supported_resource_actions": ["activate", "pause", "archive"],
+        "run_capabilities": {
+            "supports_retry": True,
+            "supports_cancel": True,
+            "supports_schedule": True,
+            "supports_heartbeat": False,
+        },
+        "approval_defaults": {"required_above_risk_score": 60, "always_required_environments": ["prod"]},
+    },
+    {
+        "type": "excel",
+        "kind": "runtime",
+        "required_config_schema": {"required": [], "optional": ["brief", "schedule", "timezone", "connection_id"]},
+        "supported_resource_actions": ["activate", "pause", "archive"],
+        "run_capabilities": {
+            "supports_retry": True,
+            "supports_cancel": True,
+            "supports_schedule": True,
+            "supports_heartbeat": False,
+        },
+        "approval_defaults": {"required_above_risk_score": 60, "always_required_environments": ["prod"]},
+    },
+    {
+        "type": "powerpoint",
+        "kind": "runtime",
+        "required_config_schema": {"required": [], "optional": ["brief", "schedule", "timezone", "connection_id"]},
         "supported_resource_actions": ["activate", "pause", "archive"],
         "run_capabilities": {
             "supports_retry": True,
@@ -22,7 +61,7 @@ _RESOURCE_TYPE_REGISTRY = [
     {
         "type": "research",
         "kind": "runtime",
-        "required_config_schema": {"required": ["topic"], "optional": ["max_results", "schedule"]},
+        "required_config_schema": {"required": ["topic"], "optional": ["max_results", "schedule", "timezone"]},
         "supported_resource_actions": ["activate", "pause", "archive"],
         "run_capabilities": {
             "supports_retry": True,
@@ -35,7 +74,7 @@ _RESOURCE_TYPE_REGISTRY = [
     {
         "type": "agent",
         "kind": "runtime",
-        "required_config_schema": {"required": ["entrypoint"], "optional": ["schedule", "timeout_seconds"]},
+        "required_config_schema": {"required": ["entrypoint"], "optional": ["schedule", "timezone", "timeout_seconds"]},
         "supported_resource_actions": ["activate", "pause", "archive"],
         "run_capabilities": {
             "supports_retry": True,
@@ -48,7 +87,7 @@ _RESOURCE_TYPE_REGISTRY = [
     {
         "type": "airflow_dag",
         "kind": "runtime",
-        "required_config_schema": {"required": ["dag_id", "api_base_url"], "optional": ["schedule"]},
+        "required_config_schema": {"required": ["dag_id", "api_base_url"], "optional": ["schedule", "timezone"]},
         "supported_resource_actions": ["activate", "pause", "archive"],
         "run_capabilities": {
             "supports_retry": True,
@@ -61,7 +100,7 @@ _RESOURCE_TYPE_REGISTRY = [
     {
         "type": "dbt_job",
         "kind": "runtime",
-        "required_config_schema": {"required": ["job_id", "account_id"], "optional": ["schedule"]},
+        "required_config_schema": {"required": ["job_id", "account_id"], "optional": ["schedule", "timezone"]},
         "supported_resource_actions": ["activate", "pause", "archive"],
         "run_capabilities": {
             "supports_retry": True,
@@ -72,9 +111,35 @@ _RESOURCE_TYPE_REGISTRY = [
         "approval_defaults": {"required_above_risk_score": 60, "always_required_environments": ["prod"]},
     },
     {
+        "type": "repo_connection",
+        "kind": "runtime",
+        "required_config_schema": {
+            "required": ["repo", "provider"],
+            "optional": [
+                "ref",
+                "path",
+                "default_branch",
+                "installation_owner",
+                "server_names",
+                "primary_server",
+                "companion_servers",
+                "connection_mode",
+                "description",
+            ],
+        },
+        "supported_resource_actions": ["activate", "pause", "archive"],
+        "run_capabilities": {
+            "supports_retry": False,
+            "supports_cancel": False,
+            "supports_schedule": False,
+            "supports_heartbeat": False,
+        },
+        "approval_defaults": {"required_above_risk_score": 50, "always_required_environments": ["prod"]},
+    },
+    {
         "type": "pipeline",
         "kind": "runtime",
-        "required_config_schema": {"required": [], "optional": ["schedule", "pipeline_id"]},
+        "required_config_schema": {"required": [], "optional": ["schedule", "timezone", "pipeline_id"]},
         "supported_resource_actions": ["activate", "pause", "archive"],
         "run_capabilities": {
             "supports_retry": True,
@@ -87,7 +152,7 @@ _RESOURCE_TYPE_REGISTRY = [
     {
         "type": "bi_task",
         "kind": "runtime",
-        "required_config_schema": {"required": [], "optional": ["schedule", "workspace_id"]},
+        "required_config_schema": {"required": [], "optional": ["schedule", "timezone", "workspace_id"]},
         "supported_resource_actions": ["activate", "pause", "archive"],
         "run_capabilities": {
             "supports_retry": True,
@@ -191,7 +256,7 @@ def validate_resource_contract(kind: str, resource_type: str, config: dict):
             detail=f"Missing required config keys for '{resource_type}': {', '.join(missing)}",
         )
 
-    internal_keys = {"last_heartbeat_at"}
+    internal_keys = {"last_heartbeat_at", "schedule_updated_at", "schedule_last_fire_key", "schedule_last_run_at"}
     extra = sorted(k for k in cfg.keys() if k not in allowed and k not in internal_keys)
     if extra:
         raise HTTPException(

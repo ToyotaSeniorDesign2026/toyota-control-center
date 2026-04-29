@@ -629,6 +629,28 @@ export function CreateJobForm({
                       <SelectTrigger id="target_environment" className={`w-full ${errors.target_environment ? "border-red-500" : ""}`}>
                         <SelectValue />
                       </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="dev">Development</SelectItem>
+                      <SelectItem value="staging">Staging</SelectItem>
+                      <SelectItem value="prod">Production</SelectItem>
+                    </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                {/* Two-Column Responsive Layout: Target Environment & Data Sensitivity */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* Target Environment */}
+                  <div className="space-y-2">
+                    <Label htmlFor="target_environment" className="text-sm font-medium text-gray-700">
+                      Target Environment *
+                    </Label>
+                    <Select value={universal.target_environment} onValueChange={(value) =>
+                      setUniversal({ ...universal, target_environment: value })
+                    }>
+                      <SelectTrigger id="target_environment" className={`w-full ${errors.target_environment ? "border-red-500" : ""}`}>
+                        <SelectValue />
+                      </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="dev">Development</SelectItem>
                         <SelectItem value="semi-prod">Semi-Production</SelectItem>
@@ -1439,22 +1461,23 @@ export function CreateJobForm({
         </div>
       </div>
 
+      {/* Action Buttons - Sticky Footer */}
       {!hideFooter && (
-        <div className="flex-shrink-0 border-t border-gray-200 bg-white px-4 py-4 sm:px-6 lg:px-8 flex gap-3">
-          <Button
-            variant="outline"
-            onClick={handleClose}
-            className="flex-1"
-          >
-            Cancel
-          </Button>
-          <Button
-            onClick={handleSubmit}
-            className="flex-1 bg-[#ed0923] hover:bg-[#d10820] text-white"
-          >
-            Create Job
-          </Button>
-        </div>
+      <div className="flex-shrink-0 border-t border-gray-200 bg-white px-4 py-4 sm:px-6 lg:px-8 flex gap-3">
+        <Button
+          variant="outline"
+          onClick={handleClose}
+          className="flex-1"
+        >
+          Cancel
+        </Button>
+        <Button
+          onClick={handleSubmit}
+          className="flex-1 bg-[#ed0923] hover:bg-[#d10820] text-white"
+        >
+          Create Job
+        </Button>
+      </div>
       )}
     </div>
   );

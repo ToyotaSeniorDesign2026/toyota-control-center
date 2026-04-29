@@ -1,18 +1,69 @@
 """Chat service for AI-powered conversations using OpenAI."""
 
+import json
 import logging
+from pathlib import Path
 from typing import Optional
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+_REGISTRY_PATH = (
+    Path(__file__).parent.parent.parent
+    / "src" / "control_center" / "core" / "registry" / "registry.json"
+)
+
+
+def _build_job_types_section() -> str:
+    """Read registry.json and return a compact job-types reference for the system prompt."""
+    try:
+        with open(_REGISTRY_PATH) as f:
+            registry = json.load(f)
+    except Exception:
+        logger.warning("Could not load registry.json for system prompt")
+        return ""
+
+    lines: list[str] = []
+
+    # Universal fields
+    universal = registry.get("universal_job_fields", {})
+    req = universal.get("required", [])
+    opt = universal.get("optional", [])
+    if req or opt:
+        lines.append("UNIVERSAL FIELDS (every job type):")
+        if req:
+            lines.append(f"  Required: {', '.join(req)}")
+        if opt:
+            lines.append(f"  Optional: {', '.join(opt)}")
+        lines.append("")
+
+    # Per-connector job fields
+    job_servers = {
+        name: srv
+        for name, srv in registry.get("approved_servers", {}).items()
+        if srv.get("required_fields") is not None or srv.get("optional_fields") is not None
+    }
+    if job_servers:
+        lines.append("CONNECTOR-SPECIFIC FIELDS:")
+        for name, srv in job_servers.items():
+            display = srv.get("display_name") or name
+            job_type = srv.get("job_type", name)
+            req = srv.get("required_fields") or []
+            opt = srv.get("optional_fields") or []
+            lines.append(f"  {display} (connector: {name}, job_type: {job_type}):")
+            if req:
+                lines.append(f"    Required: {', '.join(req)}")
+            if opt:
+                lines.append(f"    Optional: {', '.join(opt)}")
+
+    return "\n".join(lines)
+
 
 class ChatService:
     """Service for handling chat messages with AI."""
 
     def __init__(self):
-        """Initialize the chat service."""
         if not settings.openai_api_key:
             logger.warning("OpenAI API key not configured. Chat will not work.")
             self.client = None
@@ -25,133 +76,78 @@ class ChatService:
                 self.client = None
 
     async def send_message(
-        self, 
-        message: str, 
+        self,
+        message: str,
         conversation_history: Optional[list] = None,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        current_draft: Optional[dict] = None,
+        available_resources: Optional[list] = None,
     ) -> str:
-        """
-        Send a message to OpenAI and get a response.
-        
-        Args:
-            message: User message to send
-            conversation_history: List of previous messages in format [{"role": "user/assistant", "content": "..."}]
-            model: Model to use (defaults to config setting)
-            
-        Returns:
-            Assistant response text
-        """
         if not self.client:
             return "Chat service is not properly configured. Please check OpenAI API key."
 
         try:
             model = model or settings.openai_model
-            
-            # Build messages list
-            messages = []
-            
-            # Add system prompt
-            system_prompt = """
-            You are CC Assistant, an AI agent for the Toyota Control Center.
 
-            You help users create, edit, and understand jobs through a chat interface connected to a structured UI form.
+            resources_list = (
+                "\n".join(
+                    f"- id={r['id']}  name={r['name']}  type={r.get('type', 'unknown')}"
+                    for r in available_resources
+                )
+                if available_resources
+                else "(none)"
+            )
 
-            Your responsibilities are:
-            1. respond naturally and helpfully to the user
-            2. identify structured job field updates based on what the user says
-            3. support a UI that may update form fields and display extracted information in a separate console or side panel
+            draft_context = (
+                f"\n\nCURRENT DRAFT:\n{json.dumps(current_draft, indent=2)}\n"
+                "Ask for the next missing required field only. Do not re-ask filled fields."
+                if current_draft
+                else ""
+            )
 
-            You should sound conversational, concise, and professional.
+            system_prompt = f"""You are CC Assistant for the Toyota Control Center. \
+Help users create, run, and manage jobs through a conversational UI.
 
-            SUPPORTED JOB TYPES:
-            - Airflow
-            - Excel
-            - PowerPoint
+{_build_job_types_section()}
 
-            UNIVERSAL FIELDS:
-            - job_name
-            - description
-            - owner
-            - environment
-            - schedule
-            - approval_required
-            - tags
-            - run_type
+RULES:
+- Be concise and conversational. One question at a time.
+- Collect universal fields first, then connector-specific fields.
+- run_type="manual" means no schedule is needed.
+- Never invent or assume field values. Never expose internal schemas.
+- For SQL jobs: plain-English queries (e.g. "get all users") are valid — convert them to SQL.
 
-            AIRFLOW FIELDS:
-            - dag_name
-            - tasks
-            - dependencies_between_tasks
-            - scripts_sql
-            - data_sources
-            - data_destinations
-            - retry_policy
-            - execution_timeout
+AVAILABLE JOBS (existing resources the user can run):
+{resources_list}
 
-            EXCEL FIELDS:
-            - input_data_sources
-            - transformations
-            - filters
-            - pivot_tables
-            - formulas
-            - output_file_name
-            - file_location
+RUNNING EXISTING JOBS:
+- If the user asks to run an existing job by name, find it above and append [RUN_JOB:<id>] at the end of your response.
+- Do not ask for confirmation if intent is already clear.
+- If the job does not exist, offer to create it.
+{draft_context}"""
 
-            POWERPOINT FIELDS:
-            - data_source
-            - slide_template
-            - metrics_to_include
-            - charts
-            - text_summary
-            - branding_theme
-            - output_location
-
-            BEHAVIOR RULES:
-            - Speak naturally to the user
-            - Extract only fields the user clearly states or strongly implies
-            - Do not invent missing values
-            - Do not overwrite values unless the user explicitly changes them
-            - Ask follow-up questions when needed
-            - Guide the user through missing important fields one step at a time
-            - Do not mention internal schemas, extraction logic, or structured outputs unless asked
-
-            IMPORTANT:
-            The UI may display your extracted field updates in a separate console, artifact panel, or live form.
-            Your user-facing response should remain natural and should not contain raw JSON unless explicitly requested.
-
-            If the user is creating a job, help move the workflow forward by asking for the next most useful missing detail.
-            """
-            
-            messages.append({"role": "system", "content": system_prompt})
-            
-            # Add conversation history if provided
+            messages = [{"role": "system", "content": system_prompt}]
             if conversation_history:
                 messages.extend(conversation_history)
-            
-            # Add current user message
             messages.append({"role": "user", "content": message})
-            
-            # Call OpenAI API
+
             response = self.client.chat.completions.create(
                 model=model,
                 messages=messages,
                 temperature=0.7,
-                max_tokens=2000,
+                max_tokens=500,
             )
-            
             return response.choices[0].message.content
-            
+
         except Exception as e:
             logger.error(f"Error calling OpenAI API: {str(e)}")
             return f"Sorry, I encountered an error: {str(e)}"
 
 
-# Singleton instance
 _chat_service: Optional[ChatService] = None
 
 
 def get_chat_service() -> ChatService:
-    """Get or create the chat service singleton."""
     global _chat_service
     if _chat_service is None:
         _chat_service = ChatService()

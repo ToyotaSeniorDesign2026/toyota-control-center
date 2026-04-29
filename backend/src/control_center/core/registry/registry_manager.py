@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Annotated, Any, Iterable, Self
@@ -43,6 +44,7 @@ class ApprovedServerDef(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     description: str | None = None
+    display_name: str | None = None
     allowed_environments: Annotated[list[str], Field(min_length=1)]
     config_path: str
     config_type: str = "standard"
@@ -256,6 +258,17 @@ class RegistryManager:
                 merged[key] = deepcopy(value)
         return merged
 
+    @staticmethod
+    def _expand_env_vars(value: Any) -> Any:
+        if isinstance(value, str):
+            expanded = os.path.expandvars(value)
+            return re.sub(r"\$\{([^}]+)\}", lambda match: os.getenv(match.group(1), match.group(0)), expanded)
+        if isinstance(value, list):
+            return [RegistryManager._expand_env_vars(item) for item in value]
+        if isinstance(value, dict):
+            return {key: RegistryManager._expand_env_vars(item) for key, item in value.items()}
+        return value
+
     def _resolve_config_path(self, config_path: str) -> Path:
         candidate = Path(config_path)
         if candidate.is_absolute():
@@ -327,7 +340,7 @@ class RegistryManager:
         return False
 
     def _apply_runtime_defaults(self, config: dict[str, Any]) -> dict[str, Any]:
-        normalized = deepcopy(config)
+        normalized = self._expand_env_vars(deepcopy(config))
         if self._should_set_mcp_servers_cwd(normalized):
             normalized["cwd"] = str(self._get_mcp_servers_dir())
         return normalized

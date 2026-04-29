@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, create_model, field_validator
 from control_center.core.registry import RegistryManager
 from control_center.mcp.adapters.base import BaseAdapter
 from control_center.mcp.adapters.google import GoogleAdapter
+from control_center.mcp.adapters.openai import OpenAIAdapter
 from control_center.mcp.agent import MCPAgent
 from control_center.mcp.client import BaseClient, LLMClient
 
@@ -25,6 +26,8 @@ __all__ = [
     "build_agent",
     "build_agent_from_registry",
     "build_connector_selection_model",
+    "default_mcp_model",
+    "make_adapter_for_model",
     "select_registry_connectors",
 ]
 
@@ -91,7 +94,31 @@ def _create_instructor_client(provider_model: str):
         raise RuntimeError("Instructor dependency is not installed. Add it with `uv add instructor`.")
     if provider_model.startswith("google/") and not os.environ.get("GOOGLE_API_KEY"):
         raise RuntimeError("GOOGLE_API_KEY must be set to use Instructor with Google models.")
+    if provider_model.startswith("openai/") and not os.environ.get("OPENAI_API_KEY"):
+        raise RuntimeError("OPENAI_API_KEY must be set to use Instructor with OpenAI models.")
     return instructor.from_provider(provider_model)
+
+
+def default_mcp_model() -> str:
+    return (
+        os.getenv("CONTROL_CENTER_MCP_MODEL")
+        or os.getenv("OPENAI_MODEL")
+        or "gpt-4o-mini"
+    )
+
+
+def _default_instructor_model() -> str:
+    return (
+        os.getenv("CONTROL_CENTER_MCP_INSTRUCTOR_MODEL")
+        or f"openai/{os.getenv('OPENAI_MODEL', 'gpt-4o-mini')}"
+    )
+
+
+def make_adapter_for_model(model: str) -> BaseAdapter[Any]:
+    normalized = model.lower()
+    if normalized.startswith("google/") or normalized.startswith("gemini"):
+        return GoogleAdapter()
+    return OpenAIAdapter()
 
 
 async def select_registry_connectors(
@@ -100,7 +127,7 @@ async def select_registry_connectors(
     environment: str | None = "dev",
     registry_manager: RegistryManager | None = None,
     instructor_client: Any | None = None,
-    provider_model: str = "google/gemini-3-flash-preview",
+    provider_model: str | None = None,
     max_retries: int = 3,
 ) -> tuple[list[str], str]:
     """
@@ -111,7 +138,8 @@ async def select_registry_connectors(
     available_connectors = manager.get_available_servers_list()
     selection_model = build_connector_selection_model(available_connectors)
 
-    client = instructor_client or _create_instructor_client(provider_model)
+    resolved_provider_model = provider_model or _default_instructor_model()
+    client = instructor_client or _create_instructor_client(resolved_provider_model)
     result = client.create(
         response_model=selection_model,
         messages=[
@@ -143,7 +171,7 @@ async def build_agent(
     *,
     server_name: str,
     server_config: dict[str, Any],
-    model: str = "gemini-3.1-pro-preview",
+    model: str | None = None,
     client: BaseClient | None = None,
     adapter: BaseAdapter[Any] | None = None,
     max_tool_rounds: int = 5,
@@ -162,11 +190,12 @@ async def build_agent(
     runtime_client = client or LLMClient()
     await runtime_client.connect_to_server(server_name, server_config)
 
-    runtime_adapter = adapter or GoogleAdapter()
+    resolved_model = model or default_mcp_model()
+    runtime_adapter = adapter or make_adapter_for_model(resolved_model)
     return MCPAgent(
         client=runtime_client,
         adapter=runtime_adapter,
-        model=model,
+        model=resolved_model,
         max_tool_rounds=max_tool_rounds,
         verbose=verbose,
     )
@@ -177,13 +206,14 @@ async def build_agent_from_registry(
     environment: str | None = "dev",
     server_names: Iterable[str] | None = None,
     selection_prompt: str | None = None,
-    model: str = "gemini-3.1-pro-preview",
+    model: str | None = None,
     registry_manager: RegistryManager | None = None,
     client: BaseClient | None = None,
     adapter: BaseAdapter[Any] | None = None,
     max_tool_rounds: int = 5,
     instructor_client: Any | None = None,
-    instructor_model: str = "google/gemini-3-flash-preview",
+    instructor_model: str | None = None,
+    server_env_overrides: dict[str, dict[str, str]] | None = None,
     verbose: bool = False,
 ) -> MCPAgent:
     """
@@ -205,16 +235,27 @@ async def build_agent_from_registry(
         )
 
     server_configs = manager.get_server_configs(resolved_server_names)
+    for server_name, env_overrides in (server_env_overrides or {}).items():
+        if server_name not in server_configs or not env_overrides:
+            continue
+        existing_env = server_configs[server_name].get("env")
+        if not isinstance(existing_env, dict):
+            existing_env = {}
+        server_configs[server_name]["env"] = {
+            **existing_env,
+            **env_overrides,
+        }
 
     runtime_client = client or LLMClient()
     for server_name, server_config in server_configs.items():
         await runtime_client.connect_to_server(server_name, server_config)
 
-    runtime_adapter = adapter or GoogleAdapter()
+    resolved_model = model or default_mcp_model()
+    runtime_adapter = adapter or make_adapter_for_model(resolved_model)
     return MCPAgent(
         client=runtime_client,
         adapter=runtime_adapter,
-        model=model,
+        model=resolved_model,
         max_tool_rounds=max_tool_rounds,
         verbose=verbose,
     )

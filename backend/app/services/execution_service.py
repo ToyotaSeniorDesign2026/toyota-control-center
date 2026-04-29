@@ -10,8 +10,8 @@ from pydantic import BaseModel, Field
 
 from app.schemas.run import MCPExecutionConfig, MCPJobConfig, RunCreate
 
-ExecutionBackend = Literal["mcp", "native"]
-ExecutionMode = Literal["direct_tool", "agent", "native"]
+ExecutionBackend = Literal["mcp"]
+ExecutionMode = Literal["direct_tool", "agent"]
 TriggerSource = Literal["api", "ui", "cli", "schedule", "github_pr", "github_actions"]
 
 
@@ -51,6 +51,24 @@ class ExecutionRequest(BaseModel):
     mcp_config: MCPExecutionConfig = Field(default_factory=MCPExecutionConfig)
     job_spec: dict = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+def _non_empty_string(value: Any) -> str | None:
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized:
+            return normalized
+    return None
+
+
+def _build_sql_mcp_prompt(query: str, connection_id: str | None = None) -> str:
+    connection_hint = f" using connection `{connection_id}`" if connection_id else ""
+    return (
+        "Execute the following SQL query exactly as written"
+        f"{connection_hint} against the registered SQL MCP resource. "
+        "Treat this as a one-time SQL job run and return the query results with a brief execution summary.\n\n"
+        f"SQL query:\n```sql\n{query}\n```"
+    )
 
 
 def _derive_risk_inputs(resource, target_environment: str, mcp_config: MCPExecutionConfig | None) -> list[str]:
@@ -112,6 +130,7 @@ def build_job_spec(resource, payload: RunCreate, resolved_mcp_config: MCPExecuti
 def resolve_effective_mcp_config(resource, payload: RunCreate) -> MCPExecutionConfig:
     supplied = payload.mcp_config or MCPExecutionConfig()
     resource_config = getattr(resource, "config", {}) or {}
+    resource_type = (getattr(resource, "type", "") or "").strip().lower()
 
     server_names = list(supplied.server_names)
     connector = (getattr(resource, "connector", "") or "").strip().lower()
@@ -122,10 +141,24 @@ def resolve_effective_mcp_config(resource, payload: RunCreate) -> MCPExecutionCo
     tool_arguments = dict(supplied.tool_arguments)
     prompt = supplied.prompt
 
+    if resource_type == "sql":
+        query = _non_empty_string(payload.params.get("query")) or _non_empty_string(resource_config.get("query"))
+        connection_id = _non_empty_string(payload.params.get("connection_id")) or _non_empty_string(
+            resource_config.get("connection_id")
+        )
+
+        if tool_name:
+            if query and "query" not in tool_arguments:
+                tool_arguments["query"] = query
+            if connection_id and "connection_id" not in tool_arguments:
+                tool_arguments["connection_id"] = connection_id
+        elif not prompt and query:
+            prompt = _build_sql_mcp_prompt(query, connection_id)
+
     if (
         not tool_name
         and not prompt
-        and ((getattr(resource, "type", "") or "").strip().lower() == "research" or connector == "arxiv-research")
+        and (resource_type == "research" or connector == "arxiv-research")
     ):
         tool_name = "search_papers"
         topic = payload.params.get("topic") or resource_config.get("topic")
@@ -152,29 +185,16 @@ def build_execution_request(
     payload: RunCreate,
     trigger_source: TriggerSource = "api",
 ) -> ExecutionRequest:
-    resource_type = (resource.type or "").strip().lower()
-    connector = (resource.connector or "").strip().lower()
+    resolved_mcp_config = resolve_effective_mcp_config(resource, payload)
+    if not resolved_mcp_config.server_names:
+        raise RuntimeError(
+            f"Resource '{resource.id}' is not associated with an approved MCP server. "
+            "Set resource.connector or mcp_config.server_names."
+        )
 
-    is_mcp = bool(payload.mcp_config) or connector in {
-        "arxiv-research",
-        "fastmcp-docs",
-        "fetch",
-        "filesystem",
-        "wordsmith-mcp",
-    } or resource_type in {"research", "mcp"}
-
-    resolved_mcp_config = resolve_effective_mcp_config(resource, payload) if is_mcp else MCPExecutionConfig()
-    if not is_mcp:
-        backend: ExecutionBackend = "native"
-        mode: ExecutionMode = "native"
-    elif resolved_mcp_config.tool_name:
-        backend = "mcp"
-        mode = "direct_tool"
-    else:
-        backend = "mcp"
-        mode = "agent"
-
-    job_spec = build_job_spec(resource, payload, resolved_mcp_config) if is_mcp else {}
+    backend: ExecutionBackend = "mcp"
+    mode: ExecutionMode = "direct_tool" if resolved_mcp_config.tool_name else "agent"
+    job_spec = build_job_spec(resource, payload, resolved_mcp_config)
 
     return ExecutionRequest(
         run_id=run_id,

@@ -280,6 +280,7 @@ def set_runtime_schedule(db: Session, user, resource_id: str, schedule: str):
 
     cfg = dict(resource.config or {})
     cfg["schedule"] = schedule
+    cfg["schedule_updated_at"] = now_iso()
     resource.config = cfg
     resource.updated_at = now_iso()
     db.add(resource)

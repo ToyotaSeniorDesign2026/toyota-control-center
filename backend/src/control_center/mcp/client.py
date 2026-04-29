@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+import datetime as dt
 import os
 import tempfile
 from contextlib import AsyncExitStack
@@ -8,15 +9,21 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 
 if TYPE_CHECKING:
     from mcp import ClientSession, StdioServerParameters
+    from mcp.client.sse import sse_client
     from mcp.client.stdio import stdio_client
+    from mcp.client.streamable_http import streamable_http_client
 else:
     ClientSession = None  # type: ignore[assignment]
     StdioServerParameters = None  # type: ignore[assignment]
+    sse_client = None  # type: ignore[assignment]
     stdio_client = None  # type: ignore[assignment]
+    streamable_http_client = None  # type: ignore[assignment]
     _MCP_IMPORT_ERROR: Exception | None = None
     try:  # pragma: no cover
         from mcp import ClientSession, StdioServerParameters
+        from mcp.client.sse import sse_client
         from mcp.client.stdio import stdio_client
+        from mcp.client.streamable_http import streamable_http_client
     except Exception as exc:  # pragma: no cover
         _MCP_IMPORT_ERROR = exc
 
@@ -117,14 +124,72 @@ class LLMClient(BaseClient):
             raise RuntimeError(f"Server '{server_name}' is not connected.")
         return session
 
+    async def _connect_stdio(self, server_config: JSONPayload) -> ClientSession:
+        server_params = StdioServerParameters(**server_config)
+        transport = await self._exit_stack.enter_async_context(stdio_client(server_params))
+        read, write = transport
+        session = await self._exit_stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        return session
+
+    async def _connect_sse(self, server_config: JSONPayload) -> ClientSession:
+        url = str(server_config.get("url") or "").strip()
+        if not url:
+            raise RuntimeError("Remote SSE transport requires config.url.")
+
+        headers = server_config.get("headers")
+        if headers is not None and not isinstance(headers, dict):
+            raise RuntimeError("Remote SSE transport config.headers must be a JSON object.")
+
+        timeout = float(server_config.get("timeout", 10))
+        sse_timeout = float(server_config.get("sse_read_timeout", 300))
+        transport = await self._exit_stack.enter_async_context(
+            sse_client(url, headers=headers, timeout=timeout, sse_read_timeout=sse_timeout)
+        )
+        read, write = transport
+        session = await self._exit_stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        return session
+
+    async def _connect_streamable_http(self, server_config: JSONPayload) -> ClientSession:
+        import httpx
+
+        url = str(server_config.get("url") or "").strip()
+        if not url:
+            raise RuntimeError("Remote HTTP transport requires config.url.")
+
+        headers = server_config.get("headers")
+        if headers is not None and not isinstance(headers, dict):
+            raise RuntimeError("Remote HTTP transport config.headers must be a JSON object.")
+
+        timeout = float(server_config.get("timeout", 30))
+        http_client = await self._exit_stack.enter_async_context(
+            httpx.AsyncClient(headers=headers or None, timeout=timeout)
+        )
+        transport = await self._exit_stack.enter_async_context(
+            streamable_http_client(url, http_client=http_client)
+        )
+        read, write, _ = transport
+        session = await self._exit_stack.enter_async_context(
+            ClientSession(read, write, read_timeout_seconds=dt.timedelta(seconds=timeout))
+        )
+        await session.initialize()
+        return session
+
     async def connect_to_server(self, server_name: str, server_config: JSONPayload) -> None:
         _require_mcp_runtime()
         try:
-            server_params = StdioServerParameters(**server_config)
-            transport = await self._exit_stack.enter_async_context(stdio_client(server_params))
-            read, write = transport
-            session = await self._exit_stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
+            transport_type = str(server_config.get("type") or "stdio").strip().lower()
+            if transport_type == "stdio":
+                session = await self._connect_stdio(server_config)
+            elif transport_type == "sse":
+                session = await self._connect_sse(server_config)
+            elif transport_type in {"http", "streamable-http"}:
+                session = await self._connect_streamable_http(server_config)
+            else:
+                raise RuntimeError(
+                    f"Unsupported MCP transport '{transport_type}'. Supported: stdio, sse, http, streamable-http."
+                )
             self._sessions[server_name] = session
         except Exception as exc:
             raise RuntimeError(f"Failed to connect to server '{server_name}': {exc}") from exc
