@@ -5,6 +5,7 @@ import io
 import unittest
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 from control_center.core.specs import BoundCapability
 from control_center.core.registry import RegistryManager
@@ -12,10 +13,13 @@ from control_center.mcp import (
     MCPAgent,
     build_agent_from_registry,
     build_connector_selection_model,
+    default_mcp_model,
+    make_adapter_for_model,
     select_registry_connectors,
 )
 from control_center.mcp.adapters.base import BaseAdapter
 from control_center.mcp.adapters.google import GoogleAdapter
+from control_center.mcp.adapters.openai import OpenAIAdapter
 from control_center.mcp.client import BaseClient
 from control_center.mcp.models import ModelTurnResult, RequestedToolCall
 
@@ -212,6 +216,37 @@ class RegistryManagerTests(unittest.TestCase):
         self.assertNotIn("additionalProperties", parameters)
         self.assertEqual(parameters["type"], "object")
         self.assertEqual(sorted(parameters["properties"].keys()), ["path", "recursive"])
+
+    def test_openai_adapter_converts_mcp_tools_to_function_tools(self) -> None:
+        adapter = OpenAIAdapter()
+        tool = SimpleNamespace(
+            name="list_files",
+            description="List files",
+            inputSchema={
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "recursive": {"type": "boolean"},
+                },
+            },
+        )
+
+        declaration = adapter._convert_tool(tool, client=None, server_name="filesystem")
+
+        self.assertIsNotNone(declaration)
+        self.assertEqual(declaration["type"], "function")
+        function = declaration["function"]
+        self.assertEqual(function["name"], "filesystem_list_files")
+        self.assertEqual(function["description"], "List files")
+        self.assertNotIn("$schema", function["parameters"])
+        self.assertEqual(sorted(function["parameters"]["properties"].keys()), ["path", "recursive"])
+
+    def test_mcp_provider_defaults_to_openai_model(self) -> None:
+        with patch.dict("os.environ", {"OPENAI_MODEL": "gpt-4o-mini"}, clear=False):
+            self.assertEqual(default_mcp_model(), "gpt-4o-mini")
+            self.assertIsInstance(make_adapter_for_model(default_mcp_model()), OpenAIAdapter)
+            self.assertIsInstance(make_adapter_for_model("gemini-3.1-pro-preview"), GoogleAdapter)
 
     def test_connector_selection_model_uses_dynamic_connector_enum(self) -> None:
         selection_model = build_connector_selection_model(["filesystem", "fastmcp-docs"])

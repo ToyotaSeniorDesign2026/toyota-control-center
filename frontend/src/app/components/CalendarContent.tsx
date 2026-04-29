@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Clock3, History } from "lucide-react";
 import { Button } from "../components/ui/button";
+import { createScheduledRunProjections } from "../lib/scheduleOccurrences";
+import { useJobRuns } from "../contexts/JobRunContext";
 import { getCalendarEvents, subscribeToUserDashboardStore, type UserCalendarEvent } from "../lib/userDashboardStore";
 
 type CalendarEvent = {
@@ -13,17 +15,8 @@ type CalendarEvent = {
   jobType?: string;
 };
 
-const baseCalendarEvents: CalendarEvent[] = [
-  { id: "run-1", title: "Warranty Claims Rollup", date: "2026-03-01", time: "08:00", kind: "past" },
-  { id: "run-2", title: "Customer Churn Analysis", date: "2026-03-02", time: "06:00", kind: "past" },
-  { id: "run-3", title: "Dealer KPI Deck", date: "2026-03-03", time: "09:00", kind: "past" },
-  { id: "run-4", title: "Finance Executive Deck", date: "2026-03-05", time: "09:00", kind: "scheduled" },
-  { id: "run-5", title: "SQL Revenue Dashboard", date: "2026-03-08", time: "07:00", kind: "scheduled" },
-  { id: "run-6", title: "Regional Sales Export", date: "2026-03-11", time: "10:30", kind: "scheduled" },
-  { id: "run-7", title: "Dealer Scorecard Refresh", date: "2026-03-15", time: "06:30", kind: "scheduled" },
-  { id: "run-8", title: "Monthly Board Presentation", date: "2026-03-21", time: "11:00", kind: "scheduled" },
-  { id: "run-9", title: "Pricing Risk Monitor", date: "2026-03-25", time: "05:00", kind: "scheduled" },
-];
+const baseCalendarEvents: CalendarEvent[] = [];
+const RESOURCE_SCHEDULES_UPDATED_EVENT = "control-center-resource-schedules-updated";
 
 function getMonthStart(date: Date) {
   return new Date(date.getFullYear(), date.getMonth(), 1);
@@ -55,29 +48,71 @@ function toDateKey(date: Date) {
 }
 
 export function CalendarContent() {
+  const { resources, runs, refresh } = useJobRuns();
   const [currentMonth, setCurrentMonth] = useState(() => getInitialCalendarMonth(baseCalendarEvents));
   const [eventFilter, setEventFilter] = useState<"all" | "past" | "scheduled">("all");
   const [createdJobEvents, setCreatedJobEvents] = useState<UserCalendarEvent[]>(() => getCalendarEvents());
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
 
+  const resourceScheduleEvents = useMemo<CalendarEvent[]>(
+    () =>
+      createScheduledRunProjections(resources).map((occurrence) => ({
+        id: occurrence.id,
+        jobId: occurrence.resourceId,
+        title: occurrence.jobName,
+        date: toDateKey(occurrence.scheduledTime),
+        time: occurrence.scheduledTime.toTimeString().slice(0, 5),
+        kind: "scheduled" as const,
+        jobType: occurrence.jobType,
+      })),
+    [resources],
+  );
+
+  const runEvents = useMemo<CalendarEvent[]>(() => {
+    const resourceById = new Map(resources.map((resource) => [resource.id, resource]));
+    return runs.map((run) => {
+      const resource = resourceById.get(run.resource_id);
+      const eventDate = new Date(run.created_at);
+      const isUpcoming = ["queued", "scheduled", "pending", "executing", "running"].includes(run.status.toLowerCase());
+      return {
+        id: run.id,
+        jobId: run.resource_id,
+        title: resource?.name ?? run.resource_id,
+        date: toDateKey(eventDate),
+        time: eventDate.toTimeString().slice(0, 5),
+        kind: isUpcoming ? "scheduled" as const : "past" as const,
+        jobType: resource?.type?.toUpperCase(),
+      };
+    });
+  }, [resources, runs]);
+
   const calendarEvents = useMemo(
     () =>
-      [...baseCalendarEvents, ...createdJobEvents].sort((a, b) =>
+      [...baseCalendarEvents, ...createdJobEvents, ...resourceScheduleEvents, ...runEvents].sort((a, b) =>
         `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`)
       ),
-    [createdJobEvents]
+    [createdJobEvents, resourceScheduleEvents, runEvents]
   );
 
   useEffect(() => {
     const nextEvents = getCalendarEvents();
     setCreatedJobEvents(nextEvents);
-    setCurrentMonth(getInitialCalendarMonth([...baseCalendarEvents, ...nextEvents]));
-    return subscribeToUserDashboardStore(() => {
+    void refresh();
+    const unsubscribeDashboardStore = subscribeToUserDashboardStore(() => {
       const updatedEvents = getCalendarEvents();
       setCreatedJobEvents(updatedEvents);
-      setCurrentMonth(getInitialCalendarMonth([...baseCalendarEvents, ...updatedEvents]));
+      void refresh();
     });
+    window.addEventListener(RESOURCE_SCHEDULES_UPDATED_EVENT, refresh);
+    return () => {
+      unsubscribeDashboardStore();
+      window.removeEventListener(RESOURCE_SCHEDULES_UPDATED_EVENT, refresh);
+    };
   }, []);
+
+  useEffect(() => {
+    setCurrentMonth(getInitialCalendarMonth(calendarEvents));
+  }, [calendarEvents]);
 
   const monthStart = useMemo(() => getMonthStart(currentMonth), [currentMonth]);
 
@@ -106,7 +141,7 @@ export function CalendarContent() {
       acc[event.date].push(event);
       return acc;
     }, {});
-  }, []);
+  }, [calendarEvents]);
 
   const monthEvents = useMemo(() => {
     const prefix = `${monthStart.getFullYear()}-${`${monthStart.getMonth() + 1}`.padStart(2, "0")}`;
@@ -115,7 +150,7 @@ export function CalendarContent() {
       .sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
     if (eventFilter === "all") return monthly;
     return monthly.filter((event) => event.kind === eventFilter);
-  }, [monthStart, eventFilter]);
+  }, [calendarEvents, monthStart, eventFilter]);
 
   return (
     <div className="space-y-6">

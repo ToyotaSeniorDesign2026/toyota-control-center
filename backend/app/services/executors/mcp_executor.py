@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 from typing import Any
 
 from app.services.execution_service import ExecutionRequest, ensure_control_center_importable
@@ -32,6 +33,29 @@ def _normalize_tool_result(result: Any) -> dict[str, Any]:
 
 class MCPJobExecutor(BaseJobExecutor):
     backend_name = "mcp"
+
+    def _run_async_execution(self, execution_request: ExecutionRequest) -> dict[str, Any]:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self._execute_async(execution_request))
+
+        result_holder: dict[str, Any] = {}
+        error_holder: dict[str, BaseException] = {}
+
+        def _runner() -> None:
+            try:
+                result_holder["execution"] = asyncio.run(self._execute_async(execution_request))
+            except BaseException as exc:  # pragma: no cover - defensive handoff from worker thread
+                error_holder["error"] = exc
+
+        thread = threading.Thread(target=_runner, daemon=True)
+        thread.start()
+        thread.join()
+
+        if "error" in error_holder:
+            raise error_holder["error"]
+        return result_holder["execution"]
 
     async def _execute_direct_tool(self, execution_request: ExecutionRequest) -> dict[str, Any]:
         ensure_control_center_importable()
@@ -80,7 +104,7 @@ class MCPJobExecutor(BaseJobExecutor):
 
     async def _execute_agent(self, execution_request: ExecutionRequest) -> dict[str, Any]:
         ensure_control_center_importable()
-        from control_center.mcp import build_agent_from_registry
+        from control_center.mcp import build_agent_from_registry, default_mcp_model
 
         mcp_config = execution_request.mcp_config
         server_names = list(mcp_config.server_names)
@@ -105,7 +129,8 @@ class MCPJobExecutor(BaseJobExecutor):
             environment=execution_request.target_environment,
             server_names=server_names or None,
             selection_prompt=selection_prompt,
-            model=os.getenv("CONTROL_CENTER_MCP_MODEL", "gemini-3.1-pro-preview"),
+            model=default_mcp_model(),
+            instructor_model=os.getenv("CONTROL_CENTER_MCP_INSTRUCTOR_MODEL"),
             verbose=False,
         )
         try:
@@ -139,7 +164,7 @@ class MCPJobExecutor(BaseJobExecutor):
         return execution
 
     def execute(self, execution_request: ExecutionRequest) -> dict[str, Any]:
-        execution = asyncio.run(self._execute_async(execution_request))
+        execution = self._run_async_execution(execution_request)
         metadata = {
             "resource_id": execution_request.resource.resource_id,
             "resource_type": execution_request.resource.type,
