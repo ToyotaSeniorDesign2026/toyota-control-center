@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from app.services.execution_service import ensure_control_center_importable
+from control_center.registry import RegistryManager
 
 
 def list_repo_connection_bundles(environment: str = "dev") -> dict[str, list[dict]]:
-    ensure_control_center_importable()
-    from control_center.core.registry import RegistryManager
-
     manager = RegistryManager(environment=environment)
     available_server_names = set(manager.get_available_servers_list())
 

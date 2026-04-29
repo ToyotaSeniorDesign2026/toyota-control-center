@@ -64,5 +64,8 @@ class Settings:
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o")
 
+    # Internal service token — used by the Control Center MCP server to call the API
+    internal_service_token: str | None = os.getenv("CC_INTERNAL_SERVICE_TOKEN")
+
 
 settings = Settings()

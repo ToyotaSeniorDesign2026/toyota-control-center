@@ -167,7 +167,7 @@ class MCPToolResult(ExecutionResult[T]):
     - `content` or `structured_content` give the LLM everything it needs.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     # --- [MCP ALIGNMENT] ---
     #  -- MCP Fields --

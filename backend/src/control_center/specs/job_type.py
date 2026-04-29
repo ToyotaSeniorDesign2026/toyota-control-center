@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from typing import Any, Annotated, Literal
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator, field_validator
 
 from .field_formats import FORMAT_REGISTRY
 from .environment import Environment
@@ -97,9 +97,20 @@ class ArtifactSpec(BaseModel):
 class InputSchema(BaseModel):
     required: list[str] = Field(default_factory=list)
     optional: list[str] = Field(default_factory=list)
+    fields: dict[str, "FieldSpec"] = Field(
+        default_factory=dict,
+        description=(
+            "Full field definitions keyed by field name. When populated, the UI can "
+            "render a dynamic form without knowing the job type ahead of time. "
+            "required/optional lists are the source of truth for validation; this "
+            "dict adds type, format, and display metadata on top."
+        ),
+    )
 
 
 JobTypeSource = Annotated[Literal["system", "admin", "user"], Field(default="system")]
+
+JobKind = Literal["runtime", "artifact"]
 
 
 class JobTypeContract(BaseModel):
@@ -108,17 +119,37 @@ class JobTypeContract(BaseModel):
     version: str = "1.0"
     display_name: str | None = None
     description: str | None = None
+    kind: JobKind = "runtime"
+    supported_actions: list[str] = Field(default_factory=lambda: ["activate", "pause", "archive"])
     # ── Schema ────────────────────────────────────────────────────────────────
     deterministic: bool = False
-    config: InputSchema = Field(default_factory=InputSchema)  # schema for job-type configuration across runs
-    params: InputSchema = Field(default_factory=InputSchema)  # schema for parameters passed at run time
+    config: InputSchema = Field(default_factory=InputSchema)  # job-level config (set once, reused across runs)
+    params: InputSchema = Field(default_factory=InputSchema)  # run-time parameters
     # ── Execution Wiring ──────────────────────────────────────────────────────
-    executor: str
-    """Registry key into the executor registry (e.g. 'sql_query', 'agent')."""
-    requires: CapabilityRequirement
-    features: RunFeatures
+    executor: str = "mcp"
+    """Registry key into the executor registry (e.g. 'mcp', 'agent')."""
+    requires: CapabilityRequirement = Field(default_factory=CapabilityRequirement)
+    features: RunFeatures = Field(default_factory=RunFeatures)
     # ── Provenance ────────────────────────────────────────────────────────────
-    policy: GovernancePolicy
+    policy: GovernancePolicy = Field(default_factory=GovernancePolicy)
     source: JobTypeSource
     created_by: str | None = None  # User ID for non-system contracts
     domain: str | None = None  # Visibility scope. None = global, otherwise restricted to that domain
+
+    def form_schema(self) -> dict:
+        """Return a UI-renderable form schema derived from config.fields + params.fields.
+
+        This is what MCP App integrations will call to render a dynamic job creation form.
+        """
+        config_fields = [f.model_dump() for f in self.config.fields.values()]
+        params_fields = [f.model_dump() for f in self.params.fields.values()]
+        return {
+            "type": self.type,
+            "display_name": self.display_name,
+            "config_fields": config_fields,
+            "params_fields": params_fields,
+            "required_config": self.config.required,
+            "optional_config": self.config.optional,
+            "required_params": self.params.required,
+            "optional_params": self.params.optional,
+        }

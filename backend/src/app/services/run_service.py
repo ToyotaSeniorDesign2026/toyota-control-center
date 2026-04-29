@@ -15,7 +15,7 @@ from app.models.run import Run
 from app.schemas.run import RunCreate
 from app.services.approval_service import create_approval_request
 from app.services.audit_service import write_audit
-from app.services.connector_service import dispatch_execution
+from app.services.executors import dispatch_execution
 from app.services.execution_service import build_execution_request
 from app.services.log_service import append_run_log, sync_run_execution_status
 from app.services.policy_service import evaluate_run_request
@@ -211,8 +211,8 @@ def create_run_and_maybe_execute(db: Session, user, payload: RunCreate, trigger_
         "action": payload.action,
         "target_environment": payload.target_environment,
         "params": payload.params,
-        "job_config": execution_request.job_config.model_dump(),
-        "mcp_config": execution_request.mcp_config.model_dump(),
+        "prompt": payload.prompt,
+        "run_spec": execution_request.run_spec.model_dump(),
     }
     run.resolved_job_spec_json = execution_request.job_spec
     db.add(run)
@@ -362,8 +362,7 @@ def retry_run(db: Session, user, run_id: str):
         action=submitted.get("action", run.action),
         target_environment=submitted.get("target_environment", run.target_environment),
         params=submitted.get("params", {}),
-        job_config=submitted.get("job_config"),
-        mcp_config=submitted.get("mcp_config"),
+        prompt=submitted.get("prompt"),
     )
     append_run_log(db, run_id, "INFO", "Retry requested", {"new_run": True})
     write_audit(db, user, "RUN_RETRY_REQUESTED", {"run_id": run_id})

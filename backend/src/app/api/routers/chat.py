@@ -663,6 +663,7 @@ def _sql_config_with_session_env(merged: dict[str, Any], session_env: dict[str, 
     cfg.pop("target_environment", None)
     cfg.pop("environment", None)
     for fld, env_key in (
+        ("db_driver", "SQL_DB_DRIVER"),
         ("host", "SQL_DB_HOST"),
         ("port", "SQL_DB_PORT"),
         ("database", "SQL_DB_DATABASE"),
@@ -1346,6 +1347,20 @@ def _sql_connection_config_request(prompt: str, fields: list[ConfigRequestField]
     )
 
 
+class DbTypeOption(BaseModel):
+    label: str
+    value: str
+    description: Optional[str] = None
+
+
+_DB_TYPE_OPTIONS = [
+    DbTypeOption(label="PostgreSQL", value="postgresql+psycopg", description="Host-based, port 5432"),
+    DbTypeOption(label="MySQL", value="mysql+pymysql", description="Host-based, port 3306"),
+    DbTypeOption(label="SQLite", value="sqlite", description="Local file or :memory:"),
+    DbTypeOption(label="Snowflake", value="snowflake", description="Cloud data warehouse"),
+]
+
+
 class ChatResponse(BaseModel):
     """Response from chat API."""
     response: str
@@ -1361,6 +1376,7 @@ class ChatResponse(BaseModel):
     secret_request: Optional[SecretRequest] = None
     repository_options: Optional[list[RepositoryOption]] = None
     config_request: Optional[ConfigRequest] = None
+    db_type_options: Optional[list[DbTypeOption]] = None
     reset_draft: Optional[bool] = None  # True when user abandons current flow
     reset_session_env: Optional[bool] = None  # True when frontend should clear stored DB credentials
 
@@ -1882,18 +1898,10 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
         # --- SQL type selection: "SQL" after "what type of job?" → enter structured flow now ---
         if _is_sql_type_selection(request.message, history_dicts) and not _form_already_shown:
             return ChatResponse(
-                response=(
-                    "Great choice! To get started with your SQL job, I'll need the database "
-                    "connection details. Please fill in the form below."
-                ),
+                response="Great choice! Which database are you connecting to?",
                 job_creation_intent=True,
-                extracted_fields={
-                    **(request.current_draft_data or {}),
-                    "job_type": "SQL",
-                    "_connection_form_shown": True,
-                    "_connection_id_asked": True,
-                },
-                config_request=_sql_connection_config_request("Enter the database connection details for this SQL job."),
+                extracted_fields={**(request.current_draft_data or {}), "job_type": "SQL"},
+                db_type_options=_DB_TYPE_OPTIONS,
                 reset_session_env=True,
             )
 
@@ -1965,6 +1973,15 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
             and (_looks_like_live_sql_lookup(request) or is_sql_job_flow)
             and not _is_sql_github_write_request(request)
         ):
+            # Driver unknown — ask the user to choose before showing the connection form.
+            if not _early_db_driver:
+                return ChatResponse(
+                    response="Which database are you connecting to?",
+                    job_creation_intent=is_sql_job_flow,
+                    extracted_fields={**_early_draft, "job_type": "SQL"} if is_sql_job_flow else None,
+                    db_type_options=_DB_TYPE_OPTIONS,
+                )
+
             _early_driver_label = _SQL_DRIVER_DISPLAY.get(_early_db_driver.lower(), "SQL")
             _skip_conn_id = _early_db_driver.lower() in {"sqlite", "snowflake", "snowflake+snowflake-sqlalchemy"}
             ef = {
@@ -1974,13 +1991,7 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                 "_connection_id_asked": _skip_conn_id,
             }
             return ChatResponse(
-                response=(
-                    f"Before we proceed, I need the **{_early_driver_label}** connection details for this session. "
-                    "Please fill in the form below."
-                    if _early_db_driver else
-                    "Before I can run a live SQL query in this chat, I need the database connection details "
-                    "for this session. Please provide the host, port, database name, username, and password."
-                ),
+                response=f"Enter the {_early_driver_label} connection details for this session.",
                 job_creation_intent=is_sql_job_flow,
                 extracted_fields=ef if is_sql_job_flow else None,
                 config_request=_sql_connection_config_request(
@@ -2286,7 +2297,7 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
             # Strip connection_id and connector from the draft for non-PostgreSQL drivers — they are
             # not needed and confuse the agent prompt.  The frontend echoes back old state so we must
             # remove it here on every turn, not just at extraction time.
-            _active_driver = _non_empty_str(merged.get("db_driver") or (merged.get("config") or {}).get("db_driver") or "")
+            _active_driver = _non_empty_str(merged.get("db_driver") or (merged.get("config") or {}).get("db_driver")) or ""
             if _active_driver.lower() in {"sqlite", "snowflake", "snowflake+snowflake-sqlalchemy"}:
                 merged.pop("connection_id", None)
                 merged.pop("connector", None)
@@ -2299,6 +2310,7 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
             # the database path / credentials are gone by the "yes" confirmation turn.
             if merged.get("_connection_form_shown") and session_env:
                 for _fld, _env_key in (
+                    ("db_driver", "SQL_DB_DRIVER"),
                     ("database", "SQL_DB_DATABASE"),
                     ("host", "SQL_DB_HOST"),
                     ("port", "SQL_DB_PORT"),
@@ -2309,6 +2321,9 @@ async def send_chat_message(request: ChatRequest, db=Depends(get_db)) -> ChatRes
                     _env_val = _non_empty_str(session_env.get(_env_key))
                     if _env_val and not _non_empty_str((merged.get("config") or {}).get(_fld)):
                         merged.setdefault("config", {})[_fld] = _env_val
+            # Sync config["db_driver"] → top-level merged["db_driver"] so all driver checks see it.
+            if not merged.get("db_driver") and (merged.get("config") or {}).get("db_driver"):
+                merged["db_driver"] = merged["config"]["db_driver"]
             if last_asked not in (None, "confirm"):
                 if last_asked in ("connection_id", "db_driver") or _sql_field_has_value(last_asked, merged, session_env):
                     merged.pop("_pending_field", None)
@@ -2923,3 +2938,40 @@ def detect_job_creation_intent(user_message: str) -> bool:
                 return True
     
     return False
+
+
+class AgentChatRequest(BaseModel):
+    message: str
+    conversation_history: Optional[list[ChatMessage]] = None
+    model: Optional[str] = None
+    server_env_overrides: Optional[dict[str, dict[str, str]]] = None
+
+
+class AgentChatResponse(BaseModel):
+    response: str
+
+
+@router.post("/agent", response_model=AgentChatResponse)
+async def agent_chat(request: AgentChatRequest, db=Depends(get_db)) -> AgentChatResponse:
+    """Agent-driven chat endpoint using OpenAI function calling + MCP delegation."""
+    from app.services.agent_chat_service import run_agent
+    from app.services.chat_job_service import get_chat_actor
+
+    if not request.message or not request.message.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    user = get_chat_actor(db)
+
+    history: list[dict] = []
+    for msg in (request.conversation_history or []):
+        history.append({"role": msg.role, "content": msg.content})
+
+    response = await run_agent(
+        message=request.message.strip(),
+        conversation_history=history or None,
+        db=db,
+        user=user,
+        model=request.model,
+        server_env_overrides=request.server_env_overrides,
+    )
+    return AgentChatResponse(response=response)

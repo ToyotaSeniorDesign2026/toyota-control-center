@@ -30,6 +30,7 @@ services:
       DB_POOL_PRE_PING: "true"
     volumes:
       - ./mcp_servers/sql-mcp-server:/app/mcp_servers/sql-mcp-server
+      - ./mcp_servers/control-center-server:/app/mcp_servers/control-center-server
     ports:
       - "8000:8000"
     command: >

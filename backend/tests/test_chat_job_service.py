@@ -32,7 +32,7 @@ class ChatJobServiceTests(unittest.TestCase):
                 },
             )
 
-        self.assertEqual(result.resource_id, "res_get_users")
+        self.assertEqual(result.job_id, "res_get_users")
         self.assertTrue(result.resource_created)
         self.assertEqual(create_resource_mock.call_args.args[2].name, "get-users-10")
         self.assertEqual(create_resource_mock.call_args.args[2].connector, "sql-mcp")
@@ -66,10 +66,10 @@ class ChatJobServiceTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertTrue(result.executed)
-        self.assertEqual(result.resource_id, "res_sql_1")
+        self.assertEqual(result.job_id, "res_sql_1")
         self.assertEqual(result.run_id, "run_123")
         create_resource_mock.assert_not_called()
-        self.assertEqual(create_run_mock.call_args.args[2].resource_id, "res_sql_1")
+        self.assertEqual(create_run_mock.call_args.args[2].job_id, "res_sql_1")
 
     def test_missing_sql_resource_can_be_created_and_run_from_chat(self) -> None:
         db = object()
@@ -91,7 +91,7 @@ class ChatJobServiceTests(unittest.TestCase):
             "app.services.chat_job_service.create_run_and_maybe_execute",
             return_value={"id": "run_456", "status": "queued"},
         ) as create_run_mock:
-            db = SimpleNamespace(get=lambda model, resource_id: resource_model)
+            db = SimpleNamespace(get=lambda model, job_id: resource_model)
             result = maybe_run_sql_job_from_chat(
                 db,
                 message="Create and run a SQL job named ad_hoc_sales_check with query select 1",
@@ -108,7 +108,7 @@ class ChatJobServiceTests(unittest.TestCase):
         self.assertTrue(result.executed)
         self.assertTrue(result.resource_created)
         self.assertEqual(create_resource_mock.call_args.args[2].connector, "sql-mcp")
-        self.assertEqual(create_run_mock.call_args.args[2].resource_id, "res_new_1")
+        self.assertEqual(create_run_mock.call_args.args[2].job_id, "res_new_1")
 
     def test_non_execution_chat_message_does_not_trigger_sql_run(self) -> None:
         result = maybe_run_sql_job_from_chat(
@@ -156,7 +156,7 @@ class ChatJobServiceTests(unittest.TestCase):
             "app.services.chat_job_service.create_run_and_maybe_execute",
             return_value={"id": "run_get_runs", "status": "succeeded"},
         ) as create_run_mock:
-            db = SimpleNamespace(get=lambda model, resource_id: resource_model)
+            db = SimpleNamespace(get=lambda model, job_id: resource_model)
             result = maybe_run_sql_job_from_chat(
                 db,
                 message="please run the job for me",
@@ -199,7 +199,7 @@ class ChatJobServiceTests(unittest.TestCase):
             "app.services.chat_job_service.create_run_and_maybe_execute",
             return_value={"id": "run_label", "status": "succeeded"},
         ):
-            db = SimpleNamespace(get=lambda model, resource_id: resource_model)
+            db = SimpleNamespace(get=lambda model, job_id: resource_model)
             result = maybe_run_sql_job_from_chat(
                 db,
                 message="please run the job now",

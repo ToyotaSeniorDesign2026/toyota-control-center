@@ -37,13 +37,7 @@ class BaseAdapter(Generic[T], ABC):
         self.prompts: list[T] = []
 
     def parse_result(self, result: Any) -> str:
-        """
-        Normalize MCP operation results into text.
-        """
-        if getattr(result, "isError", False):
-            error_content = getattr(result, "content", None) or "Unknown error"
-            return f"Error: {error_content}"
-
+        """Normalize MCP operation results into text per the MCP spec."""
         if hasattr(result, "contents"):  # resource read result
             return "\n".join(
                 c.decode() if isinstance(c, bytes) else str(c)
@@ -53,8 +47,22 @@ class BaseAdapter(Generic[T], ABC):
         if hasattr(result, "messages"):  # prompt result
             return "\n".join(str(m) for m in result.messages)
 
-        if hasattr(result, "content"):  # tool result
-            return str(result.content)
+        if hasattr(result, "content") and isinstance(result.content, list):
+            # tool result — content is list[TextContent | ImageContent | ...]
+            parts: list[str] = []
+            for item in result.content:
+                text = getattr(item, "text", None)
+                if text is not None:
+                    parts.append(text)
+                else:
+                    # image / audio / resource_link — represent as a label
+                    mime = getattr(item, "mimeType", "")
+                    kind = getattr(item, "type", "binary")
+                    parts.append(f"[{kind}: {mime}]" if mime else f"[{kind}]")
+            result_text = "\n".join(parts) if parts else ""
+            if getattr(result, "isError", False):
+                return f"Error: {result_text or 'tool returned an error'}"
+            return result_text
 
         return str(result)
 

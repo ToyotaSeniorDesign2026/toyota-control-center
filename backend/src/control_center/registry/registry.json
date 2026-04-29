@@ -82,6 +82,17 @@
       "config_path": "configs/wordsmith-mcp.json",
       "active": true
     },
+    "control-center": {
+      "description": "Internal Control Center MCP server — exposes jobs, runs, and trigger capabilities so MCPAgent can orchestrate workflows without an OpenAI function-calling loop.",
+      "display_name": "Control Center",
+      "allowed_environments": ["dev", "semi-prod", "prod"],
+      "config_path": "configs/control-center.json",
+      "config_type": "standard",
+      "version": "1.0",
+      "tags": ["internal", "control-center", "orchestration"],
+      "active": true,
+      "job_type": "mcp"
+    },
     "sql-mcp": {
       "description": "Custom FastMCP SQL server that connects to any user-supplied database (PostgreSQL, SQLite, Snowflake). Connection details are provided at job creation time; the driver is selected via SQL_DB_DRIVER.",
       "display_name": "SQL Database",

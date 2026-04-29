@@ -2,37 +2,26 @@
 
 import json
 import logging
-from pathlib import Path
 from typing import Optional
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-_REGISTRY_PATH = (
-    Path(__file__).parent.parent.parent
-    / "src" / "control_center" / "core" / "registry" / "registry.json"
-)
-
 
 def _build_job_types_section() -> str:
-    """Return the available job types for the system prompt.
-
-    Includes universal fields plus job-specific required/optional fields from
-    registry.json. The router still owns deterministic ordered collection; this
-    context keeps the LLM's wording aligned with the registry.
-    """
+    """Return the available job types for the system prompt, sourced from RegistryManager."""
     try:
-        with open(_REGISTRY_PATH) as f:
-            registry = json.load(f)
+        from control_center.registry import RegistryManager
+        manager = RegistryManager()
+        universal = manager._registry.universal_job_fields
+        servers = manager.get_available_servers()
     except Exception:
-        logger.warning("Could not load registry.json for system prompt")
+        logger.warning("Could not load registry for system prompt")
         return ""
 
     lines: list[str] = []
 
-    # Universal fields — safe to expose; the LLM collects these conversationally
-    universal = registry.get("universal_job_fields", {})
     req = universal.get("required", [])
     opt = universal.get("optional", [])
     if req or opt:
@@ -43,22 +32,21 @@ def _build_job_types_section() -> str:
             lines.append(f"  Optional: {', '.join(opt)}")
         lines.append("")
 
-    # Job type field references from approved servers.
     seen: set[str] = set()
     job_type_lines: list[str] = []
-    for srv in registry.get("approved_servers", {}).values():
-        jt = srv.get("job_type")
+    for srv in servers.values():
+        jt = srv.job_type
         if not jt or jt in seen:
             continue
         seen.add(jt)
-        display = srv.get("display_name") or jt
-        required = srv.get("required_fields") or []
-        optional = srv.get("optional_fields") or []
-        job_type_lines.append(f"  - {jt} ({display})")
-        if required:
-            job_type_lines.append(f"    Required: {', '.join(required)}")
-        if optional:
-            job_type_lines.append(f"    Optional: {', '.join(optional)}")
+        display = srv.display_name or jt
+        if srv.required_fields:
+            job_type_lines.append(f"  - {jt} ({display})")
+            job_type_lines.append(f"    Required: {', '.join(srv.required_fields)}")
+        else:
+            job_type_lines.append(f"  - {jt} ({display})")
+        if srv.optional_fields:
+            job_type_lines.append(f"    Optional: {', '.join(srv.optional_fields)}")
 
     if job_type_lines:
         lines.append("SUPPORTED JOB TYPES:")

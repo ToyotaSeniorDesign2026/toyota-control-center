@@ -12,6 +12,16 @@ from app.schemas.user import UserOut
 
 bearer = HTTPBearer(auto_error=False)
 
+_SERVICE_USER = UserOut(
+    id="cc-service",
+    email="service@control-center.internal",
+    name="Control Center Service",
+    role="root",
+    domain="internal",
+    is_active=True,
+    created_at="",
+)
+
 
 def get_current_user(
     creds: HTTPAuthorizationCredentials | None = Depends(bearer),
@@ -24,6 +34,12 @@ def get_current_user(
         )
 
     token = creds.credentials.strip()
+
+    # Allow the internal service token (used by the Control Center MCP server)
+    from app.core.config import settings
+    if settings.internal_service_token and token == settings.internal_service_token:
+        return _SERVICE_USER
+
     user = db.get(User, token)
     if not user or not user.is_active:
         raise HTTPException(

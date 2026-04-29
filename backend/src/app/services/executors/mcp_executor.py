@@ -8,30 +8,17 @@ import os
 import threading
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from control_center.agent import build_agent_from_registry, default_mcp_model
+from control_center.mcp import call_tool_once
+from control_center.registry import RegistryManager
+from control_center.specs import MCPToolResult
+from control_center.specs.execution import AgentRun, DirectToolCall
 
-from app.services.execution_service import ExecutionRequest, ensure_control_center_importable
+from app.services.execution_service import ExecutionRequest
 
 from .base import BaseJobExecutor
 
-
-def _normalize_tool_result(result: Any) -> dict[str, Any]:
-    if hasattr(result, "structuredContent"):
-        structured = getattr(result, "structuredContent", None)
-    else:
-        structured = None
-
-    if hasattr(result, "content"):
-        content = getattr(result, "content", None)
-        content_repr = [str(item) for item in content] if isinstance(content, list) else str(content)
-    else:
-        content_repr = str(result)
-
-    return {
-        "structured_content": structured,
-        "content": content_repr,
-        "is_error": bool(getattr(result, "isError", False)),
-    }
+logger = logging.getLogger(__name__)
 
 
 class MCPJobExecutor(BaseJobExecutor):
@@ -49,7 +36,7 @@ class MCPJobExecutor(BaseJobExecutor):
         def _runner() -> None:
             try:
                 result_holder["execution"] = asyncio.run(self._execute_async(execution_request))
-            except BaseException as exc:  # pragma: no cover - defensive handoff from worker thread
+            except BaseException as exc:
                 error_holder["error"] = exc
 
         timeout_s = int(os.getenv("MCP_EXECUTION_TIMEOUT_SECONDS", "120"))
@@ -66,61 +53,38 @@ class MCPJobExecutor(BaseJobExecutor):
             raise error_holder["error"]
         return result_holder["execution"]
 
-    async def _execute_direct_tool(self, execution_request: ExecutionRequest) -> dict[str, Any]:
-        ensure_control_center_importable()
-        from control_center.core.registry import RegistryManager
-        from control_center.mcp import LLMClient
+    async def _execute_direct_tool(self, execution_request: ExecutionRequest) -> MCPToolResult:
+        run_spec = execution_request.run_spec
+        assert isinstance(run_spec, DirectToolCall)
 
         manager = RegistryManager(environment=execution_request.target_environment)
-        runtime_client = LLMClient()
+        server_config = manager.get_server_config(run_spec.server_name)
 
-        mcp_config = execution_request.mcp_config
-        server_names = list(mcp_config.server_names)
-        if not server_names:
-            raise RuntimeError("No MCP server_names were provided and the resource connector is empty.")
-        if not mcp_config.tool_name:
-            raise RuntimeError("Direct MCP execution requires mcp_config.tool_name.")
+        # Apply connection env overrides (e.g. SQL credentials) to the server subprocess env.
+        env_overrides = self._sql_server_env_overrides(execution_request)
+        if env_overrides and run_spec.server_name in env_overrides:
+            overrides = env_overrides[run_spec.server_name]
+            base_env = dict(os.environ)
+            existing = server_config.get("env")
+            if isinstance(existing, dict):
+                base_env.update(existing)
+            server_config = {**server_config, "env": {**base_env, **overrides}}
 
-        try:
-            for server_name in server_names:
-                server_config = manager.get_server_config(server_name)
-                await runtime_client.connect_to_server(server_name, server_config)
-
-            target_server = server_names[0]
-            tool_arguments = dict(execution_request.params)
-            tool_arguments.update(mcp_config.tool_arguments)
-            raw_result = await runtime_client.call_tool(target_server, mcp_config.tool_name, tool_arguments)
-            normalized = _normalize_tool_result(raw_result)
-            if normalized["is_error"]:
-                return {
-                    "status": "failed",
-                    "server_names": server_names,
-                    "tool_name": mcp_config.tool_name,
-                    "tool_arguments": tool_arguments,
-                    "result": normalized,
-                    "error": f"MCP tool '{mcp_config.tool_name}' returned an error",
-                }
-            return {
-                "status": "succeeded",
-                "server_names": server_names,
-                "tool_name": mcp_config.tool_name,
-                "tool_arguments": tool_arguments,
-                "result": normalized,
-                "error": None,
-            }
-        finally:
-            await runtime_client.cleanup()
+        raw_result = await call_tool_once(
+            server_name=run_spec.server_name,
+            tool_name=run_spec.tool_name,
+            arguments=run_spec.arguments,
+            server_config=server_config,
+        )
+        return MCPToolResult.from_call_tool_result(raw_result)
 
     def _sql_server_env_overrides(self, execution_request: ExecutionRequest) -> dict[str, dict[str, str]] | None:
         """Build server_env_overrides for sql-mcp from run params (preferred) or job config."""
-        config = {}
-        if hasattr(execution_request.resource, "config"):
-            cfg = execution_request.resource.config
-            config = cfg if isinstance(cfg, dict) else {}
-
+        config = execution_request.resource.config if hasattr(execution_request.resource, "config") else {}
+        if not isinstance(config, dict):
+            config = {}
         params = execution_request.params or {}
 
-        # run-time params take precedence so UI-supplied credentials override stored config
         driver = str(params.get("db_driver") or config.get("db_driver") or "").strip().lower()
         database = str(params.get("database") or config.get("database") or "").strip()
 
@@ -128,13 +92,7 @@ class MCPJobExecutor(BaseJobExecutor):
             if not database:
                 logger.warning("SQLite driver detected but database path is empty — no env overrides applied")
                 return None
-            logger.info("SQL env overrides: driver=sqlite database=%s", database)
-            return {
-                "sql-mcp": {
-                    "SQL_DB_DRIVER": "sqlite",
-                    "SQL_DB_DATABASE": database,
-                }
-            }
+            return {"sql-mcp": {"SQL_DB_DRIVER": "sqlite", "SQL_DB_DATABASE": database}}
 
         host = str(params.get("host") or config.get("host") or "").strip()
         port = str(params.get("port") or config.get("port") or "").strip()
@@ -160,45 +118,25 @@ class MCPJobExecutor(BaseJobExecutor):
             overrides["SQL_CONNECTION_STRING"] = (
                 f"Host={host};Port={port};Database={database};Username={username};Password={password}"
             )
-
         return {"sql-mcp": overrides}
 
     async def _execute_agent(self, execution_request: ExecutionRequest) -> dict[str, Any]:
-        ensure_control_center_importable()
-        from control_center.mcp import build_agent_from_registry, default_mcp_model
-
-        mcp_config = execution_request.mcp_config
-        server_names = list(mcp_config.server_names)
-        selection_prompt = None
-        if mcp_config.allow_auto_selection:
-            selection_prompt = (
-                mcp_config.connector_selection_prompt
-                or mcp_config.prompt
-                or execution_request.params.get("prompt")
-                or execution_request.job_spec.get("intent")
-            )
-
-        final_prompt = (
-            mcp_config.prompt
-            or execution_request.params.get("prompt")
-            or execution_request.job_spec.get("metadata", {}).get("prompt")
-        )
-        if not final_prompt:
-            raise RuntimeError("Agent MCP execution requires a prompt in mcp_config.prompt or params.prompt.")
+        run_spec = execution_request.run_spec
+        assert isinstance(run_spec, AgentRun)
 
         server_env_overrides = self._sql_server_env_overrides(execution_request)
 
         agent = await build_agent_from_registry(
             environment=execution_request.target_environment,
-            server_names=server_names or None,
-            selection_prompt=selection_prompt,
+            server_names=run_spec.server_names or None,
+            selection_prompt=run_spec.selection_prompt if run_spec.allow_auto_selection else None,
             model=default_mcp_model(),
             instructor_model=os.getenv("CONTROL_CENTER_MCP_INSTRUCTOR_MODEL"),
             server_env_overrides=server_env_overrides,
             verbose=False,
         )
         try:
-            response = await agent.run(final_prompt)
+            response = await agent.run(run_spec.prompt)
             return {
                 "status": "succeeded",
                 "server_names": agent.client.connected_servers,
@@ -218,54 +156,57 @@ class MCPJobExecutor(BaseJobExecutor):
         finally:
             await agent.cleanup()
 
-    async def _execute_github_write(self, execution_request: ExecutionRequest) -> dict[str, Any]:
-        """Write a SQL script to GitHub. Token and file details come from run params."""
+    async def _execute_github_write(self, execution_request: ExecutionRequest) -> MCPToolResult:
+        """Write a SQL script to GitHub. Token comes from run params."""
         from app.services.chat_mcp_service import github_write_file
+
+        run_spec = execution_request.run_spec
+        assert isinstance(run_spec, DirectToolCall)
 
         params = execution_request.params
         job_config = execution_request.resource.config or {}
 
         github_token = str(params.get("github_token") or job_config.get("github_token") or "").strip()
         if not github_token:
-            return {"status": "failed", "error": "Missing github_token in run params.", "result": None}
+            return MCPToolResult.failure(code="missing_token", message="Missing github_token in run params.")
 
-        repo = str(params.get("repo") or job_config.get("repo") or "").strip()
-        if not repo or "/" not in repo:
-            return {"status": "failed", "error": "Missing or invalid repo (expected owner/name).", "result": None}
-
-        path = str(params.get("path") or job_config.get("path") or job_config.get("file_path") or "").strip()
-        if not path:
-            return {"status": "failed", "error": "Missing file path for GitHub write.", "result": None}
-
-        content = str(params.get("query") or job_config.get("query") or "").strip()
-        if not content:
-            return {"status": "failed", "error": "Missing SQL content to write.", "result": None}
-
-        branch = str(params.get("branch") or job_config.get("ref") or "main").strip() or "main"
-        owner, _, repo_name = repo.partition("/")
-        commit_message = f"Add SQL script {path}"
+        args = run_spec.arguments
+        if not args.get("owner") or not args.get("repo") or not args.get("content"):
+            return MCPToolResult.failure(code="incomplete_args", message="Incomplete GitHub write arguments.")
 
         try:
             result = await github_write_file(
-                owner=owner,
-                repo=repo_name,
-                path=path,
-                content=content,
-                commit_message=commit_message,
-                branch=branch,
+                owner=args["owner"],
+                repo=args["repo"],
+                path=args.get("path", ""),
+                content=args["content"],
+                commit_message=args.get("message", f"Add file {args.get('path', '')}"),
+                branch=args.get("branch", "main"),
                 github_token=github_token,
                 environment=execution_request.target_environment,
             )
-            return {"status": "succeeded", "result": result, "error": None}
+            return MCPToolResult.success(data=result)
         except Exception as exc:
-            return {"status": "failed", "error": str(exc), "result": None}
+            return MCPToolResult.failure(code="github_write_error", message=str(exc))
 
     async def _execute_async(self, execution_request: ExecutionRequest) -> dict[str, Any]:
-        resource = execution_request.resource
-        if resource.type == "sql" and (resource.connector or "").lower() == "github":
-            execution = await self._execute_github_write(execution_request)
-        elif execution_request.execution_mode == "direct_tool":
-            execution = await self._execute_direct_tool(execution_request)
+        run_spec = execution_request.run_spec
+
+        if isinstance(run_spec, DirectToolCall):
+            if run_spec.server_name == "github":
+                tool_result = await self._execute_github_write(execution_request)
+            else:
+                tool_result = await self._execute_direct_tool(execution_request)
+
+            # Single conversion point: MCPToolResult → executor output dict
+            execution = {
+                "status": "failed" if tool_result.is_error else "succeeded",
+                "server_names": [run_spec.server_name],
+                "tool_name": run_spec.tool_name,
+                "tool_arguments": run_spec.arguments,
+                "result": tool_result.serialize(),
+                "error": tool_result.error.message if tool_result.error else None,
+            }
         else:
             execution = await self._execute_agent(execution_request)
 

@@ -114,8 +114,7 @@ def _recent_duplicate_exists(db: Session, job_id: str, fire_key: str) -> bool:
     )
     for run in runs:
         submitted = run.submitted_config_json or {}
-        metadata = ((submitted.get("job_config") or {}).get("metadata") or {})
-        if metadata.get("schedule_fire_key") == fire_key:
+        if (submitted.get("params") or {}).get("schedule_fire_key") == fire_key:
             return True
     return False
 
@@ -132,24 +131,13 @@ def _run_payload_for_job(job: Job, fire_key: str) -> RunCreate:
         for key in ("github_token", "repo", "path", "file_path", "ref", "branch"):
             if config.get(key):
                 params[key] = config[key]
+    params["schedule_fire_key"] = fire_key
+    params["created_via"] = "scheduler"
     return RunCreate(
         job_id=job.id,
         action="run",
         target_environment=job.environment or "dev",
         params=params,
-        job_config={
-            "intent": "scheduled_run",
-            "schedule": config.get("schedule"),
-            "metadata": {
-                "created_via": "scheduler",
-                "job_type": job.type,
-                "schedule_fire_key": fire_key,
-            },
-        },
-        mcp_config={
-            "server_names": [job.connector] if job.connector else [],
-            "allow_auto_selection": False,
-        },
     )
 
 

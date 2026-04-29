@@ -48,7 +48,7 @@ _QUERY_TIMEOUT = int(os.environ.get("SQL_QUERY_TIMEOUT", "30"))
 
 
 def _build_sqlalchemy_url() -> str:
-    driver = os.environ.get("SQL_DB_DRIVER", "postgresql+psycopg").strip().lower()
+    driver = (os.environ.get("SQL_DB_DRIVER") or "postgresql+psycopg").strip().lower()
 
     # SQLite — only needs a file path
     if driver == "sqlite":
@@ -99,13 +99,13 @@ def _build_sqlalchemy_url() -> str:
 
 def _make_engine():
     url = _build_sqlalchemy_url()
-    driver = os.environ.get("SQL_DB_DRIVER", "postgresql+psycopg").strip().lower()
+    driver = (os.environ.get("SQL_DB_DRIVER") or "postgresql+psycopg").strip().lower()
     connect_args = {} if driver == "sqlite" else {"connect_timeout": _CONNECT_TIMEOUT}
     return create_engine(url, connect_args=connect_args)
 
 
 def _list_tables_query() -> str:
-    driver = os.environ.get("SQL_DB_DRIVER", "postgresql+psycopg").strip().lower()
+    driver = (os.environ.get("SQL_DB_DRIVER") or "postgresql+psycopg").strip().lower()
     if driver == "sqlite":
         return "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
     # Snowflake and PostgreSQL both support information_schema
@@ -122,10 +122,13 @@ mcp = FastMCP("sql-mcp-server")
 @mcp.tool()
 def list_tables() -> list[str]:
     """Return the names of all user tables in the connected database."""
-    engine = _make_engine()
-    with engine.connect() as conn:
-        result = conn.execute(text(_list_tables_query()))
-        return [row[0] for row in result]
+    try:
+        engine = _make_engine()
+        with engine.connect() as conn:
+            result = conn.execute(text(_list_tables_query()))
+            return [row[0] for row in result]
+    except Exception as exc:
+        raise ValueError(f"Failed to list tables: {exc}") from exc
 
 
 @mcp.tool()
@@ -134,27 +137,40 @@ def execute_query(query: str) -> dict[str, Any]:
 
     Args:
         query: A valid SQL statement.
-    """
-    engine = _make_engine()
-    with engine.begin() as conn:
-        result = conn.execute(text(query))
-        if not result.returns_rows:
-            return {
-                "columns": [],
-                "rows": [],
-                "row_count": result.rowcount if result.rowcount is not None else 0,
-                "truncated": False,
-            }
-        columns = list(result.keys())
-        rows = result.fetchmany(MAX_ROWS)
-        truncated = len(rows) == MAX_ROWS
 
-    return {
-        "columns": columns,
-        "rows": [list(row) for row in rows],
-        "row_count": len(rows),
-        "truncated": truncated,
-    }
+    Returns a dict with keys: columns, rows, row_count, truncated, error.
+    On failure, error contains the message and rows/columns are empty.
+    """
+    try:
+        engine = _make_engine()
+        with engine.begin() as conn:
+            result = conn.execute(text(query))
+            if not result.returns_rows:
+                return {
+                    "columns": [],
+                    "rows": [],
+                    "row_count": result.rowcount if result.rowcount is not None else 0,
+                    "truncated": False,
+                    "error": None,
+                }
+            columns = list(result.keys())
+            rows = result.fetchmany(MAX_ROWS)
+            truncated = len(rows) == MAX_ROWS
+        return {
+            "columns": columns,
+            "rows": [list(row) for row in rows],
+            "row_count": len(rows),
+            "truncated": truncated,
+            "error": None,
+        }
+    except Exception as exc:
+        return {
+            "columns": [],
+            "rows": [],
+            "row_count": 0,
+            "truncated": False,
+            "error": str(exc),
+        }
 
 
 @mcp.tool()

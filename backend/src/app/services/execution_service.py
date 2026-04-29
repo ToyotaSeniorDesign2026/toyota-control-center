@@ -1,29 +1,17 @@
 from __future__ import annotations
 
-"""Normalize orchestration input into a single executor-facing request."""
+"""Normalize orchestration input into a single executor-facing ExecutionRequest."""
 
-import sys
-from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from app.schemas.run import MCPExecutionConfig, MCPJobConfig, RunCreate
+from app.schemas.run import RunCreate
+from control_center.policy.risk_engine import derive_risk_inputs
+from control_center.specs.execution import AgentRun, DirectToolCall, MCPRunSpec
 
 ExecutionBackend = Literal["mcp"]
-ExecutionMode = Literal["direct_tool", "agent"]
-TriggerSource = Literal["api", "ui", "cli", "schedule", "github_pr", "github_actions"]
-
-
-def _workspace_root() -> Path:
-    return Path(__file__).resolve().parents[2]
-
-
-def ensure_control_center_importable() -> None:
-    src_root = _workspace_root() / "src"
-    src_root_str = str(src_root)
-    if src_root.exists() and src_root_str not in sys.path:
-        sys.path.insert(0, src_root_str)
+TriggerSource = Literal["api", "ui", "cli", "schedule", "github_pr", "github_actions", "chat_agent"]
 
 
 class JobExecutionTarget(BaseModel):
@@ -44,149 +32,132 @@ class ExecutionRequest(BaseModel):
     action: str
     target_environment: str
     execution_backend: ExecutionBackend
-    execution_mode: ExecutionMode
     resource: JobExecutionTarget
     params: dict = Field(default_factory=dict)
-    job_config: MCPJobConfig = Field(default_factory=MCPJobConfig)
-    mcp_config: MCPExecutionConfig = Field(default_factory=MCPExecutionConfig)
+    run_spec: DirectToolCall | AgentRun
     job_spec: dict = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @property
+    def execution_mode(self) -> str:
+        return "direct_tool" if isinstance(self.run_spec, DirectToolCall) else "agent"
 
-def _non_empty_string(value: Any) -> str | None:
+
+def _non_empty(value: Any) -> str | None:
     if isinstance(value, str):
-        normalized = value.strip()
-        if normalized:
-            return normalized
+        s = value.strip()
+        return s if s else None
     return None
 
 
-def _build_sql_mcp_prompt(query: str, connection_id: str | None = None) -> str:
-    connection_hint = f" using connection `{connection_id}`" if connection_id else ""
-    return (
-        "Execute the following SQL query exactly as written"
-        f"{connection_hint} against the registered SQL MCP resource. "
-        "Treat this as a one-time SQL job run and return the query results with a brief execution summary.\n\n"
-        f"SQL query:\n```sql\n{query}\n```"
+def build_job_spec(resource, payload: RunCreate, run_spec: MCPRunSpec) -> dict:
+    tool_name = run_spec.tool_name if isinstance(run_spec, DirectToolCall) else None
+    risk_inputs = derive_risk_inputs(
+        data_sensitivity=resource.data_sensitivity or "",
+        connector=resource.connector or "",
+        target_environment=payload.target_environment,
+        tool_name=tool_name,
     )
-
-
-def _derive_risk_inputs(resource, target_environment: str, mcp_config: MCPExecutionConfig | None) -> list[str]:
-    risk_inputs: list[str] = []
-    sensitivity = (resource.data_sensitivity or "").strip().lower()
-    if sensitivity:
-        risk_inputs.append(sensitivity)
-        if sensitivity in {"high", "medium"}:
-            risk_inputs.append("pii")
-
-    connector = (resource.connector or "").strip().lower()
-    if connector in {"fetch", "airflow", "powerbi", "tableau"}:
-        risk_inputs.append("external_egress")
-
-    if target_environment == "semi-prod":
-        risk_inputs.append("semi_prod")
-    elif target_environment == "prod":
-        risk_inputs.append("prod")
-
-    if mcp_config and mcp_config.tool_name:
-        risk_inputs.append(f"tool:{mcp_config.tool_name}")
-    return sorted(set(risk_inputs))
-
-
-def build_job_spec(resource, payload: RunCreate, resolved_mcp_config: MCPExecutionConfig | None = None) -> dict:
-    ensure_control_center_importable()
-    from control_center.core.specs import JobSpec
-
-    job_config = payload.job_config or MCPJobConfig()
-    mcp_config = resolved_mcp_config or payload.mcp_config or MCPExecutionConfig()
-
-    metadata = {
-        "job_id": resource.id,
-        "job_name": resource.name,
-        "job_type": resource.type,
-        "connector": resource.connector,
-        "job_config_data": getattr(resource, "config", {}) or {},
-        "params": payload.params,
-        "job_config": job_config.model_dump(),
-        "mcp_config": mcp_config.model_dump(),
+    return {
+        "intent": payload.action,
+        "environment": payload.target_environment,
+        "risk_score_input": risk_inputs,
+        "tasks": [tool_name] if tool_name else [],
+        "metadata": {
+            "job_id": resource.id,
+            "job_name": resource.name,
+            "job_type": resource.type,
+            "connector": resource.connector,
+            "job_config_data": getattr(resource, "config", {}) or {},
+            "params": payload.params,
+        },
     }
-    metadata.update(job_config.metadata)
-
-    tasks = list(job_config.tasks)
-    if mcp_config.tool_name and mcp_config.tool_name not in tasks:
-        tasks.append(mcp_config.tool_name)
-
-    spec = JobSpec(
-        intent=job_config.intent or payload.action,
-        environment=payload.target_environment,
-        risk_score_input=_derive_risk_inputs(resource, payload.target_environment, mcp_config),
-        schedule=job_config.schedule,
-        tasks=tasks,
-        metadata=metadata,
-    )
-    return spec.model_dump()
 
 
-def resolve_effective_mcp_config(resource, payload: RunCreate) -> MCPExecutionConfig:
-    supplied = payload.mcp_config or MCPExecutionConfig()
+def resolve_run_spec(resource, payload: RunCreate) -> MCPRunSpec:
+    """Derive the concrete MCP execution spec from job type + run payload."""
     resource_config = getattr(resource, "config", {}) or {}
-    resource_type = (getattr(resource, "type", "") or "").strip().lower()
+    resource_type = (_non_empty(getattr(resource, "type", "")) or "").lower()
+    connector = (_non_empty(getattr(resource, "connector", "")) or "").lower()
+    server_name = connector or resource_type
 
-    server_names = list(supplied.server_names)
-    connector = (getattr(resource, "connector", "") or "").strip().lower()
-    if not server_names and connector:
-        server_names = [connector]
-
-    tool_name = supplied.tool_name
-    tool_arguments = dict(supplied.tool_arguments)
-    prompt = supplied.prompt
-
-    if resource_type == "sql":
-        query = _non_empty_string(payload.params.get("query")) or _non_empty_string(resource_config.get("query"))
-        db_driver = (
-            _non_empty_string(payload.params.get("db_driver"))
-            or _non_empty_string(resource_config.get("db_driver"))
-            or ""
-        ).lower()
-        # connection_id is only meaningful for PostgreSQL managed connections
-        _pg_driver = db_driver not in {"sqlite", "snowflake", "snowflake+snowflake-sqlalchemy"}
-        connection_id = (
-            (
-                _non_empty_string(payload.params.get("connection_id"))
-                or _non_empty_string(resource_config.get("connection_id"))
-            )
-            if _pg_driver
-            else None
+    # --- GitHub write (SQL artifact → GitHub) ---
+    if resource_type == "sql" and connector == "github":
+        # Handled as a special case in the executor; encode as a direct tool call
+        # so the executor knows to skip the LLM path.
+        owner_repo = _non_empty(payload.params.get("repo") or resource_config.get("repo")) or ""
+        owner, _, repo_name = owner_repo.partition("/")
+        path = _non_empty(payload.params.get("path") or resource_config.get("path") or resource_config.get("file_path")) or ""
+        content = _non_empty(payload.params.get("query") or resource_config.get("query")) or ""
+        branch = _non_empty(payload.params.get("branch") or resource_config.get("ref")) or "main"
+        return DirectToolCall(
+            server_name="github",
+            tool_name="create_or_update_file",
+            arguments={
+                "owner": owner,
+                "repo": repo_name,
+                "path": path,
+                "message": f"Add SQL script {path}",
+                "content": content,
+                "branch": branch,
+            },
         )
 
-        if tool_name:
-            if query and "query" not in tool_arguments:
-                tool_arguments["query"] = query
-            if connection_id and "connection_id" not in tool_arguments:
-                tool_arguments["connection_id"] = connection_id
-        elif not prompt and query:
-            prompt = _build_sql_mcp_prompt(query, connection_id)
+    # --- SQL direct execution ---
+    if resource_type == "sql":
+        query = _non_empty(payload.params.get("query")) or _non_empty(resource_config.get("query"))
+        if query:
+            db_driver = (
+                _non_empty(payload.params.get("db_driver"))
+                or _non_empty(resource_config.get("db_driver"))
+                or ""
+            ).lower()
+            is_pg = db_driver not in {"sqlite", "snowflake", "snowflake+snowflake-sqlalchemy"}
+            connection_id = (
+                _non_empty(payload.params.get("connection_id"))
+                or _non_empty(resource_config.get("connection_id"))
+            ) if is_pg else None
+            args: dict[str, Any] = {"query": query}
+            if connection_id:
+                args["connection_id"] = connection_id
+            return DirectToolCall(
+                server_name=server_name or "sql-mcp",
+                tool_name="execute_sql",
+                arguments=args,
+            )
 
-    if (
-        not tool_name
-        and not prompt
-        and (resource_type == "research" or connector == "arxiv-research")
-    ):
-        tool_name = "search_papers"
-        topic = payload.params.get("topic") or resource_config.get("topic")
-        max_results = payload.params.get("max_results") or resource_config.get("max_results")
-        if topic and "topic" not in tool_arguments:
-            tool_arguments["topic"] = topic
-        if max_results is not None and "max_results" not in tool_arguments:
-            tool_arguments["max_results"] = max_results
+    # --- Research direct execution ---
+    if resource_type == "research" or connector == "arxiv-research":
+        topic = _non_empty(payload.params.get("topic")) or _non_empty(resource_config.get("topic"))
+        if topic:
+            args = {"topic": topic}
+            max_results = payload.params.get("max_results") or resource_config.get("max_results")
+            if max_results is not None:
+                args["max_results"] = max_results
+            return DirectToolCall(
+                server_name=server_name or "arxiv-research",
+                tool_name="search_papers",
+                arguments=args,
+            )
 
-    return MCPExecutionConfig(
+    # --- Agent (prompt-driven) ---
+    prompt = (
+        _non_empty(payload.prompt)
+        or _non_empty(payload.params.get("prompt"))
+        or _non_empty(resource_config.get("prompt"))
+    )
+    if not prompt:
+        raise RuntimeError(
+            f"Job type '{resource_type}' requires a prompt. "
+            "Pass prompt in the run request or set a default in the job config."
+        )
+
+    server_names = [connector] if connector else []
+    return AgentRun(
         server_names=server_names,
-        tool_name=tool_name,
-        tool_arguments=tool_arguments,
         prompt=prompt,
-        connector_selection_prompt=supplied.connector_selection_prompt,
-        allow_auto_selection=supplied.allow_auto_selection,
+        allow_auto_selection=not server_names,
+        selection_prompt=prompt if not server_names else None,
     )
 
 
@@ -197,24 +168,20 @@ def build_execution_request(
     payload: RunCreate,
     trigger_source: TriggerSource = "api",
 ) -> ExecutionRequest:
-    resolved_mcp_config = resolve_effective_mcp_config(resource, payload)
-    if not resolved_mcp_config.server_names:
-        raise RuntimeError(
-            f"Job '{resource.id}' is not associated with an approved MCP server. "
-            "Set job.connector or mcp_config.server_names."
-        )
+    run_spec = resolve_run_spec(resource, payload)
 
-    backend: ExecutionBackend = "mcp"
-    mode: ExecutionMode = "direct_tool" if resolved_mcp_config.tool_name else "agent"
-    job_spec = build_job_spec(resource, payload, resolved_mcp_config)
+    connector = (_non_empty(getattr(resource, "connector", "")) or "").lower()
+    if isinstance(run_spec, AgentRun) and not run_spec.server_names and not connector:
+        raise RuntimeError(
+            f"Job '{resource.id}' has no connector and no server_names could be resolved."
+        )
 
     return ExecutionRequest(
         run_id=run_id,
         trigger_source=trigger_source,
         action=payload.action,
         target_environment=payload.target_environment,
-        execution_backend=backend,
-        execution_mode=mode,
+        execution_backend="mcp",
         resource=JobExecutionTarget(
             job_id=resource.id,
             name=resource.name,
@@ -227,9 +194,8 @@ def build_execution_request(
             tags=resource.tags or [],
         ),
         params=payload.params,
-        job_config=payload.job_config or MCPJobConfig(),
-        mcp_config=resolved_mcp_config,
-        job_spec=job_spec,
+        run_spec=run_spec,
+        job_spec=build_job_spec(resource, payload, run_spec),
         metadata={
             "job_owner_id": resource.owner_id,
             "job_owner_domain": resource.owner_domain,

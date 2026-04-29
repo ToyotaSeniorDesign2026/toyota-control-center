@@ -5,28 +5,11 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class MCPJobConfig(BaseModel):
-    intent: str | None = None
-    schedule: str | None = None
-    tasks: list[str] = Field(default_factory=list)
-    metadata: dict = Field(default_factory=dict)
-
-
-class MCPExecutionConfig(BaseModel):
-    server_names: list[str] = Field(default_factory=list)
-    tool_name: str | None = None
-    tool_arguments: dict = Field(default_factory=dict)
-    prompt: str | None = None
-    connector_selection_prompt: str | None = None
-    allow_auto_selection: bool = False
-
-
 class RunCreateRequest(BaseModel):
     action: str = Field(default="run")
     target_environment: str = Field(default="dev")
     params: dict = Field(default_factory=dict)
-    job_config: MCPJobConfig | None = None
-    mcp_config: MCPExecutionConfig | None = None
+    prompt: str | None = None
 
 
 class RunCreate(BaseModel):
@@ -34,8 +17,7 @@ class RunCreate(BaseModel):
     action: str = Field(default="run")
     target_environment: str = Field(default="dev")
     params: dict = Field(default_factory=dict)
-    job_config: MCPJobConfig | None = None
-    mcp_config: MCPExecutionConfig | None = None
+    prompt: str | None = None
 
 
 class RunOut(BaseModel):

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-"""Prompt-native MCP execution for chatbot requests that do not need a saved resource."""
+"""Prompt-native MCP execution for chatbot requests that do not need a saved job."""
 
 from dataclasses import dataclass
 from typing import Any
 
-from app.services.execution_service import ensure_control_center_importable
+from control_center.agent import build_agent_from_registry
+from control_center.mcp import call_tool_once
+from control_center.registry import RegistryManager
 
 
 @dataclass(frozen=True)
@@ -23,9 +25,6 @@ async def run_prompt_native_mcp(
     server_names: list[str] | None = None,
     server_env_overrides: dict[str, dict[str, str]] | None = None,
 ) -> PromptNativeMCPResult:
-    ensure_control_center_importable()
-    from control_center.mcp import build_agent_from_registry
-
     agent = await build_agent_from_registry(
         environment=environment,
         server_names=server_names,
@@ -66,10 +65,6 @@ async def github_write_file(
     environment: str = "dev",
 ) -> dict[str, Any]:
     """Write a file to GitHub directly via the MCP tool, bypassing the LLM."""
-    ensure_control_center_importable()
-    from control_center.mcp.client import LLMClient
-    from control_center.core.registry import RegistryManager
-
     manager = RegistryManager(environment=environment)
     server_configs = manager.get_server_configs(["github"])
     server_config = {
@@ -89,10 +84,10 @@ async def github_write_file(
         "branch": branch or "main",
     }
 
-    client = LLMClient()
-    try:
-        await client.connect_to_server("github", server_config)
-        result = await client.call_tool("github", "create_or_update_file", arguments)
-        return {"success": True, "result": str(result)}
-    finally:
-        await client.cleanup()
+    result = await call_tool_once(
+        server_name="github",
+        tool_name="create_or_update_file",
+        arguments=arguments,
+        server_config=server_config,
+    )
+    return {"success": True, "result": str(result)}

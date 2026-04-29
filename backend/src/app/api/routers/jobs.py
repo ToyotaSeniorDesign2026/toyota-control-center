@@ -86,8 +86,7 @@ def create_job_run(
         action=payload.action,
         target_environment=payload.target_environment,
         params=payload.params,
-        job_config=payload.job_config,
-        mcp_config=payload.mcp_config,
+        prompt=payload.prompt,
     )
     return create_run_and_maybe_execute(db, user, run_payload)
 

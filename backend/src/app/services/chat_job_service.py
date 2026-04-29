@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import re
 from typing import Any
 
@@ -205,6 +206,26 @@ def _format_rows_table(columns: list[Any], rows: list[Any], limit: int = 10) -> 
     return "\n".join(table_lines)
 
 
+def _unwrap_mcp_result(result: Any) -> dict | None:
+    """Parse a serialized MCPToolResult (JSON string of ContentBlock list) and return the inner SQL payload."""
+    if not result:
+        return None
+    try:
+        parsed = json.loads(result) if isinstance(result, str) else result
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if isinstance(parsed, list):
+        for block in parsed:
+            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+                try:
+                    return json.loads(block["text"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+    if isinstance(parsed, dict):
+        return parsed
+    return None
+
+
 def _extract_sql_result_preview(db: Session, run_id: str) -> str | None:
     if not hasattr(db, "query"):
         return None
@@ -233,13 +254,17 @@ def _extract_sql_result_preview(db: Session, run_id: str) -> str | None:
             return _truncate(final_text, 1200)
 
         result = execution.get("result")
-        if isinstance(result, dict):
-            structured = result.get("structured_content")
-            if structured is not None:
-                return _truncate(str(structured), 1200)
-            content = result.get("content")
-            if content:
-                return _truncate(str(content), 1200)
+        # result is a JSON string of MCP ContentBlock list: [{"type":"text","text":"{...}"}]
+        sql_payload = _unwrap_mcp_result(result)
+        if isinstance(sql_payload, dict) and "columns" in sql_payload and "rows" in sql_payload:
+            columns = sql_payload.get("columns") or []
+            rows = sql_payload.get("rows") or []
+            row_count = sql_payload.get("row_count", len(rows))
+            if sql_payload.get("error"):
+                return f"Execution error: {_truncate(str(sql_payload['error']), 500)}"
+            table = _format_rows_table(columns, rows)
+            if table:
+                return _truncate(f"Returned {row_count} row(s):\n{table}", 1200)
 
     meta = metadata.get("metadata")
     if isinstance(meta, dict):
@@ -356,7 +381,7 @@ def _build_sql_resource_config(merged: dict[str, Any], config: dict[str, Any]) -
     if schedule and "schedule" not in next_config:
         next_config["schedule"] = schedule
 
-    for field in ("database", "username", "password", "host", "port"):
+    for field in ("db_driver", "database", "username", "password", "host", "port"):
         value = _non_empty_string(merged.get(field))
         if value and field not in next_config:
             next_config[field] = value

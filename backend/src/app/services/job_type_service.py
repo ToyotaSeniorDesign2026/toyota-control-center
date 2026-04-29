@@ -1,286 +1,117 @@
 from __future__ import annotations
 
-"""Job-type registry and contract validation for type-safe job configs/capabilities."""
+"""Job-type discovery and validation derived from the connector registry.
+
+Known job types (sql, repo_connection, mcp) are defined as full JobTypeContract
+instances in control_center.specs.known_contracts. Registry entries that map to
+a known type return that contract directly. Unknown types get an auto-generated
+contract with minimal metadata.
+"""
 
 from fastapi import HTTPException, status
 
+from control_center.registry import RegistryManager
+from control_center.specs import KNOWN_CONTRACTS
+from control_center.specs.job_type import (
+    CapabilityRequirement,
+    GovernancePolicy,
+    InputSchema,
+    JobTypeContract,
+    RunFeatures,
+)
 
-_JOB_TYPE_REGISTRY = [
-    {
-        "type": "sql",
-        "kind": "runtime",
-        "required_config_schema": {
-            "required": [],
-            "optional": [
-                "query",
-                "schedule",
-                "timezone",
-                "connection_id",
-                "db_driver",
-                "host",
-                "port",
-                "database",
-                "warehouse",
-                "username",
-                "password",
-                "repo",
-                "path",
-                "ref",
-                "github_token",
-            ],
-        },
-        "supported_job_actions": ["activate", "pause", "archive"],
-        "run_capabilities": {
-            "supports_retry": True,
-            "supports_cancel": True,
-            "supports_schedule": True,
-            "supports_heartbeat": False,
-        },
-        "approval_defaults": {"required_above_risk_score": 60, "always_required_environments": ["prod"]},
-    },
-    {
-        "type": "mcp",
-        "kind": "runtime",
-        "required_config_schema": {"required": [], "optional": ["prompt", "description", "schedule", "timezone", "max_results", "connection_id"]},
-        "supported_job_actions": ["activate", "pause", "archive"],
-        "run_capabilities": {
-            "supports_retry": True,
-            "supports_cancel": True,
-            "supports_schedule": True,
-            "supports_heartbeat": False,
-        },
-        "approval_defaults": {"required_above_risk_score": 60, "always_required_environments": ["prod"]},
-    },
-    {
-        "type": "excel",
-        "kind": "runtime",
-        "required_config_schema": {"required": [], "optional": ["brief", "schedule", "timezone", "connection_id"]},
-        "supported_job_actions": ["activate", "pause", "archive"],
-        "run_capabilities": {
-            "supports_retry": True,
-            "supports_cancel": True,
-            "supports_schedule": True,
-            "supports_heartbeat": False,
-        },
-        "approval_defaults": {"required_above_risk_score": 60, "always_required_environments": ["prod"]},
-    },
-    {
-        "type": "powerpoint",
-        "kind": "runtime",
-        "required_config_schema": {"required": [], "optional": ["brief", "schedule", "timezone", "connection_id"]},
-        "supported_job_actions": ["activate", "pause", "archive"],
-        "run_capabilities": {
-            "supports_retry": True,
-            "supports_cancel": True,
-            "supports_schedule": True,
-            "supports_heartbeat": False,
-        },
-        "approval_defaults": {"required_above_risk_score": 60, "always_required_environments": ["prod"]},
-    },
-    {
-        "type": "research",
-        "kind": "runtime",
-        "required_config_schema": {"required": ["topic"], "optional": ["max_results", "schedule", "timezone"]},
-        "supported_job_actions": ["activate", "pause", "archive"],
-        "run_capabilities": {
-            "supports_retry": True,
-            "supports_cancel": True,
-            "supports_schedule": True,
-            "supports_heartbeat": True,
-        },
-        "approval_defaults": {"required_above_risk_score": 60, "always_required_environments": ["prod"]},
-    },
-    {
-        "type": "agent",
-        "kind": "runtime",
-        "required_config_schema": {"required": ["entrypoint"], "optional": ["schedule", "timezone", "timeout_seconds"]},
-        "supported_job_actions": ["activate", "pause", "archive"],
-        "run_capabilities": {
-            "supports_retry": True,
-            "supports_cancel": True,
-            "supports_schedule": True,
-            "supports_heartbeat": True,
-        },
-        "approval_defaults": {"required_above_risk_score": 60, "always_required_environments": ["prod"]},
-    },
-    {
-        "type": "airflow_dag",
-        "kind": "runtime",
-        "required_config_schema": {"required": ["dag_id", "api_base_url"], "optional": ["schedule", "timezone"]},
-        "supported_job_actions": ["activate", "pause", "archive"],
-        "run_capabilities": {
-            "supports_retry": True,
-            "supports_cancel": True,
-            "supports_schedule": True,
-            "supports_heartbeat": True,
-        },
-        "approval_defaults": {"required_above_risk_score": 60, "always_required_environments": ["prod"]},
-    },
-    {
-        "type": "dbt_job",
-        "kind": "runtime",
-        "required_config_schema": {"required": ["job_id", "account_id"], "optional": ["schedule", "timezone"]},
-        "supported_job_actions": ["activate", "pause", "archive"],
-        "run_capabilities": {
-            "supports_retry": True,
-            "supports_cancel": True,
-            "supports_schedule": True,
-            "supports_heartbeat": True,
-        },
-        "approval_defaults": {"required_above_risk_score": 60, "always_required_environments": ["prod"]},
-    },
-    {
-        "type": "repo_connection",
-        "kind": "runtime",
-        "required_config_schema": {
-            "required": ["repo", "provider"],
-            "optional": [
-                "ref",
-                "path",
-                "default_branch",
-                "installation_owner",
-                "server_names",
-                "primary_server",
-                "companion_servers",
-                "connection_mode",
-                "description",
-            ],
-        },
-        "supported_job_actions": ["activate", "pause", "archive"],
-        "run_capabilities": {
-            "supports_retry": False,
-            "supports_cancel": False,
-            "supports_schedule": False,
-            "supports_heartbeat": False,
-        },
-        "approval_defaults": {"required_above_risk_score": 50, "always_required_environments": ["prod"]},
-    },
-    {
-        "type": "pipeline",
-        "kind": "runtime",
-        "required_config_schema": {"required": [], "optional": ["schedule", "timezone", "pipeline_id"]},
-        "supported_job_actions": ["activate", "pause", "archive"],
-        "run_capabilities": {
-            "supports_retry": True,
-            "supports_cancel": True,
-            "supports_schedule": True,
-            "supports_heartbeat": True,
-        },
-        "approval_defaults": {"required_above_risk_score": 60, "always_required_environments": ["prod"]},
-    },
-    {
-        "type": "bi_task",
-        "kind": "runtime",
-        "required_config_schema": {"required": [], "optional": ["schedule", "timezone", "workspace_id"]},
-        "supported_job_actions": ["activate", "pause", "archive"],
-        "run_capabilities": {
-            "supports_retry": True,
-            "supports_cancel": True,
-            "supports_schedule": True,
-            "supports_heartbeat": False,
-        },
-        "approval_defaults": {"required_above_risk_score": 60, "always_required_environments": ["prod"]},
-    },
-    {
-        "type": "powerbi_report",
-        "kind": "artifact",
-        "required_config_schema": {"required": ["workspace_id", "dataset_id"], "optional": ["version"]},
-        "supported_job_actions": ["deploy", "publish", "archive"],
-        "run_capabilities": {
-            "supports_retry": True,
-            "supports_cancel": False,
-            "supports_schedule": False,
-            "supports_heartbeat": False,
-        },
-        "approval_defaults": {"required_above_risk_score": 70, "always_required_environments": ["prod"]},
-    },
-    {
-        "type": "excel_task",
-        "kind": "artifact",
-        "required_config_schema": {"required": ["drive_id", "workbook_item_id"], "optional": ["version"]},
-        "supported_job_actions": ["deploy", "publish", "archive"],
-        "run_capabilities": {
-            "supports_retry": True,
-            "supports_cancel": False,
-            "supports_schedule": False,
-            "supports_heartbeat": False,
-        },
-        "approval_defaults": {"required_above_risk_score": 70, "always_required_environments": ["prod"]},
-    },
-    {
-        "type": "powerpoint_task",
-        "kind": "artifact",
-        "required_config_schema": {"required": ["drive_id", "presentation_item_id"], "optional": ["version"]},
-        "supported_job_actions": ["deploy", "publish", "archive"],
-        "run_capabilities": {
-            "supports_retry": True,
-            "supports_cancel": False,
-            "supports_schedule": False,
-            "supports_heartbeat": False,
-        },
-        "approval_defaults": {"required_above_risk_score": 70, "always_required_environments": ["prod"]},
-    },
-    {
-        "type": "report",
-        "kind": "artifact",
-        "required_config_schema": {"required": [], "optional": ["version", "workspace_id", "dataset_id"]},
-        "supported_job_actions": ["deploy", "publish", "archive"],
-        "run_capabilities": {
-            "supports_retry": True,
-            "supports_cancel": False,
-            "supports_schedule": False,
-            "supports_heartbeat": False,
-        },
-        "approval_defaults": {"required_above_risk_score": 70, "always_required_environments": ["prod"]},
-    },
-]
+_VALID_KINDS = {"runtime", "artifact"}
 
 
-def list_job_type_contracts():
-    return _JOB_TYPE_REGISTRY
+def _auto_contract(
+    job_type: str,
+    *,
+    display_name: str | None = None,
+    description: str | None = None,
+    required: list[str] | None = None,
+    optional: list[str] | None = None,
+    connector_types: list[str] | None = None,
+) -> JobTypeContract:
+    """Build a minimal contract for registry entries without a known definition."""
+    kind_actions = ["activate", "pause", "archive"]
+    return JobTypeContract(
+        type=job_type,
+        display_name=display_name or job_type.replace("_", " ").title(),
+        description=description,
+        kind="runtime",
+        supported_actions=kind_actions,
+        executor="mcp",
+        requires=CapabilityRequirement(connector_types=connector_types or []),
+        features=RunFeatures(),
+        policy=GovernancePolicy(),
+        source="system",
+        config=InputSchema(
+            required=required or [],
+            optional=optional or [],
+        ),
+    )
 
 
-def get_job_type_contract(job_type: str) -> dict | None:
-    job_type_l = job_type.lower().strip()
-    for contract in _JOB_TYPE_REGISTRY:
-        if contract["type"].lower() == job_type_l:
+def list_job_type_contracts(environment: str | None = None) -> list[JobTypeContract]:
+    """Return available job type contracts derived from the connector registry."""
+    manager = RegistryManager(environment=environment)
+    seen: dict[str, JobTypeContract] = {}
+
+    for server_name, server in manager.get_available_servers().items():
+        if not server.job_type:
+            continue
+        jt = server.job_type.lower()
+        if jt in seen:
+            continue
+
+        if jt in KNOWN_CONTRACTS:
+            seen[jt] = KNOWN_CONTRACTS[jt]
+        else:
+            seen[jt] = _auto_contract(
+                jt,
+                display_name=server.display_name,
+                description=server.description,
+                required=list(server.required_fields),
+                optional=list(server.optional_fields),
+                connector_types=[server_name],
+            )
+
+    if "mcp" not in seen:
+        seen["mcp"] = KNOWN_CONTRACTS["mcp"]
+
+    return list(seen.values())
+
+
+def get_job_type_contract(job_type: str, environment: str | None = None) -> JobTypeContract | None:
+    jt = job_type.strip().lower()
+    for contract in list_job_type_contracts(environment=environment):
+        if contract.type == jt:
             return contract
     return None
 
 
-def validate_job_contract(kind: str, job_type: str, config: dict):
+def validate_job_contract(kind: str, job_type: str, config: dict) -> JobTypeContract:
+    if kind not in _VALID_KINDS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid kind '{kind}'. Must be one of: {sorted(_VALID_KINDS)}",
+        )
+
     contract = get_job_type_contract(job_type)
-    if not contract:
+    if contract and contract.kind != kind:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Unsupported job type '{job_type}'",
+            detail=f"Type '{job_type}' requires kind '{contract.kind}'",
         )
 
-    if contract["kind"] != kind:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Type '{job_type}' requires kind '{contract['kind']}'",
-        )
+    if contract:
+        required = set(contract.config.required)
+        cfg = config or {}
+        missing = sorted(k for k in required if k not in cfg or cfg.get(k) in {None, ""})
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Missing required config fields for '{job_type}': {', '.join(missing)}",
+            )
 
-    schema = contract["required_config_schema"]
-    required = set(schema.get("required", []))
-    optional = set(schema.get("optional", []))
-    allowed = required.union(optional)
-    cfg = config or {}
-
-    missing = sorted(k for k in required if k not in cfg or cfg.get(k) in {None, ""})
-    if missing:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Missing required config keys for '{job_type}': {', '.join(missing)}",
-        )
-
-    internal_keys = {"last_heartbeat_at", "schedule_updated_at", "schedule_last_fire_key", "schedule_last_run_at"}
-    extra = sorted(k for k in cfg.keys() if k not in allowed and k not in internal_keys)
-    if extra:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Unsupported config keys for '{job_type}': {', '.join(extra)}",
-        )
-
-    return contract
+    return contract or _auto_contract(job_type, connector_types=[job_type])

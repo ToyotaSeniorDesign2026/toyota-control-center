@@ -25,7 +25,7 @@ class MCPJobServiceTests(unittest.TestCase):
             owner_domain="collections",
         )
         payload = RunCreate(
-            resource_id="res_123",
+            job_id="res_123",
             action="run",
             target_environment="prod",
             params={"topic": "rag evaluation"},
@@ -48,7 +48,7 @@ class MCPJobServiceTests(unittest.TestCase):
         self.assertIn("pii", spec["risk_score_input"])
         self.assertIn("prod", spec["risk_score_input"])
         self.assertEqual(spec["tasks"], ["search_papers"])
-        self.assertEqual(spec["metadata"]["resource_id"], "res_123")
+        self.assertEqual(spec["metadata"]["job_id"], "res_123")
         self.assertEqual(spec["metadata"]["params"]["topic"], "rag evaluation")
         self.assertEqual(spec["metadata"]["mcp_config"]["tool_name"], "search_papers")
         self.assertEqual(spec["metadata"]["team"], "ai-governance")
@@ -68,7 +68,7 @@ class MCPJobServiceTests(unittest.TestCase):
             owner_domain="collections",
         )
         payload = RunCreate(
-            resource_id="res_123",
+            job_id="res_123",
             target_environment="dev",
             params={},
         )
@@ -83,7 +83,7 @@ class MCPJobServiceTests(unittest.TestCase):
         self.assertEqual(execution_request.execution_backend, "mcp")
         self.assertEqual(execution_request.execution_mode, "direct_tool")
         self.assertEqual(execution_request.mcp_config.tool_name, "search_papers")
-        self.assertEqual(execution_request.job_spec["metadata"]["resource_id"], "res_123")
+        self.assertEqual(execution_request.job_spec["metadata"]["job_id"], "res_123")
 
     def test_every_execution_request_routes_through_mcp(self) -> None:
         execution_request = build_execution_request(
@@ -101,7 +101,7 @@ class MCPJobServiceTests(unittest.TestCase):
                 owner_id="u_analyst",
                 owner_domain="collections",
             ),
-            payload=RunCreate(resource_id="res_123", target_environment="dev"),
+            payload=RunCreate(job_id="res_123", target_environment="dev"),
             trigger_source="api",
         )
 
@@ -124,7 +124,7 @@ class MCPJobServiceTests(unittest.TestCase):
                 owner_domain="collections",
             ),
             payload=RunCreate(
-                resource_id="res_sql_mcp",
+                job_id="res_sql_mcp",
                 target_environment="dev",
                 params={"prompt": "Show me the latest open orders."},
                 mcp_config=MCPExecutionConfig(
@@ -160,7 +160,7 @@ class MCPJobServiceTests(unittest.TestCase):
                 owner_domain="collections",
             ),
             payload=RunCreate(
-                resource_id="res_sql_registered",
+                job_id="res_sql_registered",
                 target_environment="dev",
                 params={},
             ),
@@ -187,7 +187,7 @@ class MCPJobServiceTests(unittest.TestCase):
                 data_sensitivity="low",
             ),
             RunCreate(
-                resource_id="res_sql_override",
+                job_id="res_sql_override",
                 target_environment="dev",
                 params={"query": "select * from sales where sale_date = current_date"},
             ),
@@ -208,7 +208,7 @@ class MCPJobServiceTests(unittest.TestCase):
                 data_sensitivity="low",
             ),
             RunCreate(
-                resource_id="res_sql_tool",
+                job_id="res_sql_tool",
                 target_environment="dev",
                 params={"query": "select 1"},
                 mcp_config=MCPExecutionConfig(
@@ -239,7 +239,7 @@ class MCPJobServiceTests(unittest.TestCase):
                 owner_id="u_analyst",
                 owner_domain="collections",
             ),
-            payload=RunCreate(resource_id="res_123", target_environment="dev"),
+            payload=RunCreate(job_id="res_123", target_environment="dev"),
             trigger_source="api",
         )
 
@@ -268,7 +268,7 @@ class MCPJobServiceTests(unittest.TestCase):
             data_sensitivity="low",
         )
         payload = RunCreate(
-            resource_id="res_123",
+            job_id="res_123",
             target_environment="dev",
             params={},
             mcp_config=None,

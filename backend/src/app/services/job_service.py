@@ -232,7 +232,7 @@ def heartbeat_job(db: Session, user, job_id: str):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
     _require_kind(job, "runtime")
     contract = get_job_type_contract(job.type)
-    if contract and not contract["run_capabilities"].get("supports_heartbeat", False):
+    if contract and not contract.features.supports_heartbeat:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Type '{job.type}' does not support heartbeat",
@@ -272,7 +272,7 @@ def set_job_schedule(db: Session, user, job_id: str, schedule: str):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
     _require_kind(job, "runtime")
     contract = get_job_type_contract(job.type)
-    if contract and not contract["run_capabilities"].get("supports_schedule", False):
+    if contract and not contract.features.supports_schedule:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Type '{job.type}' does not support schedules",

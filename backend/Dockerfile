@@ -12,13 +12,14 @@ RUN apt-get update && apt-get install -y \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements files
+# Copy pyproject.toml and src so the editable install can find the package root
 COPY pyproject.toml ./
+COPY src/ ./src/
 
-# Install dependencies
+# Install dependencies (including the package itself in editable mode)
 RUN pip install --no-cache-dir -e ".[snowflake]"
 
-# Copy application code
+# Copy remaining files (mcp_servers, alembic, etc.)
 COPY . .
 
 # Expose port

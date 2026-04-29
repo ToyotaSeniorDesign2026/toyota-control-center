@@ -1,15 +1,17 @@
 from app.models.approval import Approval
 from app.models.audit_event import AuditEvent, RunLog, WorkflowEvent
 from app.models.base import Base
+from app.models.connector import Connector
+from app.models.job import Job
 from app.models.policy import PolicyCheckResult, PolicyEvaluation
-from app.models.resource import Resource
 from app.models.run import Run, RunExecutionStatus
 from app.models.user import User
 
 __all__ = [
     "Base",
     "User",
-    "Resource",
+    "Job",
+    "Connector",
     "Run",
     "RunExecutionStatus",
     "RunLog",

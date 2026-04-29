@@ -37,11 +37,8 @@ def openai_chat(
 
 @router.get("/mcp/servers", response_model=MCPServerListResponse)
 def list_mcp_servers(user=Depends(require_any_user)):
-    from app.services.execution_service import ensure_control_center_importable
-
-    ensure_control_center_importable()
     try:
-        from control_center.core.registry import RegistryManager
+        from control_center.registry import RegistryManager
     except ImportError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to load MCP registry: {exc}") from exc
 

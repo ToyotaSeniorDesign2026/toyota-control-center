@@ -79,7 +79,7 @@ class ChatRouterHelperTests(unittest.TestCase):
     def test_yes_after_resource_creation_counts_as_execution(self) -> None:
         request = ChatRequest(
             message="yes",
-            current_draft_data={"job_type": "SQL", "job_name": "get-runs", "resource_id": "res_get_runs"},
+            current_draft_data={"job_type": "SQL", "job_name": "get-runs", "job_id": "res_get_runs"},
         )
 
         self.assertTrue(_is_explicit_sql_run_request(request))
@@ -249,7 +249,7 @@ class ChatRouterHelperTests(unittest.TestCase):
 
         registration = SimpleNamespace(
             message="Created SQL job `Create Table` and saved it as a Control Center resource.",
-            resource_id="res_create_table",
+            job_id="res_create_table",
             resource_name="Create Table",
             resource_created=True,
         )
@@ -261,7 +261,7 @@ class ChatRouterHelperTests(unittest.TestCase):
 
         tcp_ping_mock.assert_called_once_with("localhost", "5432")
         register_mock.assert_called_once()
-        self.assertEqual(response.resource_id, "res_create_table")
+        self.assertEqual(response.job_id, "res_create_table")
         self.assertEqual(response.extracted_fields["job_name"], "Create Table")
         self.assertEqual(response.extracted_fields["owner"], "htameez")
         self.assertEqual(
@@ -352,14 +352,14 @@ class ChatRouterHelperTests(unittest.TestCase):
 
     def test_last_run_question_reads_recent_run_from_database(self) -> None:
         db = SimpleNamespace(
-            get=lambda model, resource_id: SimpleNamespace(name="customer-churn-analysis"),
+            get=lambda model, job_id: SimpleNamespace(name="customer-churn-analysis"),
         )
 
         with patch("app.api.routers.chat.get_chat_actor", return_value=SimpleNamespace(id="u_analyst")), patch(
             "app.api.routers.chat.list_runs",
             return_value=[
                 {
-                    "resource_id": "res_1",
+                    "job_id": "res_1",
                     "status": "succeeded",
                     "target_environment": "dev",
                     "updated_at": "2026-04-23T10:15:00Z",
@@ -374,20 +374,20 @@ class ChatRouterHelperTests(unittest.TestCase):
 
     def test_recent_runs_question_returns_multiple_runs(self) -> None:
         db = SimpleNamespace(
-            get=lambda model, resource_id: SimpleNamespace(name=f"job-for-{resource_id}"),
+            get=lambda model, job_id: SimpleNamespace(name=f"job-for-{job_id}"),
         )
 
         with patch("app.api.routers.chat.get_chat_actor", return_value=SimpleNamespace(id="u_analyst")), patch(
             "app.api.routers.chat.list_runs",
             return_value=[
                 {
-                    "resource_id": "res_2",
+                    "job_id": "res_2",
                     "status": "running",
                     "target_environment": "prod",
                     "updated_at": "2026-04-23T12:00:00Z",
                 },
                 {
-                    "resource_id": "res_1",
+                    "job_id": "res_1",
                     "status": "succeeded",
                     "target_environment": "dev",
                     "updated_at": "2026-04-22T09:00:00Z",
@@ -401,7 +401,7 @@ class ChatRouterHelperTests(unittest.TestCase):
         self.assertIn("job-for-res_1", response)
 
     def test_last_run_question_handles_empty_history(self) -> None:
-        db = SimpleNamespace(get=lambda model, resource_id: None)
+        db = SimpleNamespace(get=lambda model, job_id: None)
 
         with patch("app.api.routers.chat.get_chat_actor", return_value=SimpleNamespace(id="u_analyst")), patch(
             "app.api.routers.chat.list_runs",
