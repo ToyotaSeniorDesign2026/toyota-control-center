@@ -60,7 +60,8 @@ import {
   getPromotionTypeColor,
 } from "./promotionsData";
 import {
-  pendingRequiredActionsCount,
+  getVisibleRequiredActions,
+  markRequiredActionResolved,
   requiredActionItems,
   requiredActionStateBadge,
   requiredActionUrgencyBadge,
@@ -838,6 +839,9 @@ interface WorkspaceState {
   secondaryPosition: "left" | "right";
 }
 
+const ICON_RAIL_WIDTH = 64;
+const RESIZE_HANDLE_WIDTH = 4;
+
 export default function UserHome() {
   const navigate = useNavigate();
   const {
@@ -850,7 +854,6 @@ export default function UserHome() {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [activePanelId, setActivePanelId] = useState<string | null>(null);
   const [selectedResourceId, setSelectedResourceId] = useState<string | null>(null);
-  const [jobDetailTab, setJobDetailTab] = useState<"overview" | "runs" | "settings">("overview");
   
   // Panel resize state
   const [jobsPanelWidth, setJobsPanelWidth] = useState(280);
@@ -892,10 +895,15 @@ export default function UserHome() {
   
   const [isAIPanelOpen, setIsAIPanelOpen] = useState(false);
   const [isChatPanelOpen, setIsChatPanelOpen] = useState(true);
+  const [dismissedActionIds, setDismissedActionIds] = useState<string[]>([]);
+  const [requiredActionSuccessMessage, setRequiredActionSuccessMessage] = useState<string | null>(null);
   const [templateSearch, setTemplateSearch] = useState("");
   const [jobSearch, setJobSearch] = useState("");
   const [jobSort, setJobSort] = useState<"name" | "status" | "type" | "recently-updated">("name");
   const [jobFilter, setJobFilter] = useState<string>("all");
+  const [jobDetailTabById, setJobDetailTabById] = useState<Record<string, "overview" | "runs" | "preview" | "settings">>({});
+  const [isDraftsExpanded, setIsDraftsExpanded] = useState(true);
+  const [isRetiredJobsExpanded, setIsRetiredJobsExpanded] = useState(false);
   const [runningJobIds, setRunningJobIds] = useState<string[]>([]);
   const [runParamsJob, setRunParamsJob] = useState<JobRecord | null>(null);
   const [templateSort, setTemplateSort] = useState<"name" | "category" | "recently-used" | "recommended">("name");
@@ -1140,6 +1148,22 @@ export default function UserHome() {
       },
       "primary"
     );
+  };
+
+  const handleResolveRequiredAction = (actionId: string, actionSubject: string, tabId: string) => {
+    markRequiredActionResolved(actionId);
+    setDismissedActionIds((prev) => (prev.includes(actionId) ? prev : [...prev, actionId]));
+    setRequiredActionSuccessMessage(`Resolved successfully: ${actionSubject}.`);
+    setActivePanelId("required-actions");
+    handleCloseTabInPane(tabId, "primary");
+  };
+
+  const handleWithdrawSubmission = (promotionId: string, promotionName: string) => {
+    withdrawPendingSubmission(promotionId);
+    setHighlightedPendingPromotionId(null);
+    setPromotionSubmissionMessage(`${promotionName} was withdrawn from Pending Promotions.`);
+    setActivePanelId("promotions-edits");
+    handleCloseTabInPane(`promotion-${promotionId.replace(/\s+/g, "-").toLowerCase()}`, "primary");
   };
 
   const handleCustomFormCreateJob = () => {
@@ -1431,8 +1455,9 @@ export default function UserHome() {
     );
   };
 
-  const requiredActionPreview = requiredActionItems.slice(0, 3);
-  const pendingCount = pendingRequiredActionsCount();
+  const visibleRequiredActions = getVisibleRequiredActions().filter((item) => !dismissedActionIds.includes(item.id));
+  const requiredActionPreview = visibleRequiredActions.slice(0, 3);
+  const pendingCount = visibleRequiredActions.filter((item) => item.state === "pending").length;
 
   // Get active tab and related data from primary pane
   const activeTab = workspace.primary.tabs.find((tab) => tab.id === workspace.primary.activeTabId);
@@ -1516,6 +1541,23 @@ export default function UserHome() {
             closable: true,
             templateId: item.id,
             templateName: item.name,
+            payload: item.payload,
+          };
+          targetPane.tabs = [...targetPane.tabs, newTab];
+        }
+        targetPane.activeTabId = tabId;
+      } else if (item.type === "promotion") {
+        // Generate consistent tab ID for deduplication
+        tabId = `promotion-${item.id.replace(/\s+/g, "-").toLowerCase()}`;
+        // Check if tab already exists in this pane by ID
+        existingTab = targetPane.tabs.find((tab) => tab.id === tabId);
+
+        if (!existingTab) {
+          newTab = {
+            id: tabId,
+            type: "promotion",
+            title: item.name,
+            closable: true,
             payload: item.payload,
           };
           targetPane.tabs = [...targetPane.tabs, newTab];
@@ -1861,7 +1903,76 @@ export default function UserHome() {
     };
   }, [isResizing]);
 
-  const requiredActionsCount = requiredActionItems.length;
+  useEffect(() => {
+    const syncResponsiveLayout = () => {
+      const viewportWidth = window.innerWidth;
+      const isLeftPanelOpen = Boolean(activePanelId);
+      const isChatOpen = isChatPanelOpen;
+
+      const jobsFloor = viewportWidth < 1100 ? 180 : 220;
+      const chatFloor = viewportWidth < 1100 ? 240 : 280;
+      const workspaceFloor = viewportWidth < 1100 ? 320 : viewportWidth < 1360 ? 420 : 560;
+
+      let nextJobsWidth = isLeftPanelOpen
+        ? Math.min(Math.max(jobsPanelWidth, jobsFloor), Math.min(360, Math.floor(viewportWidth * 0.3)))
+        : 0;
+      let nextChatWidth = isChatOpen
+        ? Math.min(Math.max(chatPanelWidth, chatFloor), Math.min(420, Math.floor(viewportWidth * 0.34)))
+        : 0;
+
+      const handleCount = (isLeftPanelOpen ? 1 : 0) + (isChatOpen ? 1 : 0);
+      const availableForSidePanels =
+        viewportWidth - ICON_RAIL_WIDTH - handleCount * RESIZE_HANDLE_WIDTH - workspaceFloor;
+
+      let overflow = nextJobsWidth + nextChatWidth - Math.max(0, availableForSidePanels);
+
+      if (overflow > 0 && isChatOpen) {
+        const chatShrinkCapacity = nextChatWidth - chatFloor;
+        const chatShrinkAmount = Math.min(chatShrinkCapacity, overflow);
+        nextChatWidth -= chatShrinkAmount;
+        overflow -= chatShrinkAmount;
+      }
+
+      if (overflow > 0 && isLeftPanelOpen) {
+        const jobsShrinkCapacity = nextJobsWidth - jobsFloor;
+        const jobsShrinkAmount = Math.min(jobsShrinkCapacity, overflow);
+        nextJobsWidth -= jobsShrinkAmount;
+        overflow -= jobsShrinkAmount;
+      }
+
+      if (isLeftPanelOpen && nextJobsWidth !== jobsPanelWidth) {
+        setJobsPanelWidth(nextJobsWidth);
+      }
+
+      if (isChatOpen && nextChatWidth !== chatPanelWidth) {
+        setChatPanelWidth(nextChatWidth);
+      }
+
+      const workspaceAvailableWidth =
+        viewportWidth -
+        ICON_RAIL_WIDTH -
+        handleCount * RESIZE_HANDLE_WIDTH -
+        nextJobsWidth -
+        nextChatWidth;
+
+      if (workspace.mode === "split") {
+        const paneFloor = workspaceAvailableWidth < 900 ? 240 : 280;
+        const paneCeiling = Math.max(paneFloor, workspaceAvailableWidth - paneFloor - RESIZE_HANDLE_WIDTH);
+        const clampedPaneWidth = Math.min(Math.max(workspacePaneAWidth, paneFloor), paneCeiling);
+
+        if (clampedPaneWidth !== workspacePaneAWidth) {
+          setWorkspacePaneAWidth(clampedPaneWidth);
+        }
+      }
+    };
+
+    syncResponsiveLayout();
+    window.addEventListener("resize", syncResponsiveLayout);
+
+    return () => window.removeEventListener("resize", syncResponsiveLayout);
+  }, [activePanelId, chatPanelWidth, isChatPanelOpen, jobsPanelWidth, workspace.mode, workspacePaneAWidth]);
+
+  const requiredActionsCount = visibleRequiredActions.length;
   const badgeLabel = requiredActionsCount > 9 ? "9+" : String(requiredActionsCount);
 
   const panels = [
@@ -3117,7 +3228,13 @@ export default function UserHome() {
         ) : tab.type === "job" && currentJobSpec ? (
           /* Job Workspace View */
           <div className="mx-auto max-w-[1600px] px-6 py-8">
-            <div className="space-y-6">
+            {(() => {
+              const activeJobDetailTab = jobDetailTabById[tab.id] ?? "overview";
+              const isAttentionJob = currentJobSpec.status === "Needs Attention";
+              const relatedRunRecords = dashboardRuns.recentRuns.filter((run) => run.jobName === currentJobSpec.name);
+
+              return (
+                <div className="space-y-6">
               {/* Job Header */}
               <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                 <div>
@@ -3156,28 +3273,54 @@ export default function UserHome() {
               {/* Tabs */}
               <div className="border-b border-gray-200">
                 <div className="flex gap-8">
-                  {(["overview", "runs", "settings"] as const).map((t) => (
-                    <button
-                      key={t}
-                      onClick={() => setJobDetailTab(t)}
-                      className={`px-0 py-3 text-sm font-medium capitalize transition ${
-                        jobDetailTab === t
-                          ? "text-gray-900 border-b-2 border-[#ed0923]"
-                          : "text-gray-500 hover:text-gray-900"
-                      }`}
-                    >
-                      {t.charAt(0).toUpperCase() + t.slice(1)}
-                    </button>
-                  ))}
+                  <button
+                    onClick={() => setJobDetailTabById((prev) => ({ ...prev, [tab.id]: "overview" }))}
+                    className={`px-0 py-3 text-sm font-medium border-b-2 transition ${
+                      activeJobDetailTab === "overview"
+                        ? "text-gray-900 border-[#ed0923]"
+                        : "text-gray-600 border-transparent hover:text-gray-900"
+                    }`}
+                  >
+                    Overview
+                  </button>
+                  <button
+                    onClick={() => setJobDetailTabById((prev) => ({ ...prev, [tab.id]: "runs" }))}
+                    className={`px-0 py-3 text-sm font-medium border-b-2 transition ${
+                      activeJobDetailTab === "runs"
+                        ? "text-gray-900 border-[#ed0923]"
+                        : "text-gray-600 border-transparent hover:text-gray-900"
+                    }`}
+                  >
+                    Runs
+                  </button>
+                  <button
+                    onClick={() => setJobDetailTabById((prev) => ({ ...prev, [tab.id]: "preview" }))}
+                    className={`px-0 py-3 text-sm font-medium border-b-2 transition ${
+                      activeJobDetailTab === "preview"
+                        ? "text-gray-900 border-[#ed0923]"
+                        : "text-gray-600 border-transparent hover:text-gray-900"
+                    }`}
+                  >
+                    Preview
+                  </button>
+                  <button
+                    onClick={() => setJobDetailTabById((prev) => ({ ...prev, [tab.id]: "settings" }))}
+                    className={`px-0 py-3 text-sm font-medium border-b-2 transition ${
+                      activeJobDetailTab === "settings"
+                        ? "text-gray-900 border-[#ed0923]"
+                        : "text-gray-600 border-transparent hover:text-gray-900"
+                    }`}
+                  >
+                    Settings
+                  </button>
                 </div>
               </div>
 
-              {/* Tab Content */}
-              {jobDetailTab === "overview" && (
+              {activeJobDetailTab === "overview" && (
                 <div className="rounded-xl border border-gray-200 bg-white p-6">
                   <h2 className="text-lg font-semibold text-gray-900 mb-4">Job Configuration</h2>
                   <div className="space-y-6">
-                    <div className="grid grid-cols-3 gap-4">
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                       <div>
                         <p className="text-xs font-semibold text-gray-500 uppercase">Type</p>
                         <p className="text-sm text-gray-900 mt-1">{currentJobSpec.type}</p>
@@ -3236,7 +3379,7 @@ export default function UserHome() {
                 </div>
               )}
 
-              {jobDetailTab === "runs" && (() => {
+              {activeJobDetailTab === "runs" && (() => {
                 const resourceId = tab.payload?.job_id as string | undefined;
                 const jobRuns = resourceId
                   ? [...runs]
@@ -3310,7 +3453,34 @@ export default function UserHome() {
                 );
               })()}
 
-              {jobDetailTab === "settings" && (
+              {activeJobDetailTab === "preview" && (
+                <div className="rounded-xl border border-gray-200 bg-white p-6">
+                  <h2 className="text-lg font-semibold text-gray-900 mb-4">Execution Preview</h2>
+                  <div className="space-y-4">
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+                      <p className="text-sm font-medium text-gray-900">What this job is expected to produce</p>
+                      <ul className="mt-3 space-y-2">
+                        {currentJobSpec.outputs.map((output, idx) => (
+                          <li key={idx} className="text-sm text-gray-700 flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-green-500" />
+                            {output}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    {isAttentionJob && (
+                      <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+                        <p className="text-sm font-semibold text-red-900">Attention needed before the next run</p>
+                        <p className="mt-2 text-sm text-red-800">
+                          Review the latest failed run, confirm the inputs are still valid, and update any settings before retrying.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {activeJobDetailTab === "settings" && (
                 <div className="rounded-xl border border-gray-200 bg-white p-6">
                   <h2 className="text-lg font-semibold text-gray-900 mb-4">Settings</h2>
                   <div className="space-y-4">
@@ -3326,6 +3496,8 @@ export default function UserHome() {
                 </div>
               )}
             </div>
+              );
+            })()}
           </div>
         ) : tab.type === "required-action" && tab.payload ? (
           /* Required Action Form View */
@@ -3407,13 +3579,53 @@ export default function UserHome() {
                   </div>
 
                   {/* Action Buttons */}
-                  <div className="border-t border-gray-200 pt-6 flex gap-3">
-                    <button className="flex-1 px-4 py-2 bg-[#ed0923] text-white rounded-lg font-medium hover:bg-[#d10820] transition">
-                      Resolve Action
-                    </button>
-                    <button className="flex-1 px-4 py-2 border border-gray-300 text-gray-900 rounded-lg font-medium hover:bg-gray-50 transition">
-                      Defer
-                    </button>
+                  <div className="border-t border-gray-200 pt-6 flex flex-wrap gap-3">
+                    {tab.payload.state === "pending" && (
+                      <>
+                        <button
+                          onClick={() => handleResolveRequiredAction(tab.payload.id, tab.title, tab.id)}
+                          className="flex-1 min-w-[150px] px-4 py-2 bg-[#ed0923] text-white rounded-lg font-medium hover:bg-[#d10820] transition"
+                        >
+                          Resolve Action
+                        </button>
+                        <button
+                          onClick={() => handleCloseTabInPane(tab.id, "primary")}
+                          className="flex-1 min-w-[150px] px-4 py-2 border border-gray-300 text-gray-900 rounded-lg font-medium hover:bg-gray-50 transition"
+                        >
+                          Defer
+                        </button>
+                      </>
+                    )}
+
+                    {tab.payload.state === "failed" && (
+                      <>
+                        <button
+                          onClick={() =>
+                            setDismissedActionIds((prev) =>
+                              prev.includes(tab.payload.id) ? prev : [...prev, tab.payload.id]
+                            )
+                          }
+                          className="flex-1 min-w-[150px] px-4 py-2 border border-red-300 text-red-700 rounded-lg font-medium hover:bg-red-50 transition"
+                        >
+                          Dismiss
+                        </button>
+                        <button
+                          onClick={() => handleCloseTabInPane(tab.id, "primary")}
+                          className="flex-1 min-w-[150px] px-4 py-2 border border-gray-300 text-gray-900 rounded-lg font-medium hover:bg-gray-50 transition"
+                        >
+                          Close
+                        </button>
+                      </>
+                    )}
+
+                    {tab.payload.state === "success" && (
+                      <button
+                        onClick={() => handleCloseTabInPane(tab.id, "primary")}
+                        className="flex-1 min-w-[150px] px-4 py-2 border border-gray-300 text-gray-900 rounded-lg font-medium hover:bg-gray-50 transition"
+                      >
+                        Close
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -3672,7 +3884,13 @@ export default function UserHome() {
                     <span className={`rounded-lg px-3 py-1 text-xs font-medium ${getPromotionTypeColor(currentPromotion.type)}`}>
                       {currentPromotion.type}
                     </span>
-                    <span className="text-sm text-gray-600">Status: {currentPromotion.status}</span>
+                    <span className="text-sm text-gray-600">
+                      {currentPromotion.status === "pending_promotion"
+                        ? "Awaiting admin review"
+                        : currentPromotion.status === "approved"
+                          ? "Ready for admin promotion"
+                          : "Promotion complete"}
+                    </span>
                   </div>
                 </div>
               )}
@@ -3680,6 +3898,15 @@ export default function UserHome() {
               {/* Promotion Details Card */}
               <div className="rounded-xl border border-gray-200 bg-white p-8 max-w-3xl">
                 <div className="space-y-6">
+                  {currentPromotion.status === "pending_promotion" && (
+                    <div className="rounded-xl border border-yellow-200 bg-yellow-50 p-4">
+                      <p className="text-sm font-semibold text-yellow-900">Awaiting admin review</p>
+                      <p className="mt-1 text-sm text-yellow-800">
+                        Your submission is in the approval queue. No action is needed from you right now.
+                      </p>
+                    </div>
+                  )}
+
                   {/* Current Status */}
                   <div>
                     <label className="text-sm font-semibold text-gray-900">Promotion Status</label>
@@ -3706,6 +3933,35 @@ export default function UserHome() {
                     </div>
                   </div>
 
+                  {currentPromotion.status === "pending_promotion" && (
+                    <div className="border-t border-gray-200 pt-6">
+                      <h3 className="text-sm font-semibold text-gray-900 mb-3">What happens next</h3>
+                      <div className="space-y-3">
+                        <div className="flex items-start gap-3">
+                          <div className="mt-0.5 h-2.5 w-2.5 rounded-full bg-green-500" />
+                          <div>
+                            <p className="text-sm font-medium text-gray-900">Submitted</p>
+                            <p className="text-xs text-gray-500">Your form has been created and sent to the approval queue.</p>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-3">
+                          <div className="mt-0.5 h-2.5 w-2.5 rounded-full bg-yellow-500" />
+                          <div>
+                            <p className="text-sm font-medium text-gray-900">Admin review pending</p>
+                            <p className="text-xs text-gray-500">An admin needs to review and promote this job before it becomes active.</p>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-3">
+                          <div className="mt-0.5 h-2.5 w-2.5 rounded-full bg-gray-300" />
+                          <div>
+                            <p className="text-sm font-medium text-gray-900">Activation</p>
+                            <p className="text-xs text-gray-500">After approval, the job will appear in Active Jobs, Runs, and Calendar.</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Environment Info */}
                   <div className="border-t border-gray-200 pt-6">
                     <h3 className="text-sm font-semibold text-gray-900 mb-3">Environment Path</h3>
@@ -3719,6 +3975,29 @@ export default function UserHome() {
                       </div>
                     </div>
                   </div>
+
+                  {(currentPromotion.scheduleSummary || currentPromotion.requestedRunDates?.length) && (
+                    <div className="border-t border-gray-200 pt-6">
+                      <h3 className="text-sm font-semibold text-gray-900 mb-3">Requested Schedule</h3>
+                      {currentPromotion.scheduleSummary && (
+                        <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">
+                          {currentPromotion.scheduleSummary}
+                        </div>
+                      )}
+                      {currentPromotion.requestedRunDates && currentPromotion.requestedRunDates.length > 0 && (
+                        <div className="mt-4">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Next requested runs</p>
+                          <div className="mt-2 space-y-2">
+                            {currentPromotion.requestedRunDates.map((runDate) => (
+                              <div key={runDate} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                                {runDate}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* Description */}
                   {currentPromotion.description && (
@@ -3740,10 +4019,19 @@ export default function UserHome() {
                   <div className="border-t border-gray-200 pt-6">
                     <h3 className="text-sm font-semibold text-gray-900 mb-3">Timeline</h3>
                     <div className="space-y-2 text-sm text-gray-600">
-                      <div>Created: {formatPromotionDate(currentPromotion.createdAt)}</div>
-                      {currentPromotion.lastModified && <div>Last Modified: {formatPromotionDate(currentPromotion.lastModified)}</div>}
+                      <div>Submitted: {formatPromotionDate(currentPromotion.createdAt)}</div>
+                      {currentPromotion.lastModified && <div>Last Updated: {formatPromotionDate(currentPromotion.lastModified)}</div>}
                     </div>
                   </div>
+
+                  {currentPromotion.status === "pending_promotion" && (
+                    <div className="border-t border-gray-200 pt-6">
+                      <h3 className="text-sm font-semibold text-gray-900 mb-3">Approval Notes</h3>
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">
+                        This job is waiting for admin review before it can be promoted into an active scheduled job.
+                      </div>
+                    </div>
+                  )}
 
                   {/* Actions */}
                   <div className="border-t border-gray-200 pt-6 flex gap-3">
@@ -3763,14 +4051,20 @@ export default function UserHome() {
                         </button>
                       </>
                     )}
-                    {(currentPromotion.status === "approved" || currentPromotion.status === "pending_promotion") && (
-                      <button className="flex-1 px-4 py-2 bg-[#ed0923] text-white rounded-lg font-medium hover:bg-[#d10820] transition">
-                        Request Promotion
+                    {currentPromotion.status === "pending_promotion" && (
+                      <button
+                        onClick={() => handleWithdrawSubmission(currentPromotion.id, currentPromotion.name)}
+                        className="flex-1 px-4 py-2 border border-red-300 text-red-700 rounded-lg font-medium hover:bg-red-50 transition"
+                      >
+                        Withdraw Submission
                       </button>
                     )}
                     {currentPromotion.status !== "rejected" && (
-                      <button className="flex-1 px-4 py-2 border border-gray-300 text-gray-900 rounded-lg font-medium hover:bg-gray-50 transition">
-                        View Details
+                      <button
+                        onClick={() => setActivePanelId("promotions-edits")}
+                        className="flex-1 px-4 py-2 border border-gray-300 text-gray-900 rounded-lg font-medium hover:bg-gray-50 transition"
+                      >
+                        Back to Pending Promotions
                       </button>
                     )}
                   </div>
@@ -3858,7 +4152,7 @@ export default function UserHome() {
                         <button
                           onClick={() =>
                             handleOpenTabInPane(
-                              { type: "promotion", name: promotion.name, id: promotion.id },
+                              { type: "promotion", name: promotion.name, id: promotion.id, payload: promotion },
                               "primary"
                             )
                           }
@@ -4640,9 +4934,9 @@ export default function UserHome() {
         );
       case "required-actions":
         // Organize actions by urgency
-        const urgentActions = requiredActionItems.filter((a) => a.urgency === "urgent");
-        const highPriorityActions = requiredActionItems.filter((a) => a.urgency === "high");
-        const otherActions = requiredActionItems.filter((a) => a.urgency === "other");
+        const urgentActions = visibleRequiredActions.filter((a) => a.urgency === "urgent");
+        const highPriorityActions = visibleRequiredActions.filter((a) => a.urgency === "high");
+        const otherActions = visibleRequiredActions.filter((a) => a.urgency === "other");
 
         const renderActionSection = (
           title: string,
@@ -4736,13 +5030,13 @@ export default function UserHome() {
                             <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">
                               Related Job
                             </p>
-                            <p className="text-sm text-gray-700 font-mono bg-white p-2 rounded border border-gray-200">
+                            <p className="min-w-0 text-sm text-gray-700 font-mono bg-white p-2 rounded border border-gray-200 whitespace-normal break-all">
                               {action.jobName}
                             </p>
                           </div>
 
                           {/* Action Buttons */}
-                          <div className="flex gap-2 pt-2">
+                          <div className="flex flex-wrap gap-2 pt-2">
                             <button
                               onClick={() =>
                                 handleOpenTabInPane(
@@ -4750,13 +5044,22 @@ export default function UserHome() {
                                   "primary"
                                 )
                               }
-                              className="flex-1 px-3 py-2 rounded text-sm font-medium bg-[#ed0923] text-white hover:bg-[#d10820] transition"
+                              className="min-w-[120px] flex-1 px-3 py-2 rounded text-sm font-medium bg-[#ed0923] text-white hover:bg-[#d10820] transition"
                             >
                               Open
                             </button>
-                            <button className="flex-1 px-3 py-2 rounded text-sm font-medium bg-gray-200 text-gray-900 hover:bg-gray-300 transition">
-                              Resolve
-                            </button>
+                            {action.state !== "pending" && (
+                              <button
+                                onClick={() =>
+                                  setDismissedActionIds((prev) =>
+                                    prev.includes(action.id) ? prev : [...prev, action.id]
+                                  )
+                                }
+                                className="min-w-[120px] flex-1 px-3 py-2 rounded text-sm font-medium bg-gray-200 text-gray-900 hover:bg-gray-300 transition"
+                              >
+                                Dismiss
+                              </button>
+                            )}
                           </div>
                         </div>
                       )}
@@ -4770,11 +5073,16 @@ export default function UserHome() {
 
         return (
           <div className="p-4 space-y-4 flex flex-col h-full overflow-y-auto">
+            {requiredActionSuccessMessage && (
+              <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">
+                {requiredActionSuccessMessage}
+              </div>
+            )}
             <div className="space-y-3">
               {urgentActions.length > 0 && renderActionSection("Urgent Actions", urgentActions, false)}
               {highPriorityActions.length > 0 && renderActionSection("High Priority", highPriorityActions, false)}
               {otherActions.length > 0 && renderActionSection("Other Actions", otherActions, false)}
-              {requiredActionItems.length === 0 && (
+              {visibleRequiredActions.length === 0 && (
                 <div className="text-center py-8">
                   <p className="text-sm text-gray-500">No required actions at this time.</p>
                 </div>
@@ -4809,10 +5117,10 @@ export default function UserHome() {
               </div>
             </div>
 
-            <div>
+            <div className="min-w-0">
               <input
                 type="text"
-                placeholder="Search forms, templates, or types..."
+                placeholder="Search forms or templates..."
                 value={templateSearch}
                 onChange={(e) => setTemplateSearch(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm placeholder-gray-500 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
@@ -4821,8 +5129,8 @@ export default function UserHome() {
 
             <div className="space-y-4">
               <div>
-                <div className="mb-2 flex items-center justify-between">
-                  <h3 className="text-xs font-bold uppercase tracking-wide text-gray-600">Saved Templates</h3>
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                  <h3 className="min-w-0 text-xs font-bold uppercase tracking-wide text-gray-600">Saved Templates</h3>
                   <button
                     onClick={() =>
                       openFormTab({
@@ -4835,7 +5143,7 @@ export default function UserHome() {
                         origin: "saved-template",
                       })
                     }
-                    className="text-xs font-medium text-[#ed0923] hover:text-[#d10820]"
+                    className="shrink-0 text-xs font-medium text-[#ed0923] hover:text-[#d10820]"
                   >
                     View all
                   </button>
@@ -4859,14 +5167,16 @@ export default function UserHome() {
                             draft: template.draft,
                           })
                         }
-                        className="w-full rounded-lg border border-gray-200 bg-white p-3 text-left hover:border-[#ed0923] hover:bg-red-50 transition"
+                        className="w-full min-w-0 rounded-lg border border-gray-200 bg-white p-3 text-left hover:border-[#ed0923] hover:bg-red-50 transition"
                       >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-medium text-gray-900">{template.name}</p>
+                        <div className="flex min-w-0 items-start gap-2">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium leading-tight text-gray-900 [overflow-wrap:anywhere]">
+                              {template.name}
+                            </p>
                             <p className="mt-1 text-xs text-gray-500">{template.type} saved template</p>
                           </div>
-                          <span className="rounded-full bg-gray-100 px-2 py-1 text-[10px] font-semibold text-gray-700">
+                          <span className="shrink-0 self-start rounded-full bg-gray-100 px-2 py-1 text-[10px] font-semibold text-gray-700">
                             {template.progress}
                           </span>
                         </div>
@@ -4881,8 +5191,8 @@ export default function UserHome() {
               </div>
 
               <div>
-                <div className="mb-2 flex items-center justify-between">
-                  <h3 className="text-xs font-bold uppercase tracking-wide text-gray-600">Pre-Built Forms</h3>
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                  <h3 className="min-w-0 text-xs font-bold uppercase tracking-wide text-gray-600">Pre-Built Forms</h3>
                   <button
                     onClick={() =>
                       openFormTab({
@@ -4895,7 +5205,7 @@ export default function UserHome() {
                         origin: "prebuilt-form",
                       })
                     }
-                    className="text-xs font-medium text-[#ed0923] hover:text-[#d10820]"
+                    className="shrink-0 text-xs font-medium text-[#ed0923] hover:text-[#d10820]"
                   >
                     View all
                   </button>
@@ -4916,14 +5226,14 @@ export default function UserHome() {
                             origin: "prebuilt-form",
                           })
                         }
-                        className="w-full rounded-lg border border-gray-200 bg-gray-50 p-3 text-left hover:border-[#ed0923] hover:bg-red-50 transition"
+                        className="w-full min-w-0 rounded-lg border border-gray-200 bg-gray-50 p-3 text-left hover:border-[#ed0923] hover:bg-red-50 transition"
                       >
-                        <p className="text-sm font-medium text-gray-900">{form.name}</p>
-                        <div className="mt-2 flex items-center gap-2">
-                          <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold bg-blue-100 text-blue-700">
+                        <p className="text-sm font-medium leading-tight text-gray-900 [overflow-wrap:anywhere]">{form.name}</p>
+                        <div className="mt-2 flex flex-wrap items-start gap-2">
+                          <span className="inline-flex shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold bg-blue-100 text-blue-700">
                             {form.category}
                           </span>
-                          <span className="text-xs text-gray-500">{form.description}</span>
+                          <span className="min-w-0 flex-1 text-xs text-gray-500 [overflow-wrap:anywhere]">{form.description}</span>
                         </div>
                       </button>
                     ))
@@ -4949,9 +5259,9 @@ export default function UserHome() {
             )}
             {/* Ready for Promotion */}
             <div className="space-y-2">
-              <div className="flex items-center justify-between sticky top-0 bg-white/95 z-10 py-1">
-                <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">Ready for Promotion</h3>
-                <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-medium">{mockReadyForPromotion.length}</span>
+              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 sticky top-0 bg-white/95 z-10 py-1">
+                <h3 className="min-w-0 text-xs font-bold text-gray-700 uppercase tracking-wide">Ready for Promotion</h3>
+                <span className="shrink-0 text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-medium">{mockReadyForPromotion.length}</span>
               </div>
               <div className="space-y-1.5">
                 {mockReadyForPromotion.map((item) => (
@@ -4970,10 +5280,10 @@ export default function UserHome() {
                       className="mt-1 h-4 w-4 rounded border-gray-300 text-[#ed0923] focus:ring-[#ed0923]"
                     />
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-900 truncate">{item.name}</p>
-                      <div className="flex items-center gap-1 mt-0.5 flex-wrap">
-                        <span className={`text-xs font-medium ${getPromotionTypeColor(item.type)}`}>{item.type}</span>
-                        <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">{item.currentEnvironment}</span>
+                      <p className="text-sm font-medium leading-tight text-gray-900 [overflow-wrap:anywhere]">{item.name}</p>
+                      <div className="mt-1 flex flex-wrap items-start gap-1.5">
+                        <span className={`text-xs font-medium [overflow-wrap:anywhere] ${getPromotionTypeColor(item.type)}`}>{item.type}</span>
+                        <span className="shrink-0 text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">{item.currentEnvironment}</span>
                       </div>
                     </div>
                   </div>
@@ -4995,9 +5305,9 @@ export default function UserHome() {
             {/* Pending Promotions */}
             {allPendingPromotions.length > 0 && (
               <div className="space-y-2 border-t border-gray-200 pt-3">
-                <div className="flex items-center justify-between sticky top-12 bg-white/95 z-10 py-1">
-                  <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">Pending Promotions</h3>
-                  <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded font-medium">{allPendingPromotions.length}</span>
+                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 sticky top-12 bg-white/95 z-10 py-1">
+                  <h3 className="min-w-0 text-xs font-bold text-gray-700 uppercase tracking-wide">Pending Promotions</h3>
+                  <span className="shrink-0 text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded font-medium">{allPendingPromotions.length}</span>
                 </div>
                 <div className="space-y-1.5">
                   {allPendingPromotions.map((item) => (
@@ -5009,12 +5319,26 @@ export default function UserHome() {
                           : "bg-gray-50 border-gray-200"
                       }`}
                     >
-                      <p className="text-sm font-medium text-gray-900 truncate">{item.name}</p>
-                      <div className="flex items-center gap-1 mt-0.5">
-                        <span className={`text-xs font-medium ${getPromotionTypeColor(item.type)}`}>{item.type}</span>
-                        <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">{item.currentEnvironment}</span>
-                        <span className="text-xs text-gray-400">→</span>
-                        <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded">{item.targetEnvironment}</span>
+                      <p className="text-sm font-medium leading-tight text-gray-900 [overflow-wrap:anywhere]">{item.name}</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                        <span className={`text-xs font-medium [overflow-wrap:anywhere] ${getPromotionTypeColor(item.type)}`}>{item.type}</span>
+                        <span className="shrink-0 text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">{item.currentEnvironment}</span>
+                        <span className="shrink-0 text-xs text-gray-400">→</span>
+                        <span className="shrink-0 text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded">{item.targetEnvironment}</span>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <button
+                          onClick={() => handleOpenTabInPane({ type: "promotion", id: item.id, name: item.name, payload: item }, "primary")}
+                          className="px-2 py-1 text-xs font-medium rounded border border-gray-300 text-gray-700 hover:bg-gray-100 transition"
+                        >
+                          View
+                        </button>
+                        <button
+                          onClick={() => handleWithdrawSubmission(item.id, item.name)}
+                          className="px-2 py-1 text-xs font-medium rounded border border-red-300 text-red-700 hover:bg-red-50 transition"
+                        >
+                          Withdraw
+                        </button>
                       </div>
                       {highlightedPendingPromotionId === item.id && (
                         <div className="mt-2 text-xs font-semibold text-yellow-800">Newly submitted</div>
@@ -5154,7 +5478,7 @@ export default function UserHome() {
         )}
 
         {/* Main Content with Tab System - Split View Support */}
-        <main className="flex-1 flex flex-col overflow-hidden min-h-0">
+        <main className="flex-1 min-w-0 flex flex-col overflow-hidden min-h-0">
           {workspace.mode === "single" ? (
             // SINGLE PANE MODE
             <>

@@ -12,6 +12,8 @@ export type RequiredActionItem = {
   jobName: string;
 };
 
+const RESOLVED_REQUIRED_ACTIONS_KEY = "resolved-required-action-ids";
+
 export const requiredActionItems: RequiredActionItem[] = [
   {
     id: "act-101",
@@ -56,6 +58,40 @@ export const requiredActionItems: RequiredActionItem[] = [
 
 export function pendingRequiredActionsCount() {
   return requiredActionItems.filter((item) => item.state === "pending").length;
+}
+
+function canUseActionStorage() {
+  return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+}
+
+export function getResolvedRequiredActionIds(): string[] {
+  if (!canUseActionStorage()) return [];
+
+  try {
+    const rawValue = window.localStorage.getItem(RESOLVED_REQUIRED_ACTIONS_KEY);
+    if (!rawValue) return [];
+    const parsed = JSON.parse(rawValue);
+    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export function markRequiredActionResolved(actionId: string) {
+  if (!canUseActionStorage()) return;
+
+  const currentIds = getResolvedRequiredActionIds();
+  if (currentIds.includes(actionId)) return;
+
+  window.localStorage.setItem(
+    RESOLVED_REQUIRED_ACTIONS_KEY,
+    JSON.stringify([...currentIds, actionId])
+  );
+}
+
+export function getVisibleRequiredActions() {
+  const resolvedIds = new Set(getResolvedRequiredActionIds());
+  return requiredActionItems.filter((item) => !resolvedIds.has(item.id));
 }
 
 export function requiredActionUrgentCount() {

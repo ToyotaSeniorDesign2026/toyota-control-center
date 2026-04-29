@@ -3,7 +3,7 @@ import { ArrowUpCircle, CheckCircle2, ChevronDown, Clock } from "lucide-react";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
 import { Button } from "../components/ui/button";
-import { getPendingPromotionResources } from "../lib/userDashboardStore";
+import { getPendingPromotionResources, withdrawPendingSubmission } from "../lib/userDashboardStore";
 import {
   formatPromotionDate,
   getPromotionTypeColor,
@@ -37,6 +37,12 @@ export default function Promotions() {
     console.log("Requesting promotion for:", selectedJobs);
     setSelectedJobs([]);
   };
+
+  const handleWithdraw = (jobId: string) => {
+    withdrawPendingSubmission(jobId);
+    window.location.reload();
+  };
+
   const toggleSection = (section: "ready" | "pending" | "recent") => {
     setOpenSections((prev) => ({ ...prev, [section]: !prev[section] }));
   };
@@ -155,6 +161,13 @@ export default function Promotions() {
                     <div className="text-xs text-gray-500">
                       Requested: {formatPromotionDate(job.lastModified || job.createdAt)}
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => handleWithdraw(job.id)}
+                      className="mt-3 rounded border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50"
+                    >
+                      Withdraw Submission
+                    </button>
                   </div>
                 ))}
               </div>
