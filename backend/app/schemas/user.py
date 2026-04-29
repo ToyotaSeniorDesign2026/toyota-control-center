@@ -32,6 +32,7 @@ class UserOut(BaseModel):
     allowed_environments: str | None = None
     password_last_changed: datetime | None = None
     access_token: str | None = None
+    cli_token: str | None = None
 
     # User preferences
     theme: str | None = None

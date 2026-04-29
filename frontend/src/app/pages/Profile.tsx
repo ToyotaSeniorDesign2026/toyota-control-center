@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { ArrowLeft, Upload, Check } from "lucide-react";
+import { ArrowLeft, Upload, Check, Copy } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { useNavigate } from "react-router";
 import { useUser } from "../contexts/UserContext";
@@ -43,6 +43,10 @@ export default function Profile() {
   const [manager, setManager] = useState(profile.manager);
   const [employeeId, setEmployeeId] = useState(profile.employeeId);
 
+  // CLI Token State
+  const [cliToken, setCliToken] = useState(profile.cliToken);
+  const [copiedCliToken, setCopiedCliToken] = useState(false);
+
   // UI State
   const [isSavingPicture, setIsSavingPicture] = useState(false);
   const [isSavingBasicInfo, setIsSavingBasicInfo] = useState(false);
@@ -66,6 +70,7 @@ export default function Profile() {
     setTeam(profile.team);
     setManager(profile.manager);
     setEmployeeId(profile.employeeId);
+    setCliToken(profile.cliToken);
   }, [profile]);
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -177,6 +182,14 @@ export default function Profile() {
       setErrorMessage("Failed to save basic information. Please try again.");
     } finally {
       setIsSavingBasicInfo(false);
+    }
+  };
+
+  const handleCopyCliToken = () => {
+    if (cliToken) {
+      navigator.clipboard.writeText(cliToken);
+      setCopiedCliToken(true);
+      setTimeout(() => setCopiedCliToken(false), 2000);
     }
   };
 
@@ -524,6 +537,45 @@ export default function Profile() {
               />
               <p className="mt-2 text-xs text-gray-500">
                 Organization information is managed by HR. Contact your administrator for changes.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        {/* CLI Access Token Section */}
+        <section className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
+          <div className="mb-6">
+            <h2 className="text-lg font-semibold text-gray-900">
+              CLI Access Token
+            </h2>
+            <p className="mt-1 text-sm text-gray-600">
+              Use this token to authenticate with the command-line interface
+            </p>
+          </div>
+
+          <div className="space-y-4">
+            <div>
+              <label className="text-sm font-semibold text-gray-900">
+                Your CLI Token
+              </label>
+              <div className="mt-2 flex items-center gap-2">
+                <input
+                  type="text"
+                  value={cliToken || ""}
+                  disabled
+                  className="flex-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-500 cursor-not-allowed font-mono"
+                />
+                <button
+                  onClick={handleCopyCliToken}
+                  className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                  title="Copy to clipboard"
+                >
+                  <Copy className="h-4 w-4" />
+                  {copiedCliToken ? "Copied!" : "Copy"}
+                </button>
+              </div>
+              <p className="mt-2 text-xs text-gray-500">
+                Keep this token secure. Use it to authenticate CLI commands by setting it in your environment or configuration file.
               </p>
             </div>
           </div>

@@ -31,6 +31,7 @@ interface UserProfile {
   notifications?: string;
   timezone?: string;
   accessToken?: string;
+  cliToken?: string;
 }
 
 interface UserContextType {
@@ -60,6 +61,7 @@ const defaultProfile: UserProfile = {
   initials: "UP",
   role: "user",
   createdAt: new Date().toISOString(),
+  cliToken: "",
 };
 
 const UserContext = createContext<UserContextType | undefined>(undefined);
@@ -116,6 +118,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
           notifications: userData.notifications || "All",
           timezone: userData.timezone || "UTC-8 (Pacific)",
           accessToken: userData.access_token,
+          cliToken: userData.cli_token,
         });
 
         // Save role to localStorage
