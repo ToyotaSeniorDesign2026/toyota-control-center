@@ -19,10 +19,11 @@ def create_app() -> FastAPI:
     init_db()
     app = FastAPI(title=settings.app_name, version=settings.app_version)
 
+    # CORS configuration for local development
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,
+        allow_origins=["*"],  # Allow all origins for development
+        allow_credentials=False,  # Disable credentials for wildcard origins
         allow_methods=["*"],
         allow_headers=["*"],
     )

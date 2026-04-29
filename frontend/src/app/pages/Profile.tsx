@@ -4,6 +4,9 @@ import { Button } from "../components/ui/button";
 import { useNavigate } from "react-router";
 import { useUser } from "../contexts/UserContext";
 
+const AUTH_TOKEN_KEY = "control-center-auth-token";
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
+
 const defaultAvatarColors = [
   { name: "Blue", color: "bg-blue-500" },
   { name: "Purple", color: "bg-purple-500" },
@@ -40,6 +43,12 @@ export default function Profile() {
   const [manager, setManager] = useState(profile.manager);
   const [employeeId, setEmployeeId] = useState(profile.employeeId);
 
+  // UI State
+  const [isSavingPicture, setIsSavingPicture] = useState(false);
+  const [isSavingBasicInfo, setIsSavingBasicInfo] = useState(false);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
   // Load profile data when component mounts
   useEffect(() => {
     setAvatarType(profile.avatarType);
@@ -71,36 +80,104 @@ export default function Profile() {
     }
   };
 
-  const handleSaveProfilePicture = () => {
-    updateProfile({
-      avatarType,
-      selectedColor,
-      uploadedImage,
-      initials,
-    });
-    alert("Profile picture saved!");
+  const handleSaveProfilePicture = async () => {
+    setIsSavingPicture(true);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
+    try {
+      const token = typeof window !== "undefined" ? window.localStorage.getItem(AUTH_TOKEN_KEY) : null;
+      if (!token) {
+        setErrorMessage("Not authenticated. Please log in again.");
+        return;
+      }
+
+      const response = await fetch(`${BACKEND_URL}/auth/me`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          avatar_type: avatarType,
+          uploaded_image: uploadedImage,
+          selected_color: selectedColor,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to save profile picture");
+      }
+
+      const updatedUser = await response.json();
+      
+      // Update context with new avatar data
+      updateProfile({
+        avatarType: updatedUser.avatar_type,
+        uploadedImage: updatedUser.uploaded_image,
+        selectedColor: updatedUser.selected_color,
+      });
+
+      setSuccessMessage("Profile picture saved successfully!");
+      setTimeout(() => setSuccessMessage(null), 3000);
+    } catch (error) {
+      console.error("Failed to save profile picture:", error);
+      setErrorMessage("Failed to save profile picture. Please try again.");
+    } finally {
+      setIsSavingPicture(false);
+    }
   };
 
-  const handleSaveBasicInfo = () => {
-    updateProfile({
-      firstName,
-      lastName,
-      email,
-      phone,
-      bio,
-      location,
-    });
-    alert("Basic information saved!");
-  };
+  const handleSaveBasicInfo = async () => {
+    setIsSavingBasicInfo(true);
+    setErrorMessage(null);
+    setSuccessMessage(null);
 
-  const handleSaveOrganization = () => {
-    updateProfile({
-      jobTitle,
-      department,
-      team,
-      manager,
-    });
-    alert("Organization information saved!");
+    try {
+      const token = typeof window !== "undefined" ? window.localStorage.getItem(AUTH_TOKEN_KEY) : null;
+      if (!token) {
+        setErrorMessage("Not authenticated. Please log in again.");
+        return;
+      }
+
+      const response = await fetch(`${BACKEND_URL}/auth/me`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          first_name: firstName,
+          last_name: lastName,
+          phone,
+          location,
+          bio,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to save basic information");
+      }
+
+      const updatedUser = await response.json();
+      
+      // Update context with new profile data
+      updateProfile({
+        firstName: updatedUser.first_name,
+        lastName: updatedUser.last_name,
+        phone: updatedUser.phone,
+        location: updatedUser.location,
+        bio: updatedUser.bio,
+      });
+
+      setSuccessMessage("Basic information saved successfully!");
+      setTimeout(() => setSuccessMessage(null), 3000);
+    } catch (error) {
+      console.error("Failed to save basic information:", error);
+      setErrorMessage("Failed to save basic information. Please try again.");
+    } finally {
+      setIsSavingBasicInfo(false);
+    }
   };
 
   return (
@@ -126,6 +203,18 @@ export default function Profile() {
 
       {/* Content */}
       <div className="mx-auto max-w-5xl px-6 py-8 space-y-6">
+        {/* Messages */}
+        {successMessage && (
+          <div className="rounded-lg border border-green-200 bg-green-50 p-4">
+            <p className="text-sm font-medium text-green-800">✓ {successMessage}</p>
+          </div>
+        )}
+        {errorMessage && (
+          <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+            <p className="text-sm font-medium text-red-800">✗ {errorMessage}</p>
+          </div>
+        )}
+
         {/* Profile Picture Section */}
         <section className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
           <div className="mb-6">
@@ -238,10 +327,11 @@ export default function Profile() {
             <div className="flex justify-end pt-4 border-t border-gray-200">
               <Button
                 onClick={handleSaveProfilePicture}
+                disabled={isSavingPicture}
                 className="gap-2 bg-blue-600 text-white hover:bg-blue-700"
               >
                 <Check className="h-4 w-4" />
-                Save Profile Picture
+                {isSavingPicture ? "Saving..." : "Save Profile Picture"}
               </Button>
             </div>
           </div>
@@ -291,11 +381,11 @@ export default function Profile() {
               <input
                 type="email"
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="mt-2 block w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm placeholder:text-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                disabled
+                className="mt-2 block w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-500 cursor-not-allowed"
               />
               <p className="mt-2 text-xs text-gray-500">
-                This email is used for account notifications and login
+                Email address is preset and cannot be changed
               </p>
             </div>
 
@@ -347,10 +437,11 @@ export default function Profile() {
             <div className="flex justify-end pt-4 border-t border-gray-200">
               <Button
                 onClick={handleSaveBasicInfo}
+                disabled={isSavingBasicInfo}
                 className="gap-2 bg-blue-600 text-white hover:bg-blue-700"
               >
                 <Check className="h-4 w-4" />
-                Save Basic Information
+                {isSavingBasicInfo ? "Saving..." : "Save Basic Information"}
               </Button>
             </div>
           </div>
@@ -363,7 +454,7 @@ export default function Profile() {
               Organization & Team Information
             </h2>
             <p className="mt-1 text-sm text-gray-600">
-              Your role and team details within the organization
+              Your role and team details within the organization (preset and managed by HR)
             </p>
           </div>
 
@@ -376,8 +467,8 @@ export default function Profile() {
               <input
                 type="text"
                 value={jobTitle}
-                onChange={(e) => setJobTitle(e.target.value)}
-                className="mt-2 block w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm placeholder:text-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                disabled
+                className="mt-2 block w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-500 cursor-not-allowed"
               />
             </div>
 
@@ -390,8 +481,8 @@ export default function Profile() {
                 <input
                   type="text"
                   value={department}
-                  onChange={(e) => setDepartment(e.target.value)}
-                  className="mt-2 block w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm placeholder:text-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  disabled
+                  className="mt-2 block w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-500 cursor-not-allowed"
                 />
               </div>
               <div>
@@ -401,8 +492,8 @@ export default function Profile() {
                 <input
                   type="text"
                   value={team}
-                  onChange={(e) => setTeam(e.target.value)}
-                  className="mt-2 block w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm placeholder:text-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  disabled
+                  className="mt-2 block w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-500 cursor-not-allowed"
                 />
               </div>
             </div>
@@ -415,8 +506,8 @@ export default function Profile() {
               <input
                 type="text"
                 value={manager}
-                onChange={(e) => setManager(e.target.value)}
-                className="mt-2 block w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm placeholder:text-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                disabled
+                className="mt-2 block w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-500 cursor-not-allowed"
               />
             </div>
 
@@ -428,24 +519,12 @@ export default function Profile() {
               <input
                 type="text"
                 value={employeeId}
-                onChange={(e) => setEmployeeId(e.target.value)}
                 disabled
                 className="mt-2 block w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-500 cursor-not-allowed"
               />
               <p className="mt-2 text-xs text-gray-500">
-                Employee ID cannot be changed. Contact HR for assistance.
+                Organization information is managed by HR. Contact your administrator for changes.
               </p>
-            </div>
-
-            {/* Save Button */}
-            <div className="flex justify-end pt-4 border-t border-gray-200">
-              <Button
-                onClick={handleSaveOrganization}
-                className="gap-2 bg-blue-600 text-white hover:bg-blue-700"
-              >
-                <Check className="h-4 w-4" />
-                Save Organization Info
-              </Button>
             </div>
           </div>
         </section>

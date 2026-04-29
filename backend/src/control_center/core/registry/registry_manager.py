@@ -37,7 +37,10 @@ class ApprovedServerDef(BaseModel):
             "notes": "...",
             "environment_overrides": {
                 "dev": {"timeout": 60}
-            }
+            },
+            "job_type": "repo_connection",
+            "required_fields": ["repo"],
+            "optional_fields": ["ref", "path"]
         }
     """
 
@@ -53,6 +56,9 @@ class ApprovedServerDef(BaseModel):
     active: bool
     notes: str | None = None
     environment_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    job_type: str | None = None
+    required_fields: list[str] = Field(default_factory=list)
+    optional_fields: list[str] = Field(default_factory=list)
 
     @field_validator("config_type", mode="before")
     def normalize_config_type(cls, value: str | None) -> str:
@@ -99,6 +105,7 @@ class Registry(BaseModel):
     config_types: dict[str, ConfigTypeDef]
     environments: dict[str, EnvironmentDef]
     approved_servers: dict[str, ApprovedServerDef]
+    universal_job_fields: dict[str, Any] | None = None
 
     @field_validator("config_types", mode="before")
     def normalize_config_type_keys(cls, value: Any) -> dict[str, Any]:

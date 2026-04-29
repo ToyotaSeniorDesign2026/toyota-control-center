@@ -1,6 +1,6 @@
 import { X, Shield, Check, AlertCircle, Copy, Download, LogOut, ChevronDown, Globe, Bell, Moon, Settings, User, Key } from "lucide-react";
 import { Button } from "../ui/button";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router";
 import { useUser } from "../../contexts/UserContext";
 import {
@@ -10,6 +10,9 @@ import {
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
 
+const AUTH_TOKEN_KEY = "control-center-auth-token";
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
+
 interface UserProfilePanelProps {
   isOpen: boolean;
   onClose: () => void;
@@ -17,16 +20,74 @@ interface UserProfilePanelProps {
 
 export function UserProfilePanel({ isOpen, onClose }: UserProfilePanelProps) {
   const navigate = useNavigate();
-  const { profile } = useUser();
+  const { profile, updateProfile } = useUser();
+  
+  // Preferences
   const [mfaEnabled, setMfaEnabled] = useState(true);
   const [notifications, setNotifications] = useState("All");
   const [theme, setTheme] = useState("Light");
   const [timezone, setTimezone] = useState("UTC-8 (Pacific)");
+  
+  // UI state
   const [copied, setCopied] = useState(false);
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+
+  // Initialize preferences from profile when it loads
+  useEffect(() => {
+    if (profile) {
+      setMfaEnabled(profile.mfaEnabled ?? true);
+      setNotifications(profile.notifications || "All");
+      setTheme(profile.theme || "Light");
+      setTimezone(profile.timezone || "UTC-8 (Pacific)");
+    }
+  }, [profile]);
+
+  const savePreferences = async () => {
+    setIsSaving(true);
+    try {
+      const token = typeof window !== "undefined" ? window.localStorage.getItem(AUTH_TOKEN_KEY) : null;
+      if (!token) return;
+
+      const response = await fetch(`${BACKEND_URL}/auth/me`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          theme,
+          notifications,
+          timezone,
+        }),
+      });
+
+      if (response.ok) {
+        const updatedUser = await response.json();
+        // Update context with all updated fields
+        updateProfile({
+          firstName: updatedUser.first_name,
+          lastName: updatedUser.last_name,
+          phone: updatedUser.phone,
+          location: updatedUser.location,
+          bio: updatedUser.bio,
+          theme: updatedUser.theme,
+          notifications: updatedUser.notifications,
+          timezone: updatedUser.timezone,
+        });
+        setSaveSuccess(true);
+        setTimeout(() => setSaveSuccess(false), 2000);
+      }
+    } catch (error) {
+      console.error("Failed to save profile:", error);
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   const handleCopyToken = () => {
-    const token = "cc_prod_a7b3f9e2d4c8k1m5n6p8q9r2s4t7v8w1";
+    const token = profile.accessToken || "cc_prod_a7b3f9e2d4c8k1m5n6p8q9r2s4t7v8w1";
     
     // Try modern clipboard API first
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -127,14 +188,14 @@ export function UserProfilePanel({ isOpen, onClose }: UserProfilePanelProps) {
                     {profile.firstName} {profile.lastName}
                   </h3>
                   <span className="inline-flex items-center rounded px-2 py-0.5 text-xs font-semibold bg-purple-100 text-purple-700">
-                    Admin
+                    {profile.role === "admin" ? "Admin" : "User"}
                   </span>
                 </div>
                 <p className="mt-1 text-sm text-gray-600">
                   {profile.email}
                 </p>
                 <p className="mt-0.5 text-xs text-gray-500">
-                  Member since Jan 2024
+                  Member since {profile.createdAt ? new Date(profile.createdAt).toLocaleDateString("en-US", { month: "short", year: "numeric" }) : "Jan 2024"}
                 </p>
               </div>
             </div>
@@ -166,7 +227,7 @@ export function UserProfilePanel({ isOpen, onClose }: UserProfilePanelProps) {
                     Role
                   </span>
                   <span className="text-sm font-semibold text-gray-900">
-                    Platform Admin
+                    {profile.role === "admin" ? "Admin" : "User"}
                   </span>
                 </div>
               </div>
@@ -177,7 +238,11 @@ export function UserProfilePanel({ isOpen, onClose }: UserProfilePanelProps) {
                     Environment Access
                   </span>
                   <span className="text-sm font-semibold text-gray-900">
-                    All Environments
+                    {profile.allowedEnvironments ? (
+                      profile.allowedEnvironments.split(",").map(env => env.trim()).join(", ")
+                    ) : (
+                      "No access"
+                    )}
                   </span>
                 </div>
               </div>
@@ -187,10 +252,17 @@ export function UserProfilePanel({ isOpen, onClose }: UserProfilePanelProps) {
                   <span className="text-xs font-medium text-gray-600 uppercase tracking-wider">
                     Approval Authority
                   </span>
-                  <span className="inline-flex items-center gap-1 text-sm font-semibold text-green-600">
-                    <Check className="h-4 w-4" />
-                    Enabled
-                  </span>
+                  {profile.approvalAuthority ? (
+                    <span className="inline-flex items-center gap-1 text-sm font-semibold text-green-600">
+                      <Check className="h-4 w-4" />
+                      Enabled
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-sm font-semibold text-gray-500">
+                      <AlertCircle className="h-4 w-4" />
+                      Disabled
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -393,6 +465,22 @@ export function UserProfilePanel({ isOpen, onClose }: UserProfilePanelProps) {
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
+
+              {/* Save Button */}
+              <div className="mt-4 pt-3 border-t border-gray-200">
+                <Button
+                  onClick={savePreferences}
+                  disabled={isSaving}
+                  className="w-full bg-[#ed0923] hover:bg-[#b8071c] text-white"
+                >
+                  {isSaving ? "Saving..." : "Save Preferences"}
+                </Button>
+                {saveSuccess && (
+                  <p className="mt-2 text-xs text-green-600 text-center">
+                    ✓ Preferences saved successfully
+                  </p>
+                )}
+              </div>
             </div>
           </section>
 
@@ -412,7 +500,7 @@ export function UserProfilePanel({ isOpen, onClose }: UserProfilePanelProps) {
                 <div className="mt-1.5 flex items-center gap-2">
                   <div className="flex-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
                     <code className="text-xs font-mono text-gray-600">
-                      cc_prod_a7b3f9e2d4c8...
+                      {profile.accessToken ? `${profile.accessToken.substring(0, 8)}...${profile.accessToken.substring(profile.accessToken.length - 8)}` : "cc_prod_a7b3f9e2d4c8..."}
                     </code>
                   </div>
                   <Button
