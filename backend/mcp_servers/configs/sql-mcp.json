@@ -1,0 +1,15 @@
+{
+  "command": "python",
+  "args": ["sql-mcp-server/server.py"],
+  "type": "stdio",
+  "env": {
+    "SQL_DB_DRIVER": "${SQL_DB_DRIVER}",
+    "SQL_CONNECTION_STRING": "${SQL_CONNECTION_STRING}",
+    "SQL_DB_HOST": "${SQL_DB_HOST}",
+    "SQL_DB_PORT": "${SQL_DB_PORT}",
+    "SQL_DB_DATABASE": "${SQL_DB_DATABASE}",
+    "SQL_DB_WAREHOUSE": "${SQL_DB_WAREHOUSE}",
+    "SQL_DB_USERNAME": "${SQL_DB_USERNAME}",
+    "SQL_DB_PASSWORD": "${SQL_DB_PASSWORD}"
+  }
+}

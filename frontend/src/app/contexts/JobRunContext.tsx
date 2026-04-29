@@ -1,12 +1,12 @@
 import { createContext, ReactNode, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  createResource,
-  createResourceRun,
-  listResources,
+  createJob,
+  createJobRun,
+  listJobs,
   listRuns,
-  type ResourceCreatePayload,
-  type ResourceRecord,
+  type JobCreatePayload,
+  type JobRecord,
   type RunCreatePayload,
   type RunRecord,
 } from "../lib/controlCenterApi";
@@ -33,17 +33,17 @@ export interface ChatJobDraft {
 }
 
 interface LocalCacheShape {
-  resources: ResourceRecord[];
+  jobs: JobRecord[];
   runs: RunRecord[];
 }
 
 interface JobRunContextType {
-  resources: ResourceRecord[];
+  jobs: JobRecord[];
   runs: RunRecord[];
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
-  launchJobFromChat: (draft: ChatJobDraft) => Promise<{ resource: ResourceRecord; run: RunRecord }>;
+  launchJobFromChat: (draft: ChatJobDraft) => Promise<{ job: JobRecord; run: RunRecord }>;
 }
 
 const JobRunContext = createContext<JobRunContextType | undefined>(undefined);
@@ -57,18 +57,22 @@ function getAuthToken() {
 
 function readCache(): LocalCacheShape {
   if (typeof window === "undefined") {
-    return { resources: [], runs: [] };
+    return { jobs: [], runs: [] };
   }
 
   const raw = window.localStorage.getItem(JOB_RUN_CACHE_KEY);
   if (!raw) {
-    return { resources: [], runs: [] };
+    return { jobs: [], runs: [] };
   }
 
   try {
-    return JSON.parse(raw) as LocalCacheShape;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    // Handle migration from old cache shape that used "resources" key
+    const jobs = (parsed.jobs ?? parsed.resources ?? []) as JobRecord[];
+    const runs = (parsed.runs ?? []) as RunRecord[];
+    return { jobs, runs };
   } catch {
-    return { resources: [], runs: [] };
+    return { jobs: [], runs: [] };
   }
 }
 
@@ -77,7 +81,7 @@ function writeCache(cache: LocalCacheShape) {
     return;
   }
   const persistedCache: LocalCacheShape = {
-    resources: cache.resources.filter((resource) => !resource.id.startsWith("local-")),
+    jobs: cache.jobs.filter((job) => !job.id.startsWith("local-")),
     runs: cache.runs.filter((run) => !run.id.startsWith("local-")),
   };
   window.localStorage.setItem(JOB_RUN_CACHE_KEY, JSON.stringify(persistedCache));
@@ -107,7 +111,7 @@ function normalizeOptionalSchedule(schedule?: string) {
   return trimmed;
 }
 
-function normalizeDraftToResource(draft: ChatJobDraft): ResourceCreatePayload {
+function normalizeDraftToJob(draft: ChatJobDraft): JobCreatePayload {
   const tags = ["chat-created", draft.oneTime ? "one-time" : "saved-job"];
   const normalizedSchedule = draft.oneTime ? null : normalizeOptionalSchedule(draft.schedule);
 
@@ -277,7 +281,7 @@ function normalizeDraftToRun(draft: ChatJobDraft): RunCreatePayload {
 
 export function JobRunProvider({ children }: { children: ReactNode }) {
   const initialCache = useMemo(() => readCache(), []);
-  const [resources, setResources] = useState<ResourceRecord[]>(initialCache.resources);
+  const [jobs, setJobs] = useState<JobRecord[]>(initialCache.jobs);
   const [runs, setRuns] = useState<RunRecord[]>(initialCache.runs);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -285,13 +289,13 @@ export function JobRunProvider({ children }: { children: ReactNode }) {
 
   const syncFromApi = async () => {
     const token = getAuthToken();
-    const [resourcesResponse, runsResponse] = await Promise.all([listResources(token), listRuns(token)]);
-    const nextResources = dedupeById(resourcesResponse.items);
+    const [jobsResponse, runsResponse] = await Promise.all([listJobs(token), listRuns(token)]);
+    const nextJobs = dedupeById(jobsResponse.items);
     const nextRuns = dedupeById(runsResponse.items).sort((a, b) => b.updated_at.localeCompare(a.updated_at));
 
-    setResources(nextResources);
+    setJobs(nextJobs);
     setRuns(nextRuns);
-    writeCache({ resources: nextResources, runs: nextRuns });
+    writeCache({ jobs: nextJobs, runs: nextRuns });
   };
 
   const refresh = async () => {
@@ -311,8 +315,8 @@ export function JobRunProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    writeCache({ resources, runs });
-  }, [resources, runs]);
+    writeCache({ jobs, runs });
+  }, [jobs, runs]);
 
   useEffect(() => {
     const hasActiveRuns = runs.some((run) => ["queued", "executing", "running"].includes(run.status));
@@ -338,56 +342,56 @@ export function JobRunProvider({ children }: { children: ReactNode }) {
         activePollRef.current = null;
       }
     };
-  }, [runs, resources]);
+  }, [runs, jobs]);
 
   const launchJobFromChat = async (draft: ChatJobDraft) => {
     const token = getAuthToken();
-    const resourcePayload = normalizeDraftToResource(draft);
+    const jobPayload = normalizeDraftToJob(draft);
     const runPayload = normalizeDraftToRun(draft);
 
-    const optimisticResource: ResourceRecord = {
-      id: `local-resource-${Date.now()}`,
+    const optimisticJob: JobRecord = {
+      id: `local-job-${Date.now()}`,
       name: draft.name,
       kind: "runtime",
-      type: resourcePayload.type,
-      connector: resourcePayload.connector,
+      type: jobPayload.type,
+      connector: jobPayload.connector,
       owner_id: "current-user",
       owner_domain: "collections",
       environment: draft.environment,
       status: "active",
       data_sensitivity: "low",
-      config: resourcePayload.config,
-      tags: resourcePayload.tags,
+      config: jobPayload.config,
+      tags: jobPayload.tags,
       created_at: toIsoNow(),
       updated_at: toIsoNow(),
       last_run_at: null,
       last_run_status: null,
     };
 
-    setResources((current) => dedupeById([optimisticResource, ...current]));
+    setJobs((current) => dedupeById([optimisticJob, ...current]));
 
     try {
-      const resource = await createResource(resourcePayload, token);
-      const run = await createResourceRun(resource.id, runPayload, token);
+      const job = await createJob(jobPayload, token);
+      const run = await createJobRun(job.id, runPayload, token);
 
-      setResources((current) =>
+      setJobs((current) =>
         dedupeById([
           {
-            ...resource,
+            ...job,
             last_run_at: run.updated_at,
             last_run_status: run.status,
           },
-          ...current.filter((item) => item.id !== optimisticResource.id),
+          ...current.filter((item) => item.id !== optimisticJob.id),
         ]),
       );
       setRuns((current) => dedupeById([run, ...current]).sort((a, b) => b.updated_at.localeCompare(a.updated_at)));
       setError(null);
 
-      return { resource, run };
+      return { job, run };
     } catch (err) {
       const failedRun: RunRecord = {
         id: `local-run-${Date.now()}`,
-        resource_id: optimisticResource.id,
+        job_id: optimisticJob.id,
         requested_by: "current-user",
         domain: "collections",
         action: "run",
@@ -417,7 +421,7 @@ export function JobRunProvider({ children }: { children: ReactNode }) {
   return (
     <JobRunContext.Provider
       value={{
-        resources,
+        jobs,
         runs,
         loading,
         error,

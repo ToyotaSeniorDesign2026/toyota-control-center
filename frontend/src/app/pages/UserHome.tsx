@@ -20,27 +20,30 @@ import {
   ChevronDown,
   GitMerge,
   Plus,
+  Trash2,
 } from "lucide-react";
 import { useNavigate } from "react-router";
 import { Button } from "../components/ui/button";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
 import { ChatPanel } from "../components/ChatPanel";
+import { RunParamsModal, connectorNeedsRunParams } from "../components/RunParamsModal";
 import ExcelReportForm from "../components/user/ExcelReportForm";
 import SQLJobForm from "../components/user/SQLJobForm";
 import PowerPointForm from "../components/user/PowerPointForm";
 import { useCalendarOverlay } from "../contexts/CalendarContext";
 import { useJobRuns } from "../contexts/JobRunContext";
 import {
-  createResource,
-  createResourceRun,
+  createJob,
+  createJobRun,
+  deleteJob,
   getRunLogs,
   listMcpRepoBundles,
   listMcpServers,
   type MCPConnectionBundleSummary,
   type MCPServerSummary,
-  type ResourceCreatePayload,
-  type ResourceRecord,
+  type JobCreatePayload,
+  type JobRecord,
   type RunCreatePayload,
   type RunLogEntry,
   type RunRecord,
@@ -57,7 +60,8 @@ import {
   getPromotionTypeColor,
 } from "./promotionsData";
 import {
-  pendingRequiredActionsCount,
+  getVisibleRequiredActions,
+  markRequiredActionResolved,
   requiredActionItems,
   requiredActionStateBadge,
   requiredActionUrgencyBadge,
@@ -326,7 +330,7 @@ const getRunMetadata = (run: RunRecord) => {
   return { submitted, resolved, draft, jobConfig, metadata };
 };
 
-const resolveRunJobName = (run: RunRecord, resource?: ResourceRecord) => {
+const resolveRunJobName = (run: RunRecord, resource?: JobRecord) => {
   const { resolved, draft, metadata } = getRunMetadata(run);
   return (
     getString(resource?.name) ||
@@ -338,7 +342,7 @@ const resolveRunJobName = (run: RunRecord, resource?: ResourceRecord) => {
   );
 };
 
-const resolveRunJobType = (run: RunRecord, resource?: ResourceRecord) => {
+const resolveRunJobType = (run: RunRecord, resource?: JobRecord) => {
   const { draft, metadata } = getRunMetadata(run);
   return normalizeResourceType(
     getString(resource?.type) ||
@@ -349,7 +353,7 @@ const resolveRunJobType = (run: RunRecord, resource?: ResourceRecord) => {
   );
 };
 
-const resolveRunSchedule = (run: RunRecord, resource?: ResourceRecord) => {
+const resolveRunSchedule = (run: RunRecord, resource?: JobRecord) => {
   const { resolved, jobConfig } = getRunMetadata(run);
   const resourceConfig = isRecord(resource?.config) ? resource.config : null;
   return (
@@ -417,7 +421,7 @@ const createWorkspaceJobPayloadFromStoredJob = (job: StoredJob): WorkspaceJobPay
   };
 };
 
-const createWorkspaceJobPayloadFromRun = (run: RunRecord, resource?: ResourceRecord): WorkspaceJobPayload => {
+const createWorkspaceJobPayloadFromRun = (run: RunRecord, resource?: JobRecord): WorkspaceJobPayload => {
   const name = resolveRunJobName(run, resource);
   const type = resolveRunJobType(run, resource);
   const schedule = resolveRunSchedule(run, resource);
@@ -426,7 +430,7 @@ const createWorkspaceJobPayloadFromRun = (run: RunRecord, resource?: ResourceRec
   const tasks = Array.isArray(resolved?.tasks) ? resolved.tasks : [];
 
   return {
-    job_id: resource?.id ?? run.resource_id,
+    job_id: resource?.id ?? run.job_id,
     name,
     type: type as WorkspaceJobPayload["type"],
     schedule,
@@ -436,7 +440,7 @@ const createWorkspaceJobPayloadFromRun = (run: RunRecord, resource?: ResourceRec
       getString(resolved?.intent) ||
       `Latest database run ${run.id} for ${name}.`,
     inputs: [
-      `Resource ID: ${run.resource_id}`,
+      `Resource ID: ${run.job_id}`,
       `Environment: ${run.target_environment}`,
       `Action: ${run.action}`,
     ],
@@ -459,7 +463,7 @@ const createWorkspaceJobPayloadFromRun = (run: RunRecord, resource?: ResourceRec
   };
 };
 
-const createWorkspaceJobPayloadFromResource = (resource: ResourceRecord): WorkspaceJobPayload => {
+const createWorkspaceJobPayloadFromResource = (resource: JobRecord): WorkspaceJobPayload => {
   const config = resource.config ?? {};
   const schedule = getString(config.schedule) || "Manual run";
   const type = normalizeResourceType(resource.type);
@@ -484,16 +488,16 @@ const createWorkspaceJobPayloadFromResource = (resource: ResourceRecord): Worksp
   };
 };
 
-const createDashboardJobs = (runs: RunRecord[], resources: ResourceRecord[]): DashboardJobListItem[] => {
-  const jobResources = resources.filter((resource) => resource.type !== "repo_connection");
+const createDashboardJobs = (runs: RunRecord[], jobs: JobRecord[]): DashboardJobListItem[] => {
+  const jobResources = jobs.filter((job) => job.type !== "repo_connection");
   const resourceById = new Map(jobResources.map((resource) => [resource.id, resource]));
   const latestRunByResource = new Map<string, RunRecord>();
 
   [...runs]
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
     .forEach((run) => {
-      if (!latestRunByResource.has(run.resource_id)) {
-        latestRunByResource.set(run.resource_id, run);
+      if (!latestRunByResource.has(run.job_id)) {
+        latestRunByResource.set(run.job_id, run);
       }
     });
 
@@ -512,10 +516,10 @@ const createDashboardJobs = (runs: RunRecord[], resources: ResourceRecord[]): Da
       };
     }
 
-    const resolvedResource = resourceById.get(run.resource_id);
+    const resolvedResource = resourceById.get(run.job_id);
     const payload = createWorkspaceJobPayloadFromRun(run, resolvedResource);
     return {
-      id: run.resource_id,
+      id: run.job_id,
       name: payload.name,
       type: payload.type,
       schedule: payload.schedule,
@@ -564,15 +568,15 @@ const getRepoConnectionName = (repoSlug: string, explicitName?: string): string 
   return `${repoName}-repo`;
 };
 
-const createDashboardRuns = (runs: RunRecord[], resources: ResourceRecord[], scheduledOccurrences: ScheduledOccurrence[] = []) => {
-  const resourceById = new Map(resources.map((resource) => [resource.id, resource]));
+const createDashboardRuns = (runs: RunRecord[], jobs: JobRecord[], scheduledOccurrences: ScheduledOccurrence[] = []) => {
+  const resourceById = new Map(jobs.map((job) => [job.id, job]));
   const mappedRuns = runs.map((run) => {
-    const resource = resourceById.get(run.resource_id);
+    const resource = resourceById.get(run.job_id);
     const status = mapRunStatusToRunItemStatus(run.status);
     const scheduledTime = new Date(run.created_at);
     return {
       id: run.id,
-      resourceId: run.resource_id,
+      resourceId: run.job_id,
       jobName: resolveRunJobName(run, resource),
       jobType: resolveRunJobType(run, resource),
       status,
@@ -582,7 +586,7 @@ const createDashboardRuns = (runs: RunRecord[], resources: ResourceRecord[], sch
   });
   const projectedRuns = scheduledOccurrences.map((occurrence) => ({
     id: occurrence.id,
-    resourceId: occurrence.resourceId,
+    resourceId: occurrence.jobId,
     jobName: occurrence.jobName,
     jobType: occurrence.jobType,
     status: "scheduled" as const,
@@ -835,10 +839,13 @@ interface WorkspaceState {
   secondaryPosition: "left" | "right";
 }
 
+const ICON_RAIL_WIDTH = 64;
+const RESIZE_HANDLE_WIDTH = 4;
+
 export default function UserHome() {
   const navigate = useNavigate();
   const {
-    resources,
+    jobs,
     runs,
     loading: jobRunsLoading,
     error: jobRunsError,
@@ -847,7 +854,6 @@ export default function UserHome() {
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [activePanelId, setActivePanelId] = useState<string | null>(null);
   const [selectedResourceId, setSelectedResourceId] = useState<string | null>(null);
-  const [jobDetailTab, setJobDetailTab] = useState<"overview" | "runs" | "settings">("overview");
   
   // Panel resize state
   const [jobsPanelWidth, setJobsPanelWidth] = useState(280);
@@ -889,11 +895,17 @@ export default function UserHome() {
   
   const [isAIPanelOpen, setIsAIPanelOpen] = useState(false);
   const [isChatPanelOpen, setIsChatPanelOpen] = useState(true);
+  const [dismissedActionIds, setDismissedActionIds] = useState<string[]>([]);
+  const [requiredActionSuccessMessage, setRequiredActionSuccessMessage] = useState<string | null>(null);
   const [templateSearch, setTemplateSearch] = useState("");
   const [jobSearch, setJobSearch] = useState("");
   const [jobSort, setJobSort] = useState<"name" | "status" | "type" | "recently-updated">("name");
   const [jobFilter, setJobFilter] = useState<string>("all");
+  const [jobDetailTabById, setJobDetailTabById] = useState<Record<string, "overview" | "runs" | "preview" | "settings">>({});
+  const [isDraftsExpanded, setIsDraftsExpanded] = useState(true);
+  const [isRetiredJobsExpanded, setIsRetiredJobsExpanded] = useState(false);
   const [runningJobIds, setRunningJobIds] = useState<string[]>([]);
+  const [runParamsJob, setRunParamsJob] = useState<JobRecord | null>(null);
   const [templateSort, setTemplateSort] = useState<"name" | "category" | "recently-used" | "recommended">("name");
   const [templateFilter, setTemplateFilter] = useState<"all" | "PowerPoint" | "Excel" | "SQL" | "Workflow" | "Form" | "Dashboard">("all");
   const [selectedPromotions, setSelectedPromotions] = useState<string[]>([]);
@@ -909,7 +921,7 @@ export default function UserHome() {
   const [repoConnectionSuccess, setRepoConnectionSuccess] = useState<string | null>(null);
   const [isSavingRepoConnection, setIsSavingRepoConnection] = useState(false);
   const [consoleHeight, setConsoleHeight] = useState(50);
-  const [consoleActiveTab, setConsoleActiveTab] = useState<"json" | "logs" | "events">("json");
+  const [consoleActiveTab, setConsoleActiveTab] = useState<"json" | "logs" | "events" | "output">("json");
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [runLogs, setRunLogs] = useState<RunLogEntry[]>([]);
   const [expandedActionId, setExpandedActionId] = useState<string | null>(null);
@@ -940,10 +952,10 @@ export default function UserHome() {
     },
   ]);
   const [aiInput, setAiInput] = useState("");
-  const baseDashboardJobs = useMemo(() => createDashboardJobs(runs, resources), [runs, resources]);
+  const baseDashboardJobs = useMemo(() => createDashboardJobs(runs, jobs), [runs, jobs]);
   const connectedRepoResources = useMemo(
-    () => resources.filter((resource) => resource.type === "repo_connection"),
-    [resources],
+    () => jobs.filter((job) => job.type === "repo_connection"),
+    [jobs],
   );
   const dashboardJobs = useMemo(
     () =>
@@ -957,8 +969,8 @@ export default function UserHome() {
       ),
     [baseDashboardJobs, runningJobIds],
   );
-  const scheduledRunProjections = useMemo(() => createScheduledRunProjections(resources), [resources]);
-  const dashboardRuns = useMemo(() => createDashboardRuns(runs, resources, scheduledRunProjections), [runs, resources, scheduledRunProjections]);
+  const scheduledRunProjections = useMemo(() => createScheduledRunProjections(jobs), [jobs]);
+  const dashboardRuns = useMemo(() => createDashboardRuns(runs, jobs, scheduledRunProjections), [runs, jobs, scheduledRunProjections]);
   const activeDashboardJobs = useMemo(
     () => dashboardJobs.filter((job) => job.status === "Running" || job.status === "Healthy"),
     [dashboardJobs],
@@ -1033,13 +1045,13 @@ export default function UserHome() {
   );
   const filteredDashboardRuns = useMemo(() => {
     if (!selectedResourceId) return dashboardRuns;
-    const filtered = runs.filter((r) => r.resource_id === selectedResourceId);
-    const projected = scheduledRunProjections.filter((run) => run.resourceId === selectedResourceId);
-    return createDashboardRuns(filtered, resources, projected);
-  }, [runs, resources, selectedResourceId, dashboardRuns, scheduledRunProjections]);
+    const filtered = runs.filter((r) => r.job_id === selectedResourceId);
+    const projected = scheduledRunProjections.filter((run) => run.jobId === selectedResourceId);
+    return createDashboardRuns(filtered, jobs, projected);
+  }, [runs, jobs, selectedResourceId, dashboardRuns, scheduledRunProjections]);
   const selectedResourceName = useMemo(
-    () => resources.find((r) => r.id === selectedResourceId)?.name ?? null,
-    [resources, selectedResourceId]
+    () => jobs.find((r) => r.id === selectedResourceId)?.name ?? null,
+    [jobs, selectedResourceId]
   );
   const [customFormBuilder, setCustomFormBuilder] = useState<CustomFormBuilderState>({
     formName: "",
@@ -1136,6 +1148,22 @@ export default function UserHome() {
       },
       "primary"
     );
+  };
+
+  const handleResolveRequiredAction = (actionId: string, actionSubject: string, tabId: string) => {
+    markRequiredActionResolved(actionId);
+    setDismissedActionIds((prev) => (prev.includes(actionId) ? prev : [...prev, actionId]));
+    setRequiredActionSuccessMessage(`Resolved successfully: ${actionSubject}.`);
+    setActivePanelId("required-actions");
+    handleCloseTabInPane(tabId, "primary");
+  };
+
+  const handleWithdrawSubmission = (promotionId: string, promotionName: string) => {
+    withdrawPendingSubmission(promotionId);
+    setHighlightedPendingPromotionId(null);
+    setPromotionSubmissionMessage(`${promotionName} was withdrawn from Pending Promotions.`);
+    setActivePanelId("promotions-edits");
+    handleCloseTabInPane(`promotion-${promotionId.replace(/\s+/g, "-").toLowerCase()}`, "primary");
   };
 
   const handleCustomFormCreateJob = () => {
@@ -1240,6 +1268,26 @@ export default function UserHome() {
     ];
   };
 
+  const getConsoleOutput = () => {
+    const execLog = runLogs.find((l) => l.message === "Connector execution finished");
+    if (!execLog) return null;
+    const meta = execLog.metadata as any;
+    const execution = meta?.metadata?.execution ?? meta?.execution ?? null;
+    return {
+      final_text: execution?.final_text ?? null,
+      tool_executions: (execution?.tool_executions ?? []) as Array<{
+        framework_name?: string;
+        server_name?: string;
+        remote_name?: string;
+        arguments?: Record<string, unknown>;
+        parsed_result?: unknown;
+      }>,
+      result: execution?.result ?? null,
+      error: execution?.error ?? meta?.error ?? null,
+      status: execution?.status ?? meta?.status ?? null,
+    };
+  };
+
   // Fetch run logs whenever activeRunId changes, polling until the run reaches a terminal state
   useEffect(() => {
     if (!activeRunId) return;
@@ -1250,9 +1298,12 @@ export default function UserHome() {
         const result = await getRunLogs(activeRunId, getAuthToken());
         if (!stopped) {
           setRunLogs(result.logs);
-          // Stop polling once the run is in a terminal state
-          const terminal = ["completed", "failed", "stopped", "cancelled", "canceled"];
-          if (terminal.includes(result.status.toLowerCase())) stopped = true;
+          // Stop polling once the run is in a terminal state; auto-switch to output
+          const terminal = ["completed", "succeeded", "failed", "stopped", "cancelled", "canceled", "deployed"];
+          if (terminal.includes(result.status.toLowerCase())) {
+            stopped = true;
+            setConsoleActiveTab("output");
+          }
         }
       } catch {
         // ignore fetch errors silently
@@ -1404,8 +1455,9 @@ export default function UserHome() {
     );
   };
 
-  const requiredActionPreview = requiredActionItems.slice(0, 3);
-  const pendingCount = pendingRequiredActionsCount();
+  const visibleRequiredActions = getVisibleRequiredActions().filter((item) => !dismissedActionIds.includes(item.id));
+  const requiredActionPreview = visibleRequiredActions.slice(0, 3);
+  const pendingCount = visibleRequiredActions.filter((item) => item.state === "pending").length;
 
   // Get active tab and related data from primary pane
   const activeTab = workspace.primary.tabs.find((tab) => tab.id === workspace.primary.activeTabId);
@@ -1489,6 +1541,23 @@ export default function UserHome() {
             closable: true,
             templateId: item.id,
             templateName: item.name,
+            payload: item.payload,
+          };
+          targetPane.tabs = [...targetPane.tabs, newTab];
+        }
+        targetPane.activeTabId = tabId;
+      } else if (item.type === "promotion") {
+        // Generate consistent tab ID for deduplication
+        tabId = `promotion-${item.id.replace(/\s+/g, "-").toLowerCase()}`;
+        // Check if tab already exists in this pane by ID
+        existingTab = targetPane.tabs.find((tab) => tab.id === tabId);
+
+        if (!existingTab) {
+          newTab = {
+            id: tabId,
+            type: "promotion",
+            title: item.name,
+            closable: true,
             payload: item.payload,
           };
           targetPane.tabs = [...targetPane.tabs, newTab];
@@ -1834,7 +1903,76 @@ export default function UserHome() {
     };
   }, [isResizing]);
 
-  const requiredActionsCount = requiredActionItems.length;
+  useEffect(() => {
+    const syncResponsiveLayout = () => {
+      const viewportWidth = window.innerWidth;
+      const isLeftPanelOpen = Boolean(activePanelId);
+      const isChatOpen = isChatPanelOpen;
+
+      const jobsFloor = viewportWidth < 1100 ? 180 : 220;
+      const chatFloor = viewportWidth < 1100 ? 240 : 280;
+      const workspaceFloor = viewportWidth < 1100 ? 320 : viewportWidth < 1360 ? 420 : 560;
+
+      let nextJobsWidth = isLeftPanelOpen
+        ? Math.min(Math.max(jobsPanelWidth, jobsFloor), Math.min(360, Math.floor(viewportWidth * 0.3)))
+        : 0;
+      let nextChatWidth = isChatOpen
+        ? Math.min(Math.max(chatPanelWidth, chatFloor), Math.min(420, Math.floor(viewportWidth * 0.34)))
+        : 0;
+
+      const handleCount = (isLeftPanelOpen ? 1 : 0) + (isChatOpen ? 1 : 0);
+      const availableForSidePanels =
+        viewportWidth - ICON_RAIL_WIDTH - handleCount * RESIZE_HANDLE_WIDTH - workspaceFloor;
+
+      let overflow = nextJobsWidth + nextChatWidth - Math.max(0, availableForSidePanels);
+
+      if (overflow > 0 && isChatOpen) {
+        const chatShrinkCapacity = nextChatWidth - chatFloor;
+        const chatShrinkAmount = Math.min(chatShrinkCapacity, overflow);
+        nextChatWidth -= chatShrinkAmount;
+        overflow -= chatShrinkAmount;
+      }
+
+      if (overflow > 0 && isLeftPanelOpen) {
+        const jobsShrinkCapacity = nextJobsWidth - jobsFloor;
+        const jobsShrinkAmount = Math.min(jobsShrinkCapacity, overflow);
+        nextJobsWidth -= jobsShrinkAmount;
+        overflow -= jobsShrinkAmount;
+      }
+
+      if (isLeftPanelOpen && nextJobsWidth !== jobsPanelWidth) {
+        setJobsPanelWidth(nextJobsWidth);
+      }
+
+      if (isChatOpen && nextChatWidth !== chatPanelWidth) {
+        setChatPanelWidth(nextChatWidth);
+      }
+
+      const workspaceAvailableWidth =
+        viewportWidth -
+        ICON_RAIL_WIDTH -
+        handleCount * RESIZE_HANDLE_WIDTH -
+        nextJobsWidth -
+        nextChatWidth;
+
+      if (workspace.mode === "split") {
+        const paneFloor = workspaceAvailableWidth < 900 ? 240 : 280;
+        const paneCeiling = Math.max(paneFloor, workspaceAvailableWidth - paneFloor - RESIZE_HANDLE_WIDTH);
+        const clampedPaneWidth = Math.min(Math.max(workspacePaneAWidth, paneFloor), paneCeiling);
+
+        if (clampedPaneWidth !== workspacePaneAWidth) {
+          setWorkspacePaneAWidth(clampedPaneWidth);
+        }
+      }
+    };
+
+    syncResponsiveLayout();
+    window.addEventListener("resize", syncResponsiveLayout);
+
+    return () => window.removeEventListener("resize", syncResponsiveLayout);
+  }, [activePanelId, chatPanelWidth, isChatPanelOpen, jobsPanelWidth, workspace.mode, workspacePaneAWidth]);
+
+  const requiredActionsCount = visibleRequiredActions.length;
   const badgeLabel = requiredActionsCount > 9 ? "9+" : String(requiredActionsCount);
 
   const panels = [
@@ -1910,15 +2048,15 @@ export default function UserHome() {
       const normalized = value.trim().toLowerCase();
       return normalized === "production" ? "prod" : normalized;
     };
-    const sqlConnectors = ["sql-dab", "sql-dab-analytics"];
+    const sqlConnectors = ["sql-mcp", "sql-mcp-analytics"];
     const defaultConnectionIdForConnector = (connector: string) => {
-      if (connector === "sql-dab") return "postgres";
-      if (connector === "sql-dab-analytics") return "analytics";
+      if (connector === "sql-mcp") return "postgres";
+      if (connector === "sql-mcp-analytics") return "analytics";
       return "";
     };
     const normalizeConnector = (connector: any) => {
       const normalized = typeof connector === "string" ? connector.trim().toLowerCase() : "";
-      return sqlConnectors.includes(normalized) ? normalized : "sql-dab";
+      return sqlConnectors.includes(normalized) ? normalized : "sql-mcp";
     };
     const normalizedType = String(fields.job_type ?? fields.type ?? "").trim().toLowerCase();
     const isSql =
@@ -1929,8 +2067,9 @@ export default function UserHome() {
     const normalized: Record<string, any> = {
       ...fields,
       ...(fields.name && !fields.job_name ? { job_name: fields.name } : {}),
-      ...(fields.environment !== undefined ? { environment: normalizeEnv(fields.environment) } : {}),
-      ...(fields.target_environment !== undefined ? { target_environment: normalizeEnv(fields.target_environment) } : {}),
+      ...((fields.target_environment ?? fields.environment) !== undefined
+        ? { target_environment: normalizeEnv(fields.target_environment ?? fields.environment) }
+        : {}),
       ...(fields.schedule === undefined && config.schedule !== undefined ? { schedule: config.schedule } : {}),
     };
     const normalizedSchedule = typeof normalized.schedule === "string" ? normalized.schedule.trim() : "";
@@ -1938,10 +2077,11 @@ export default function UserHome() {
       normalized.run_type = "scheduled";
     }
 
-    if (isSql) {
+    if (isSql && fields.sql_subtype !== "sql_github_write") {
       const connector = normalizeConnector(fields.connector ?? config.connector);
       const explicitConnectionId = fields.connection_id ?? config.connection_id;
       const parsedConnection = parseSqlConnectionString(config.sql_connection_string);
+      const { target_environment: _targetEnvironmentConfig, environment: _environmentConfig, ...sqlConfig } = config;
       const database =
         fields.database ??
         config.database ??
@@ -1954,11 +2094,12 @@ export default function UserHome() {
       normalized.connection_id = explicitConnectionId ?? defaultConnectionIdForConnector(connector);
       normalized.database = database ?? "";
       normalized.target_environment = normalized.target_environment ?? normalized.environment ?? "dev";
+      delete normalized.environment;
       normalized.query = fields.query ?? params.query ?? config.query ?? "";
       normalized.output_destination = fields.output_destination ?? config.output_destination ?? "";
       normalized.result_limit = fields.result_limit ?? config.result_limit ?? "";
       normalized.config = {
-        ...config,
+        ...sqlConfig,
         connection_id: normalized.connection_id,
         ...(normalized.database ? { database: normalized.database } : {}),
         ...(parsedConnection.host ? { host: config.host ?? parsedConnection.host } : {}),
@@ -1966,7 +2107,6 @@ export default function UserHome() {
         ...(parsedConnection.username ? { username: config.username ?? parsedConnection.username } : {}),
         query: normalized.query,
         schedule: normalized.schedule,
-        target_environment: normalized.target_environment,
         output_destination: normalized.output_destination,
         result_limit: normalized.result_limit,
       };
@@ -2023,11 +2163,17 @@ export default function UserHome() {
       return;
     }
     const normalized = normalizeExtractedJobFields(fields);
+    // sql_github_write drafts carry a `repo` field but are NOT standalone repo connections —
+    // they are part of the SQL-to-GitHub write flow and should stay in the job draft.
+    const isGithubWriteFlow = normalized.sql_subtype === "sql_github_write";
     const isRepoConnectionDraft =
-      normalized.connection_intent === "connect_repo" ||
-      normalized.type === "repo_connection" ||
-      normalized.connector === "github" ||
-      Boolean(normalized.repo);
+      !isGithubWriteFlow &&
+      (
+        normalized.connection_intent === "connect_repo" ||
+        normalized.type === "repo_connection" ||
+        normalized.connector === "github" ||
+        Boolean(normalized.repo)
+      );
 
     if (isRepoConnectionDraft) {
       applyRepoConnectionFields(normalized);
@@ -2048,6 +2194,27 @@ export default function UserHome() {
         setRepoConnectionError("Chat started a GitHub repo connection, but I still need the repo slug.");
       }
       return;
+    }
+
+    // For the GitHub write flow, silently register any new repo the user provides so it
+    // appears in the Connected Repo Context for future sessions. registerRepoConnection
+    // deduplicates internally, so re-calling with an already-connected repo is safe.
+    if (isGithubWriteFlow) {
+      const repoSlug = normalizeGithubRepoInput(String(normalized.repo ?? ""));
+      if (repoSlug) {
+        void registerRepoConnection(
+          {
+            repo: repoSlug,
+            ref: String(normalized.ref ?? ""),
+            path: "",
+            displayName: repoSlug.split("/")[1] ?? repoSlug,
+            description: "",
+          },
+          "chat",
+        ).catch(() => {
+          // silently ignore — don't interrupt the write flow for a background registration failure
+        });
+      }
     }
 
     setJobDraft((prev) => mergeDraftValues(prev, normalized));
@@ -2071,10 +2238,10 @@ export default function UserHome() {
 
     if (jobType === "SQL") {
       return Boolean(
-        String(draft.connector ?? "").trim() &&
+          String(draft.connector ?? "").trim() &&
           String(draft.connection_id ?? draft.config?.connection_id ?? "").trim() &&
           String(draft.query ?? draft.config?.query ?? draft.params?.query ?? "").trim() &&
-          String(draft.target_environment ?? draft.config?.target_environment ?? draft.environment ?? "").trim()
+          String(draft.target_environment ?? draft.environment ?? "").trim()
       );
     }
 
@@ -2116,7 +2283,7 @@ export default function UserHome() {
     }));
   };
 
-  const buildRepoConnectionPayload = (form: RepoConnectionFormState): ResourceCreatePayload => {
+  const buildRepoConnectionPayload = (form: RepoConnectionFormState): JobCreatePayload => {
     const repo = normalizeGithubRepoInput(form.repo);
     if (!isValidGithubRepoSlug(repo)) {
       throw new Error("Enter a GitHub repo as owner/repo or a full GitHub URL.");
@@ -2161,7 +2328,7 @@ export default function UserHome() {
     setRepoConnectionSuccess(null);
 
     try {
-      const resource = existing ?? await createResource(payload, getAuthToken());
+      const resource = existing ?? await createJob(payload, getAuthToken());
       await refreshJobRuns();
       setRepoConnectionForm((prev) => ({
         ...DEFAULT_REPO_CONNECTION_FORM,
@@ -2198,16 +2365,16 @@ export default function UserHome() {
 
   const normalizeSqlConnectorForResource = (connector: unknown) => {
     const normalized = typeof connector === "string" ? connector.trim().toLowerCase() : "";
-    if (normalized === "sql-dab" || normalized === "control center dev database" || normalized === "control-center dev database") {
-      return "sql-dab";
+    if (normalized === "sql-mcp" || normalized === "control center dev database" || normalized === "control-center dev database") {
+      return "sql-mcp";
     }
-    if (normalized === "sql-dab-analytics" || normalized === "analytics reporting database") {
-      return "sql-dab-analytics";
+    if (normalized === "sql-mcp-analytics" || normalized === "analytics reporting database") {
+      return "sql-mcp-analytics";
     }
-    return "sql-dab";
+    return "sql-mcp";
   };
 
-  const buildResourcePayloadFromDraft = (draft: Record<string, any>): ResourceCreatePayload => {
+  const buildResourcePayloadFromDraft = (draft: Record<string, any>): JobCreatePayload => {
     const jobType = String(draft.job_type ?? "").trim();
     const schedule = String(draft.schedule ?? draft.config?.schedule ?? "").trim();
     const timezone = typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "America/Chicago";
@@ -2225,7 +2392,7 @@ export default function UserHome() {
 
     if (jobType === "SQL") {
       const connector = normalizeSqlConnectorForResource(draft.connector);
-      const connectionId = String(draft.connection_id ?? draft.config?.connection_id ?? (connector === "sql-dab" ? "postgres" : "analytics")).trim();
+      const connectionId = String(draft.connection_id ?? draft.config?.connection_id ?? (connector === "sql-mcp" ? "postgres" : "analytics")).trim();
       const query = String(draft.query ?? draft.config?.query ?? draft.params?.query ?? "").trim();
       return {
         ...basePayload,
@@ -2287,16 +2454,16 @@ export default function UserHome() {
     }
 
     const payload = buildResourcePayloadFromDraft(jobDraft);
-    const existingResource = resources.find(
-      (resource) => resource.name === payload.name && resource.type === payload.type && resource.connector === payload.connector
+    const existingResource = jobs.find(
+      (job) => job.name === payload.name && job.type === payload.type && job.connector === payload.connector
     );
 
     setIsRegisteringJob(true);
     try {
-      const resource = existingResource ?? await createResource(payload, getAuthToken());
+      const resource = existingResource ?? await createJob(payload, getAuthToken());
       setJobDraft((prev) => ({
         ...prev,
-        resource_id: resource.id,
+        job_id: resource.id,
         name: resource.name,
         connector: resource.connector,
         connection_id: resource.config?.connection_id ?? prev.connection_id,
@@ -2318,7 +2485,7 @@ export default function UserHome() {
       });
 
       if (options.autoRun) {
-        const run = await createResourceRun(resource.id, buildRunPayloadFromResource(resource), getAuthToken());
+        const run = await createJobRun(resource.id, buildRunPayloadFromResource(resource), getAuthToken());
         setActiveRunId(run.id);
         setRunLogs([]);
         setConsoleActiveTab("logs");
@@ -2350,7 +2517,7 @@ export default function UserHome() {
     }
   };
 
-  const buildRunPayloadFromResource = (resource: ResourceRecord): RunCreatePayload => {
+  const buildRunPayloadFromResource = (resource: JobRecord): RunCreatePayload => {
     const config = resource.config ?? {};
     return {
       action: "run",
@@ -2374,18 +2541,17 @@ export default function UserHome() {
     };
   };
 
-  const runResourceFromUi = async (resourceId: string) => {
-    const resource = resources.find((item) => item.id === resourceId);
-    if (!resource) {
-      emitConsoleEvent("missing_fields_identified", "Unable to run job because the resource was not found", { resource_id: resourceId });
-      return;
-    }
-
+  const executeRunWithParams = async (resource: JobRecord, extraParams: Record<string, unknown>) => {
+    const resourceId = resource.id;
     setRunningJobIds((current) => Array.from(new Set([...current, resourceId])));
-    emitConsoleEvent("draft_updated", `Started run for ${resource.name}`, { resource_id: resource.id });
-
+    emitConsoleEvent("draft_updated", `Started run for ${resource.name}`, { resource_id: resourceId });
     try {
-      const run = await createResourceRun(resource.id, buildRunPayloadFromResource(resource), getAuthToken());
+      const basePayload = buildRunPayloadFromResource(resource);
+      const run = await createJobRun(
+        resource.id,
+        { ...basePayload, params: { ...basePayload.params, ...extraParams } },
+        getAuthToken(),
+      );
       setActiveRunId(run.id);
       setRunLogs([]);
       setConsoleActiveTab("logs");
@@ -2393,7 +2559,7 @@ export default function UserHome() {
       await refreshJobRuns();
     } catch (err) {
       emitConsoleEvent("missing_fields_identified", `Unable to run ${resource.name}`, {
-        resource_id: resource.id,
+        resource_id: resourceId,
         error: err instanceof Error ? err.message : "Unknown error",
       });
     } finally {
@@ -2401,12 +2567,48 @@ export default function UserHome() {
     }
   };
 
+  const runResourceFromUi = async (resourceId: string) => {
+    const resource = jobs.find((item) => item.id === resourceId);
+    if (!resource) {
+      emitConsoleEvent("missing_fields_identified", "Unable to run job because the resource was not found", { resource_id: resourceId });
+      return;
+    }
+
+    if (connectorNeedsRunParams(resource)) {
+      setRunParamsJob(resource);
+      return;
+    }
+
+    await executeRunWithParams(resource, {});
+  };
+
+  const handleDeleteJob = async (jobId: string, jobName: string) => {
+    if (!window.confirm(`Delete job "${jobName}"? This will also remove all of its run history and cannot be undone.`)) {
+      return;
+    }
+    try {
+      await deleteJob(jobId, getAuthToken());
+      await refreshJobRuns();
+    } catch (err) {
+      alert(`Failed to delete job: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const handleRunParamsSubmit = (params: Record<string, string>) => {
+    if (!runParamsJob) return;
+    const resource = runParamsJob;
+    setRunParamsJob(null); // close modal immediately — don't block UI on execution
+    void executeRunWithParams(resource, params);
+  };
+
+  // kept for compatibility with the post-creation immediate-run path below
+
   useEffect(() => {
     if (
       jobDraft.job_type !== "SQL" ||
       !jobDraft.creation_requested ||
       !isCreateJobDraftComplete(jobDraft) ||
-      jobDraft.resource_id ||
+      jobDraft.job_id ||
       isRegisteringJob
     ) {
       return;
@@ -2434,7 +2636,7 @@ export default function UserHome() {
       });
       autoRegisteredDraftKeyRef.current = null;
     });
-  }, [jobDraft, isRegisteringJob, resources]);
+  }, [jobDraft, isRegisteringJob, jobs]);
 
   // Render tab content - shared across all panes
   const renderTabContent = (tab: WorkspaceTab | undefined) => {
@@ -2446,7 +2648,7 @@ export default function UserHome() {
       ? ((tab.payload as WorkspaceJobPayload | undefined) ?? (currentJobName ? mockJobSpecs[currentJobName] : null))
       : null;
     const currentJobResource = currentJobSpec
-      ? resources.find((resource) => resource.id === currentJobSpec.job_id || resource.id === tab.id)
+      ? jobs.find((job) => job.id === currentJobSpec.job_id || job.id === tab.id)
       : null;
     
     // Get template if needed
@@ -3026,7 +3228,13 @@ export default function UserHome() {
         ) : tab.type === "job" && currentJobSpec ? (
           /* Job Workspace View */
           <div className="mx-auto max-w-[1600px] px-6 py-8">
-            <div className="space-y-6">
+            {(() => {
+              const activeJobDetailTab = jobDetailTabById[tab.id] ?? "overview";
+              const isAttentionJob = currentJobSpec.status === "Needs Attention";
+              const relatedRunRecords = dashboardRuns.recentRuns.filter((run) => run.jobName === currentJobSpec.name);
+
+              return (
+                <div className="space-y-6">
               {/* Job Header */}
               <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                 <div>
@@ -3065,28 +3273,54 @@ export default function UserHome() {
               {/* Tabs */}
               <div className="border-b border-gray-200">
                 <div className="flex gap-8">
-                  {(["overview", "runs", "settings"] as const).map((t) => (
-                    <button
-                      key={t}
-                      onClick={() => setJobDetailTab(t)}
-                      className={`px-0 py-3 text-sm font-medium capitalize transition ${
-                        jobDetailTab === t
-                          ? "text-gray-900 border-b-2 border-[#ed0923]"
-                          : "text-gray-500 hover:text-gray-900"
-                      }`}
-                    >
-                      {t.charAt(0).toUpperCase() + t.slice(1)}
-                    </button>
-                  ))}
+                  <button
+                    onClick={() => setJobDetailTabById((prev) => ({ ...prev, [tab.id]: "overview" }))}
+                    className={`px-0 py-3 text-sm font-medium border-b-2 transition ${
+                      activeJobDetailTab === "overview"
+                        ? "text-gray-900 border-[#ed0923]"
+                        : "text-gray-600 border-transparent hover:text-gray-900"
+                    }`}
+                  >
+                    Overview
+                  </button>
+                  <button
+                    onClick={() => setJobDetailTabById((prev) => ({ ...prev, [tab.id]: "runs" }))}
+                    className={`px-0 py-3 text-sm font-medium border-b-2 transition ${
+                      activeJobDetailTab === "runs"
+                        ? "text-gray-900 border-[#ed0923]"
+                        : "text-gray-600 border-transparent hover:text-gray-900"
+                    }`}
+                  >
+                    Runs
+                  </button>
+                  <button
+                    onClick={() => setJobDetailTabById((prev) => ({ ...prev, [tab.id]: "preview" }))}
+                    className={`px-0 py-3 text-sm font-medium border-b-2 transition ${
+                      activeJobDetailTab === "preview"
+                        ? "text-gray-900 border-[#ed0923]"
+                        : "text-gray-600 border-transparent hover:text-gray-900"
+                    }`}
+                  >
+                    Preview
+                  </button>
+                  <button
+                    onClick={() => setJobDetailTabById((prev) => ({ ...prev, [tab.id]: "settings" }))}
+                    className={`px-0 py-3 text-sm font-medium border-b-2 transition ${
+                      activeJobDetailTab === "settings"
+                        ? "text-gray-900 border-[#ed0923]"
+                        : "text-gray-600 border-transparent hover:text-gray-900"
+                    }`}
+                  >
+                    Settings
+                  </button>
                 </div>
               </div>
 
-              {/* Tab Content */}
-              {jobDetailTab === "overview" && (
+              {activeJobDetailTab === "overview" && (
                 <div className="rounded-xl border border-gray-200 bg-white p-6">
                   <h2 className="text-lg font-semibold text-gray-900 mb-4">Job Configuration</h2>
                   <div className="space-y-6">
-                    <div className="grid grid-cols-3 gap-4">
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                       <div>
                         <p className="text-xs font-semibold text-gray-500 uppercase">Type</p>
                         <p className="text-sm text-gray-900 mt-1">{currentJobSpec.type}</p>
@@ -3145,11 +3379,11 @@ export default function UserHome() {
                 </div>
               )}
 
-              {jobDetailTab === "runs" && (() => {
+              {activeJobDetailTab === "runs" && (() => {
                 const resourceId = tab.payload?.job_id as string | undefined;
                 const jobRuns = resourceId
                   ? [...runs]
-                      .filter((r) => r.resource_id === resourceId)
+                      .filter((r) => r.job_id === resourceId)
                       .sort((a, b) => b.created_at.localeCompare(a.created_at))
                   : [];
 
@@ -3219,7 +3453,34 @@ export default function UserHome() {
                 );
               })()}
 
-              {jobDetailTab === "settings" && (
+              {activeJobDetailTab === "preview" && (
+                <div className="rounded-xl border border-gray-200 bg-white p-6">
+                  <h2 className="text-lg font-semibold text-gray-900 mb-4">Execution Preview</h2>
+                  <div className="space-y-4">
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+                      <p className="text-sm font-medium text-gray-900">What this job is expected to produce</p>
+                      <ul className="mt-3 space-y-2">
+                        {currentJobSpec.outputs.map((output, idx) => (
+                          <li key={idx} className="text-sm text-gray-700 flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-green-500" />
+                            {output}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    {isAttentionJob && (
+                      <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+                        <p className="text-sm font-semibold text-red-900">Attention needed before the next run</p>
+                        <p className="mt-2 text-sm text-red-800">
+                          Review the latest failed run, confirm the inputs are still valid, and update any settings before retrying.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {activeJobDetailTab === "settings" && (
                 <div className="rounded-xl border border-gray-200 bg-white p-6">
                   <h2 className="text-lg font-semibold text-gray-900 mb-4">Settings</h2>
                   <div className="space-y-4">
@@ -3235,6 +3496,8 @@ export default function UserHome() {
                 </div>
               )}
             </div>
+              );
+            })()}
           </div>
         ) : tab.type === "required-action" && tab.payload ? (
           /* Required Action Form View */
@@ -3316,13 +3579,53 @@ export default function UserHome() {
                   </div>
 
                   {/* Action Buttons */}
-                  <div className="border-t border-gray-200 pt-6 flex gap-3">
-                    <button className="flex-1 px-4 py-2 bg-[#ed0923] text-white rounded-lg font-medium hover:bg-[#d10820] transition">
-                      Resolve Action
-                    </button>
-                    <button className="flex-1 px-4 py-2 border border-gray-300 text-gray-900 rounded-lg font-medium hover:bg-gray-50 transition">
-                      Defer
-                    </button>
+                  <div className="border-t border-gray-200 pt-6 flex flex-wrap gap-3">
+                    {tab.payload.state === "pending" && (
+                      <>
+                        <button
+                          onClick={() => handleResolveRequiredAction(tab.payload.id, tab.title, tab.id)}
+                          className="flex-1 min-w-[150px] px-4 py-2 bg-[#ed0923] text-white rounded-lg font-medium hover:bg-[#d10820] transition"
+                        >
+                          Resolve Action
+                        </button>
+                        <button
+                          onClick={() => handleCloseTabInPane(tab.id, "primary")}
+                          className="flex-1 min-w-[150px] px-4 py-2 border border-gray-300 text-gray-900 rounded-lg font-medium hover:bg-gray-50 transition"
+                        >
+                          Defer
+                        </button>
+                      </>
+                    )}
+
+                    {tab.payload.state === "failed" && (
+                      <>
+                        <button
+                          onClick={() =>
+                            setDismissedActionIds((prev) =>
+                              prev.includes(tab.payload.id) ? prev : [...prev, tab.payload.id]
+                            )
+                          }
+                          className="flex-1 min-w-[150px] px-4 py-2 border border-red-300 text-red-700 rounded-lg font-medium hover:bg-red-50 transition"
+                        >
+                          Dismiss
+                        </button>
+                        <button
+                          onClick={() => handleCloseTabInPane(tab.id, "primary")}
+                          className="flex-1 min-w-[150px] px-4 py-2 border border-gray-300 text-gray-900 rounded-lg font-medium hover:bg-gray-50 transition"
+                        >
+                          Close
+                        </button>
+                      </>
+                    )}
+
+                    {tab.payload.state === "success" && (
+                      <button
+                        onClick={() => handleCloseTabInPane(tab.id, "primary")}
+                        className="flex-1 min-w-[150px] px-4 py-2 border border-gray-300 text-gray-900 rounded-lg font-medium hover:bg-gray-50 transition"
+                      >
+                        Close
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -3581,7 +3884,13 @@ export default function UserHome() {
                     <span className={`rounded-lg px-3 py-1 text-xs font-medium ${getPromotionTypeColor(currentPromotion.type)}`}>
                       {currentPromotion.type}
                     </span>
-                    <span className="text-sm text-gray-600">Status: {currentPromotion.status}</span>
+                    <span className="text-sm text-gray-600">
+                      {currentPromotion.status === "pending_promotion"
+                        ? "Awaiting admin review"
+                        : currentPromotion.status === "approved"
+                          ? "Ready for admin promotion"
+                          : "Promotion complete"}
+                    </span>
                   </div>
                 </div>
               )}
@@ -3589,6 +3898,15 @@ export default function UserHome() {
               {/* Promotion Details Card */}
               <div className="rounded-xl border border-gray-200 bg-white p-8 max-w-3xl">
                 <div className="space-y-6">
+                  {currentPromotion.status === "pending_promotion" && (
+                    <div className="rounded-xl border border-yellow-200 bg-yellow-50 p-4">
+                      <p className="text-sm font-semibold text-yellow-900">Awaiting admin review</p>
+                      <p className="mt-1 text-sm text-yellow-800">
+                        Your submission is in the approval queue. No action is needed from you right now.
+                      </p>
+                    </div>
+                  )}
+
                   {/* Current Status */}
                   <div>
                     <label className="text-sm font-semibold text-gray-900">Promotion Status</label>
@@ -3615,6 +3933,35 @@ export default function UserHome() {
                     </div>
                   </div>
 
+                  {currentPromotion.status === "pending_promotion" && (
+                    <div className="border-t border-gray-200 pt-6">
+                      <h3 className="text-sm font-semibold text-gray-900 mb-3">What happens next</h3>
+                      <div className="space-y-3">
+                        <div className="flex items-start gap-3">
+                          <div className="mt-0.5 h-2.5 w-2.5 rounded-full bg-green-500" />
+                          <div>
+                            <p className="text-sm font-medium text-gray-900">Submitted</p>
+                            <p className="text-xs text-gray-500">Your form has been created and sent to the approval queue.</p>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-3">
+                          <div className="mt-0.5 h-2.5 w-2.5 rounded-full bg-yellow-500" />
+                          <div>
+                            <p className="text-sm font-medium text-gray-900">Admin review pending</p>
+                            <p className="text-xs text-gray-500">An admin needs to review and promote this job before it becomes active.</p>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-3">
+                          <div className="mt-0.5 h-2.5 w-2.5 rounded-full bg-gray-300" />
+                          <div>
+                            <p className="text-sm font-medium text-gray-900">Activation</p>
+                            <p className="text-xs text-gray-500">After approval, the job will appear in Active Jobs, Runs, and Calendar.</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Environment Info */}
                   <div className="border-t border-gray-200 pt-6">
                     <h3 className="text-sm font-semibold text-gray-900 mb-3">Environment Path</h3>
@@ -3628,6 +3975,29 @@ export default function UserHome() {
                       </div>
                     </div>
                   </div>
+
+                  {(currentPromotion.scheduleSummary || currentPromotion.requestedRunDates?.length) && (
+                    <div className="border-t border-gray-200 pt-6">
+                      <h3 className="text-sm font-semibold text-gray-900 mb-3">Requested Schedule</h3>
+                      {currentPromotion.scheduleSummary && (
+                        <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">
+                          {currentPromotion.scheduleSummary}
+                        </div>
+                      )}
+                      {currentPromotion.requestedRunDates && currentPromotion.requestedRunDates.length > 0 && (
+                        <div className="mt-4">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Next requested runs</p>
+                          <div className="mt-2 space-y-2">
+                            {currentPromotion.requestedRunDates.map((runDate) => (
+                              <div key={runDate} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                                {runDate}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* Description */}
                   {currentPromotion.description && (
@@ -3649,10 +4019,19 @@ export default function UserHome() {
                   <div className="border-t border-gray-200 pt-6">
                     <h3 className="text-sm font-semibold text-gray-900 mb-3">Timeline</h3>
                     <div className="space-y-2 text-sm text-gray-600">
-                      <div>Created: {formatPromotionDate(currentPromotion.createdAt)}</div>
-                      {currentPromotion.lastModified && <div>Last Modified: {formatPromotionDate(currentPromotion.lastModified)}</div>}
+                      <div>Submitted: {formatPromotionDate(currentPromotion.createdAt)}</div>
+                      {currentPromotion.lastModified && <div>Last Updated: {formatPromotionDate(currentPromotion.lastModified)}</div>}
                     </div>
                   </div>
+
+                  {currentPromotion.status === "pending_promotion" && (
+                    <div className="border-t border-gray-200 pt-6">
+                      <h3 className="text-sm font-semibold text-gray-900 mb-3">Approval Notes</h3>
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">
+                        This job is waiting for admin review before it can be promoted into an active scheduled job.
+                      </div>
+                    </div>
+                  )}
 
                   {/* Actions */}
                   <div className="border-t border-gray-200 pt-6 flex gap-3">
@@ -3672,14 +4051,20 @@ export default function UserHome() {
                         </button>
                       </>
                     )}
-                    {(currentPromotion.status === "approved" || currentPromotion.status === "pending_promotion") && (
-                      <button className="flex-1 px-4 py-2 bg-[#ed0923] text-white rounded-lg font-medium hover:bg-[#d10820] transition">
-                        Request Promotion
+                    {currentPromotion.status === "pending_promotion" && (
+                      <button
+                        onClick={() => handleWithdrawSubmission(currentPromotion.id, currentPromotion.name)}
+                        className="flex-1 px-4 py-2 border border-red-300 text-red-700 rounded-lg font-medium hover:bg-red-50 transition"
+                      >
+                        Withdraw Submission
                       </button>
                     )}
                     {currentPromotion.status !== "rejected" && (
-                      <button className="flex-1 px-4 py-2 border border-gray-300 text-gray-900 rounded-lg font-medium hover:bg-gray-50 transition">
-                        View Details
+                      <button
+                        onClick={() => setActivePanelId("promotions-edits")}
+                        className="flex-1 px-4 py-2 border border-gray-300 text-gray-900 rounded-lg font-medium hover:bg-gray-50 transition"
+                      >
+                        Back to Pending Promotions
                       </button>
                     )}
                   </div>
@@ -3767,7 +4152,7 @@ export default function UserHome() {
                         <button
                           onClick={() =>
                             handleOpenTabInPane(
-                              { type: "promotion", name: promotion.name, id: promotion.id },
+                              { type: "promotion", name: promotion.name, id: promotion.id, payload: promotion },
                               "primary"
                             )
                           }
@@ -4355,14 +4740,23 @@ export default function UserHome() {
                         </span>
                       </div>
                     </button>
-                    <button
-                      onClick={() => void runResourceFromUi(job.id)}
-                      className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-[#ed0923] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#d10820] disabled:cursor-not-allowed disabled:bg-gray-300"
-                      disabled={runningJobIds.includes(job.id)}
-                    >
-                      <PlayCircle className="h-3.5 w-3.5" />
-                      {runningJobIds.includes(job.id) ? "Running..." : "Run manually"}
-                    </button>
+                    <div className="mt-3 flex items-center gap-2">
+                      <button
+                        onClick={() => void runResourceFromUi(job.id)}
+                        className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md bg-[#ed0923] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#d10820] disabled:cursor-not-allowed disabled:bg-gray-300"
+                        disabled={runningJobIds.includes(job.id)}
+                      >
+                        <PlayCircle className="h-3.5 w-3.5" />
+                        {runningJobIds.includes(job.id) ? "Running..." : "Run manually"}
+                      </button>
+                      <button
+                        onClick={() => void handleDeleteJob(job.id, job.name)}
+                        title="Delete job"
+                        className="inline-flex items-center justify-center rounded-md border border-gray-200 p-1.5 text-gray-400 hover:border-red-300 hover:bg-red-50 hover:text-red-600"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </div>
                 ))}
                 {readyJobs.length === 0 && (
@@ -4423,6 +4817,13 @@ export default function UserHome() {
                         >
                           <PlayCircle className="h-3.5 w-3.5" />
                           {runningJobIds.includes(job.id) ? "Running..." : "Run manually"}
+                        </button>
+                        <button
+                          onClick={() => void handleDeleteJob(job.id, job.name)}
+                          title="Delete job"
+                          className="inline-flex items-center justify-center rounded-md border border-gray-200 p-1.5 text-gray-400 hover:border-red-300 hover:bg-red-50 hover:text-red-600"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       </div>
                     </div>
@@ -4533,9 +4934,9 @@ export default function UserHome() {
         );
       case "required-actions":
         // Organize actions by urgency
-        const urgentActions = requiredActionItems.filter((a) => a.urgency === "urgent");
-        const highPriorityActions = requiredActionItems.filter((a) => a.urgency === "high");
-        const otherActions = requiredActionItems.filter((a) => a.urgency === "other");
+        const urgentActions = visibleRequiredActions.filter((a) => a.urgency === "urgent");
+        const highPriorityActions = visibleRequiredActions.filter((a) => a.urgency === "high");
+        const otherActions = visibleRequiredActions.filter((a) => a.urgency === "other");
 
         const renderActionSection = (
           title: string,
@@ -4629,13 +5030,13 @@ export default function UserHome() {
                             <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">
                               Related Job
                             </p>
-                            <p className="text-sm text-gray-700 font-mono bg-white p-2 rounded border border-gray-200">
+                            <p className="min-w-0 text-sm text-gray-700 font-mono bg-white p-2 rounded border border-gray-200 whitespace-normal break-all">
                               {action.jobName}
                             </p>
                           </div>
 
                           {/* Action Buttons */}
-                          <div className="flex gap-2 pt-2">
+                          <div className="flex flex-wrap gap-2 pt-2">
                             <button
                               onClick={() =>
                                 handleOpenTabInPane(
@@ -4643,13 +5044,22 @@ export default function UserHome() {
                                   "primary"
                                 )
                               }
-                              className="flex-1 px-3 py-2 rounded text-sm font-medium bg-[#ed0923] text-white hover:bg-[#d10820] transition"
+                              className="min-w-[120px] flex-1 px-3 py-2 rounded text-sm font-medium bg-[#ed0923] text-white hover:bg-[#d10820] transition"
                             >
                               Open
                             </button>
-                            <button className="flex-1 px-3 py-2 rounded text-sm font-medium bg-gray-200 text-gray-900 hover:bg-gray-300 transition">
-                              Resolve
-                            </button>
+                            {action.state !== "pending" && (
+                              <button
+                                onClick={() =>
+                                  setDismissedActionIds((prev) =>
+                                    prev.includes(action.id) ? prev : [...prev, action.id]
+                                  )
+                                }
+                                className="min-w-[120px] flex-1 px-3 py-2 rounded text-sm font-medium bg-gray-200 text-gray-900 hover:bg-gray-300 transition"
+                              >
+                                Dismiss
+                              </button>
+                            )}
                           </div>
                         </div>
                       )}
@@ -4663,11 +5073,16 @@ export default function UserHome() {
 
         return (
           <div className="p-4 space-y-4 flex flex-col h-full overflow-y-auto">
+            {requiredActionSuccessMessage && (
+              <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">
+                {requiredActionSuccessMessage}
+              </div>
+            )}
             <div className="space-y-3">
               {urgentActions.length > 0 && renderActionSection("Urgent Actions", urgentActions, false)}
               {highPriorityActions.length > 0 && renderActionSection("High Priority", highPriorityActions, false)}
               {otherActions.length > 0 && renderActionSection("Other Actions", otherActions, false)}
-              {requiredActionItems.length === 0 && (
+              {visibleRequiredActions.length === 0 && (
                 <div className="text-center py-8">
                   <p className="text-sm text-gray-500">No required actions at this time.</p>
                 </div>
@@ -4702,10 +5117,10 @@ export default function UserHome() {
               </div>
             </div>
 
-            <div>
+            <div className="min-w-0">
               <input
                 type="text"
-                placeholder="Search forms, templates, or types..."
+                placeholder="Search forms or templates..."
                 value={templateSearch}
                 onChange={(e) => setTemplateSearch(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm placeholder-gray-500 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
@@ -4714,8 +5129,8 @@ export default function UserHome() {
 
             <div className="space-y-4">
               <div>
-                <div className="mb-2 flex items-center justify-between">
-                  <h3 className="text-xs font-bold uppercase tracking-wide text-gray-600">Saved Templates</h3>
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                  <h3 className="min-w-0 text-xs font-bold uppercase tracking-wide text-gray-600">Saved Templates</h3>
                   <button
                     onClick={() =>
                       openFormTab({
@@ -4728,7 +5143,7 @@ export default function UserHome() {
                         origin: "saved-template",
                       })
                     }
-                    className="text-xs font-medium text-[#ed0923] hover:text-[#d10820]"
+                    className="shrink-0 text-xs font-medium text-[#ed0923] hover:text-[#d10820]"
                   >
                     View all
                   </button>
@@ -4752,14 +5167,16 @@ export default function UserHome() {
                             draft: template.draft,
                           })
                         }
-                        className="w-full rounded-lg border border-gray-200 bg-white p-3 text-left hover:border-[#ed0923] hover:bg-red-50 transition"
+                        className="w-full min-w-0 rounded-lg border border-gray-200 bg-white p-3 text-left hover:border-[#ed0923] hover:bg-red-50 transition"
                       >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-medium text-gray-900">{template.name}</p>
+                        <div className="flex min-w-0 items-start gap-2">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium leading-tight text-gray-900 [overflow-wrap:anywhere]">
+                              {template.name}
+                            </p>
                             <p className="mt-1 text-xs text-gray-500">{template.type} saved template</p>
                           </div>
-                          <span className="rounded-full bg-gray-100 px-2 py-1 text-[10px] font-semibold text-gray-700">
+                          <span className="shrink-0 self-start rounded-full bg-gray-100 px-2 py-1 text-[10px] font-semibold text-gray-700">
                             {template.progress}
                           </span>
                         </div>
@@ -4774,8 +5191,8 @@ export default function UserHome() {
               </div>
 
               <div>
-                <div className="mb-2 flex items-center justify-between">
-                  <h3 className="text-xs font-bold uppercase tracking-wide text-gray-600">Pre-Built Forms</h3>
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                  <h3 className="min-w-0 text-xs font-bold uppercase tracking-wide text-gray-600">Pre-Built Forms</h3>
                   <button
                     onClick={() =>
                       openFormTab({
@@ -4788,7 +5205,7 @@ export default function UserHome() {
                         origin: "prebuilt-form",
                       })
                     }
-                    className="text-xs font-medium text-[#ed0923] hover:text-[#d10820]"
+                    className="shrink-0 text-xs font-medium text-[#ed0923] hover:text-[#d10820]"
                   >
                     View all
                   </button>
@@ -4809,14 +5226,14 @@ export default function UserHome() {
                             origin: "prebuilt-form",
                           })
                         }
-                        className="w-full rounded-lg border border-gray-200 bg-gray-50 p-3 text-left hover:border-[#ed0923] hover:bg-red-50 transition"
+                        className="w-full min-w-0 rounded-lg border border-gray-200 bg-gray-50 p-3 text-left hover:border-[#ed0923] hover:bg-red-50 transition"
                       >
-                        <p className="text-sm font-medium text-gray-900">{form.name}</p>
-                        <div className="mt-2 flex items-center gap-2">
-                          <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold bg-blue-100 text-blue-700">
+                        <p className="text-sm font-medium leading-tight text-gray-900 [overflow-wrap:anywhere]">{form.name}</p>
+                        <div className="mt-2 flex flex-wrap items-start gap-2">
+                          <span className="inline-flex shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold bg-blue-100 text-blue-700">
                             {form.category}
                           </span>
-                          <span className="text-xs text-gray-500">{form.description}</span>
+                          <span className="min-w-0 flex-1 text-xs text-gray-500 [overflow-wrap:anywhere]">{form.description}</span>
                         </div>
                       </button>
                     ))
@@ -4842,9 +5259,9 @@ export default function UserHome() {
             )}
             {/* Ready for Promotion */}
             <div className="space-y-2">
-              <div className="flex items-center justify-between sticky top-0 bg-white/95 z-10 py-1">
-                <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">Ready for Promotion</h3>
-                <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-medium">{mockReadyForPromotion.length}</span>
+              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 sticky top-0 bg-white/95 z-10 py-1">
+                <h3 className="min-w-0 text-xs font-bold text-gray-700 uppercase tracking-wide">Ready for Promotion</h3>
+                <span className="shrink-0 text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-medium">{mockReadyForPromotion.length}</span>
               </div>
               <div className="space-y-1.5">
                 {mockReadyForPromotion.map((item) => (
@@ -4863,10 +5280,10 @@ export default function UserHome() {
                       className="mt-1 h-4 w-4 rounded border-gray-300 text-[#ed0923] focus:ring-[#ed0923]"
                     />
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-900 truncate">{item.name}</p>
-                      <div className="flex items-center gap-1 mt-0.5 flex-wrap">
-                        <span className={`text-xs font-medium ${getPromotionTypeColor(item.type)}`}>{item.type}</span>
-                        <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">{item.currentEnvironment}</span>
+                      <p className="text-sm font-medium leading-tight text-gray-900 [overflow-wrap:anywhere]">{item.name}</p>
+                      <div className="mt-1 flex flex-wrap items-start gap-1.5">
+                        <span className={`text-xs font-medium [overflow-wrap:anywhere] ${getPromotionTypeColor(item.type)}`}>{item.type}</span>
+                        <span className="shrink-0 text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">{item.currentEnvironment}</span>
                       </div>
                     </div>
                   </div>
@@ -4888,9 +5305,9 @@ export default function UserHome() {
             {/* Pending Promotions */}
             {allPendingPromotions.length > 0 && (
               <div className="space-y-2 border-t border-gray-200 pt-3">
-                <div className="flex items-center justify-between sticky top-12 bg-white/95 z-10 py-1">
-                  <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">Pending Promotions</h3>
-                  <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded font-medium">{allPendingPromotions.length}</span>
+                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 sticky top-12 bg-white/95 z-10 py-1">
+                  <h3 className="min-w-0 text-xs font-bold text-gray-700 uppercase tracking-wide">Pending Promotions</h3>
+                  <span className="shrink-0 text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded font-medium">{allPendingPromotions.length}</span>
                 </div>
                 <div className="space-y-1.5">
                   {allPendingPromotions.map((item) => (
@@ -4902,12 +5319,26 @@ export default function UserHome() {
                           : "bg-gray-50 border-gray-200"
                       }`}
                     >
-                      <p className="text-sm font-medium text-gray-900 truncate">{item.name}</p>
-                      <div className="flex items-center gap-1 mt-0.5">
-                        <span className={`text-xs font-medium ${getPromotionTypeColor(item.type)}`}>{item.type}</span>
-                        <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">{item.currentEnvironment}</span>
-                        <span className="text-xs text-gray-400">→</span>
-                        <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded">{item.targetEnvironment}</span>
+                      <p className="text-sm font-medium leading-tight text-gray-900 [overflow-wrap:anywhere]">{item.name}</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                        <span className={`text-xs font-medium [overflow-wrap:anywhere] ${getPromotionTypeColor(item.type)}`}>{item.type}</span>
+                        <span className="shrink-0 text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">{item.currentEnvironment}</span>
+                        <span className="shrink-0 text-xs text-gray-400">→</span>
+                        <span className="shrink-0 text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded">{item.targetEnvironment}</span>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <button
+                          onClick={() => handleOpenTabInPane({ type: "promotion", id: item.id, name: item.name, payload: item }, "primary")}
+                          className="px-2 py-1 text-xs font-medium rounded border border-gray-300 text-gray-700 hover:bg-gray-100 transition"
+                        >
+                          View
+                        </button>
+                        <button
+                          onClick={() => handleWithdrawSubmission(item.id, item.name)}
+                          className="px-2 py-1 text-xs font-medium rounded border border-red-300 text-red-700 hover:bg-red-50 transition"
+                        >
+                          Withdraw
+                        </button>
                       </div>
                       {highlightedPendingPromotionId === item.id && (
                         <div className="mt-2 text-xs font-semibold text-yellow-800">Newly submitted</div>
@@ -5047,7 +5478,7 @@ export default function UserHome() {
         )}
 
         {/* Main Content with Tab System - Split View Support */}
-        <main className="flex-1 flex flex-col overflow-hidden min-h-0">
+        <main className="flex-1 min-w-0 flex flex-col overflow-hidden min-h-0">
           {workspace.mode === "single" ? (
             // SINGLE PANE MODE
             <>
@@ -5172,20 +5603,23 @@ export default function UserHome() {
                       
                       {consoleHeight > 80 && (
                         <div className="flex items-center gap-1 border-l border-gray-300 pl-3">
-                          {["json", "logs", "events"].map((tab) => (
+                          {(["json", "logs", "events", "output"] as const).map((tab) => (
                             <button
                               key={tab}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setConsoleActiveTab(tab as any);
+                                setConsoleActiveTab(tab);
                               }}
-                              className={`px-2.5 py-1 text-xs font-medium rounded transition ${
+                              className={`px-2.5 py-1 text-xs font-medium rounded transition relative ${
                                 consoleActiveTab === tab
                                   ? "text-[#ed0923] bg-[#ed0923]/10"
                                   : "text-gray-600 hover:text-gray-900 hover:bg-gray-100"
                               }`}
                             >
                               {tab.toUpperCase()}
+                              {tab === "output" && getConsoleOutput() && (
+                                <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-green-500" />
+                              )}
                             </button>
                           ))}
                         </div>
@@ -5229,6 +5663,9 @@ export default function UserHome() {
                               </div>
                             ))}
                           </div>
+                        )}
+                        {consoleActiveTab === "output" && (
+                          <ConsoleOutputPanel output={getConsoleOutput()} runId={activeRunId} />
                         )}
                       </div>
                     )}
@@ -5513,20 +5950,23 @@ export default function UserHome() {
                       
                       {consoleHeight > 80 && (
                         <div className="flex items-center gap-1 border-l border-gray-300 pl-3">
-                          {["json", "logs", "events"].map((tab) => (
+                          {(["json", "logs", "events", "output"] as const).map((tab) => (
                             <button
                               key={tab}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setConsoleActiveTab(tab as any);
+                                setConsoleActiveTab(tab);
                               }}
-                              className={`px-2.5 py-1 text-xs font-medium rounded transition ${
+                              className={`px-2.5 py-1 text-xs font-medium rounded transition relative ${
                                 consoleActiveTab === tab
                                   ? "text-[#ed0923] bg-[#ed0923]/10"
                                   : "text-gray-600 hover:text-gray-900 hover:bg-gray-100"
                               }`}
                             >
                               {tab.toUpperCase()}
+                              {tab === "output" && getConsoleOutput() && (
+                                <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-green-500" />
+                              )}
                             </button>
                           ))}
                         </div>
@@ -5571,6 +6011,9 @@ export default function UserHome() {
                             ))}
                           </div>
                         )}
+                        {consoleActiveTab === "output" && (
+                          <ConsoleOutputPanel output={getConsoleOutput()} runId={activeRunId} />
+                        )}
                       </div>
                     )}
                   </div>
@@ -5603,7 +6046,7 @@ export default function UserHome() {
               currentDraftData={jobDraft}
               assistantNotices={chatAssistantNotices}
               onConsoleEvent={emitConsoleEvent}
-              resources={resources.map((r) => ({
+              resources={jobs.map((r) => ({
                 id: r.id,
                 name: r.name,
                 type: r.type ?? "Custom",
@@ -5689,6 +6132,204 @@ export default function UserHome() {
             </p>
           </div>
         </div>
+      )}
+
+      {runParamsJob && (
+        <RunParamsModal
+          job={runParamsJob}
+          onClose={() => setRunParamsJob(null)}
+          onSubmit={handleRunParamsSubmit}
+          isSubmitting={false}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Console Output Panel
+// ---------------------------------------------------------------------------
+
+interface OutputData {
+  final_text: string | null;
+  tool_executions: Array<{
+    framework_name?: string;
+    server_name?: string;
+    remote_name?: string;
+    arguments?: Record<string, unknown>;
+    parsed_result?: unknown;
+  }>;
+  result: unknown;
+  error: string | null;
+  status: string | null;
+}
+
+function tryParseRows(value: unknown): Array<Record<string, unknown>> | null {
+  // Parse JSON string wrapper if present
+  let parsed: unknown = value;
+  if (typeof value === "string") {
+    try { parsed = JSON.parse(value); } catch { return null; }
+  }
+
+  // Unwrap MCP ContentBlock envelope: [{type:"text", text:"{...}"}]
+  if (Array.isArray(parsed) && parsed.length > 0 && parsed[0] && typeof parsed[0] === "object" && "type" in parsed[0]) {
+    const block = (parsed as Array<Record<string, unknown>>).find((b) => b["type"] === "text" && typeof b["text"] === "string");
+    if (block) {
+      try { parsed = JSON.parse(block["text"] as string); } catch { return null; }
+    }
+  }
+
+  // {columns:[...], rows:[[...],...]} → array of objects
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const p = parsed as Record<string, unknown>;
+    if (Array.isArray(p["columns"]) && Array.isArray(p["rows"])) {
+      const cols = p["columns"] as string[];
+      return (p["rows"] as unknown[][]).map((row) =>
+        Object.fromEntries(cols.map((col, i) => [col, row[i]]))
+      );
+    }
+  }
+
+  // Already an array of objects
+  if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === "object") {
+    return parsed as Array<Record<string, unknown>>;
+  }
+
+  return null;
+}
+
+function ResultTable({ rows }: { rows: Array<Record<string, unknown>> }) {
+  const cols = Array.from(new Set(rows.flatMap((r) => Object.keys(r))));
+  return (
+    <div className="overflow-x-auto rounded border border-gray-200">
+      <table className="text-xs w-full border-collapse">
+        <thead>
+          <tr className="bg-gray-50">
+            {cols.map((c) => (
+              <th key={c} className="px-3 py-1.5 text-left font-semibold text-gray-700 border-b border-gray-200 whitespace-nowrap">
+                {c}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-gray-50"}>
+              {cols.map((c) => (
+                <td key={c} className="px-3 py-1.5 text-gray-800 border-b border-gray-100 whitespace-nowrap max-w-xs truncate">
+                  {row[c] === null || row[c] === undefined ? (
+                    <span className="text-gray-400 italic">null</span>
+                  ) : (
+                    String(row[c])
+                  )}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="px-3 py-1 text-xs text-gray-400 border-t border-gray-200 bg-gray-50">
+        {rows.length} row{rows.length !== 1 ? "s" : ""}
+      </div>
+    </div>
+  );
+}
+
+function ConsoleOutputPanel({ output, runId }: { output: OutputData | null; runId: string | null }) {
+  if (!output && !runId) {
+    return (
+      <p className="text-xs text-gray-400 py-2">No output yet — run a job to see results here.</p>
+    );
+  }
+  if (!output) {
+    return (
+      <p className="text-xs text-gray-400 py-2">Waiting for job to complete…</p>
+    );
+  }
+
+  const rows = tryParseRows(output.result);
+
+  return (
+    <div className="space-y-4 font-sans text-xs">
+      {/* Error */}
+      {output.error && (
+        <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-red-700">
+          <span className="font-semibold">Error: </span>{output.error}
+        </div>
+      )}
+
+      {/* Final text (agent summary) */}
+      {output.final_text && (
+        <div className="rounded border border-gray-200 bg-white px-3 py-2">
+          <p className="text-xs font-semibold text-gray-500 mb-1">Result</p>
+          <p className="whitespace-pre-wrap text-gray-900 leading-relaxed">{output.final_text}</p>
+        </div>
+      )}
+
+      {/* GitHub write result */}
+      {!output.final_text && rows === null && output.result && (
+        <div className="rounded border border-gray-200 bg-white px-3 py-2">
+          <p className="text-xs font-semibold text-gray-500 mb-1">Result</p>
+          <pre className="whitespace-pre-wrap text-gray-900">{JSON.stringify(output.result, null, 2)}</pre>
+        </div>
+      )}
+
+      {/* Direct result as table */}
+      {rows && (
+        <div>
+          <p className="text-xs font-semibold text-gray-500 mb-1">Query Results</p>
+          <ResultTable rows={rows} />
+        </div>
+      )}
+
+      {/* Tool executions */}
+      {output.tool_executions.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-gray-500">Tool Executions ({output.tool_executions.length})</p>
+          {output.tool_executions.map((te, i) => {
+            const teRows = tryParseRows(te.parsed_result);
+            return (
+              <div key={i} className="rounded border border-gray-200 bg-gray-50 px-3 py-2 space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-gray-700">{te.remote_name ?? te.framework_name ?? "tool"}</span>
+                  {te.server_name && (
+                    <span className="text-gray-400">({te.server_name})</span>
+                  )}
+                </div>
+                {te.arguments && Object.keys(te.arguments).length > 0 && (
+                  <div>
+                    <p className="text-gray-400 mb-0.5">Arguments</p>
+                    <pre className="bg-white rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 whitespace-pre-wrap overflow-x-auto">
+                      {JSON.stringify(te.arguments, null, 2)}
+                    </pre>
+                  </div>
+                )}
+                {teRows ? (
+                  <div>
+                    <p className="text-gray-400 mb-0.5">Result</p>
+                    <ResultTable rows={teRows} />
+                  </div>
+                ) : te.parsed_result !== undefined && te.parsed_result !== null ? (
+                  <div>
+                    <p className="text-gray-400 mb-0.5">Result</p>
+                    <pre className="bg-white rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 whitespace-pre-wrap overflow-x-auto">
+                      {typeof te.parsed_result === "string"
+                        ? te.parsed_result
+                        : JSON.stringify(te.parsed_result, null, 2)}
+                    </pre>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Empty state when run succeeded but no output captured */}
+      {!output.error && !output.final_text && output.tool_executions.length === 0 && !output.result && (
+        <p className="text-xs text-gray-400 py-2">
+          Job completed but produced no captured output.
+        </p>
       )}
     </div>
   );

@@ -214,6 +214,16 @@ function buildCalendarEvent(job: Job, when: Date, kind: "past" | "scheduled"): U
   };
 }
 
+function formatRequestedRunDate(date: Date) {
+  return date.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 function parseScheduleStartDate(job: Job) {
   const raw = typeof job.scheduleStartDate === "string" && job.scheduleStartDate ? job.scheduleStartDate : job.createdAt;
   const parsed = new Date(raw);
@@ -411,6 +421,11 @@ function promotionEnvironmentForType(type: UserFormType) {
 }
 
 export function mapJobToPendingPromotionResource(job: Job): PromotionResource {
+  const requestedRunDates = deriveScheduledOccurrences(job, new Date(job.createdAt))
+    .filter((event) => event.kind === "scheduled")
+    .slice(0, 5)
+    .map((event) => formatRequestedRunDate(new Date(`${event.date}T${event.time}:00`)));
+
   return {
     id: job.id,
     name: job.name,
@@ -429,6 +444,8 @@ export function mapJobToPendingPromotionResource(job: Job): PromotionResource {
     createdAt: job.createdAt,
     lastModified: job.createdAt,
     description: job.description,
+    scheduleSummary: getScheduleSummary(job as unknown as Record<string, unknown>),
+    requestedRunDates,
   };
 }
 
@@ -437,6 +454,13 @@ export function getPendingPromotionResources(): PromotionResource[] {
   return createdJobs
     .filter((job) => job.status === "pending")
     .map(mapJobToPendingPromotionResource);
+}
+
+export function withdrawPendingSubmission(jobId: string) {
+  const createdJobs = readRecords<Job>(CREATED_JOBS_KEY, []);
+  const nextJobs = createdJobs.filter((job) => !(job.id === jobId && job.status === "pending"));
+  writeRecords(CREATED_JOBS_KEY, nextJobs);
+  notifyDashboardStoreChanged();
 }
 
 export function subscribeToUserDashboardStore(listener: () => void) {

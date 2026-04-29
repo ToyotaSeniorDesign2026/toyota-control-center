@@ -48,50 +48,50 @@ function toDateKey(date: Date) {
 }
 
 export function CalendarContent() {
-  const { resources, runs, refresh } = useJobRuns();
+  const { jobs, runs, refresh } = useJobRuns();
   const [currentMonth, setCurrentMonth] = useState(() => getInitialCalendarMonth(baseCalendarEvents));
   const [eventFilter, setEventFilter] = useState<"all" | "past" | "scheduled">("all");
   const [createdJobEvents, setCreatedJobEvents] = useState<UserCalendarEvent[]>(() => getCalendarEvents());
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
 
-  const resourceScheduleEvents = useMemo<CalendarEvent[]>(
+  const jobScheduleEvents = useMemo<CalendarEvent[]>(
     () =>
-      createScheduledRunProjections(resources).map((occurrence) => ({
+      createScheduledRunProjections(jobs).map((occurrence) => ({
         id: occurrence.id,
-        jobId: occurrence.resourceId,
+        jobId: occurrence.jobId,
         title: occurrence.jobName,
         date: toDateKey(occurrence.scheduledTime),
         time: occurrence.scheduledTime.toTimeString().slice(0, 5),
         kind: "scheduled" as const,
         jobType: occurrence.jobType,
       })),
-    [resources],
+    [jobs],
   );
 
   const runEvents = useMemo<CalendarEvent[]>(() => {
-    const resourceById = new Map(resources.map((resource) => [resource.id, resource]));
+    const jobById = new Map(jobs.map((job) => [job.id, job]));
     return runs.map((run) => {
-      const resource = resourceById.get(run.resource_id);
+      const job = jobById.get(run.job_id);
       const eventDate = new Date(run.created_at);
       const isUpcoming = ["queued", "scheduled", "pending", "executing", "running"].includes(run.status.toLowerCase());
       return {
         id: run.id,
-        jobId: run.resource_id,
-        title: resource?.name ?? run.resource_id,
+        jobId: run.job_id,
+        title: job?.name ?? run.job_id,
         date: toDateKey(eventDate),
         time: eventDate.toTimeString().slice(0, 5),
         kind: isUpcoming ? "scheduled" as const : "past" as const,
-        jobType: resource?.type?.toUpperCase(),
+        jobType: job?.type?.toUpperCase(),
       };
     });
-  }, [resources, runs]);
+  }, [jobs, runs]);
 
   const calendarEvents = useMemo(
     () =>
-      [...baseCalendarEvents, ...createdJobEvents, ...resourceScheduleEvents, ...runEvents].sort((a, b) =>
+      [...baseCalendarEvents, ...createdJobEvents, ...jobScheduleEvents, ...runEvents].sort((a, b) =>
         `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`)
       ),
-    [createdJobEvents, resourceScheduleEvents, runEvents]
+    [createdJobEvents, jobScheduleEvents, runEvents]
   );
 
   useEffect(() => {

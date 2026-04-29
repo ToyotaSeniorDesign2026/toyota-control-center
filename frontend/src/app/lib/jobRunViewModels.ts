@@ -1,4 +1,4 @@
-import type { ResourceRecord, RunRecord } from "./controlCenterApi";
+import type { JobRecord, RunRecord } from "./controlCenterApi";
 
 export interface UserJobViewModel {
   id: string;
@@ -12,12 +12,12 @@ export interface UserJobViewModel {
   policyChecks?: Array<{ name: string; status: "passed" | "failed" | "warning"; message: string }>;
 }
 
-function mapType(resource: ResourceRecord): UserJobViewModel["type"] {
-  if (resource.type === "sql") return "SQL Query";
-  if (resource.type === "excel") return "Excel Report";
-  if (resource.type === "powerpoint") return "PowerPoint Deck";
-  if (resource.type === "mcp" || resource.type === "research") return "MCP Job";
-  if (resource.connector === "internal") return "API Connection";
+function mapType(job: JobRecord): UserJobViewModel["type"] {
+  if (job.type === "sql") return "SQL Query";
+  if (job.type === "excel") return "Excel Report";
+  if (job.type === "powerpoint") return "PowerPoint Deck";
+  if (job.type === "mcp" || job.type === "research") return "MCP Job";
+  if (job.connector === "internal") return "API Connection";
   return "AI Agent";
 }
 
@@ -39,30 +39,30 @@ function mapStatus(status: string | null | undefined): UserJobViewModel["status"
   }
 }
 
-export function buildUserJobs(resources: ResourceRecord[], runs: RunRecord[]): UserJobViewModel[] {
-  return resources
-    .map((resource) => {
+export function buildUserJobs(jobs: JobRecord[], runs: RunRecord[]): UserJobViewModel[] {
+  return jobs
+    .map((job) => {
       const latestRun = runs
-        .filter((run) => run.resource_id === resource.id)
+        .filter((run) => run.job_id === job.id)
         .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
 
-      const detailParts = [resource.config?.description, resource.config?.brief]
+      const detailParts = [job.config?.description, job.config?.brief]
         .filter(Boolean)
         .map((value) => String(value));
-      if (resource.type === "sql" && resource.config?.query) {
+      if (job.type === "sql" && job.config?.query) {
         detailParts.push("Runs a configured SQL query.");
       }
-      if ((resource.type === "mcp" || resource.type === "research") && resource.connector) {
-        detailParts.push(`Uses MCP server ${resource.connector}.`);
+      if ((job.type === "mcp" || job.type === "research") && job.connector) {
+        detailParts.push(`Uses MCP server ${job.connector}.`);
       }
 
       return {
-        id: resource.id,
-        name: resource.name,
-        type: mapType(resource),
-        status: mapStatus(latestRun?.status ?? resource.last_run_status),
-        createdAt: resource.created_at,
-        environment: resource.environment,
+        id: job.id,
+        name: job.name,
+        type: mapType(job),
+        status: mapStatus(latestRun?.status ?? job.last_run_status),
+        createdAt: job.created_at,
+        environment: job.environment,
         description: detailParts.join(" "),
         logs: latestRun
           ? [
@@ -76,9 +76,9 @@ export function buildUserJobs(resources: ResourceRecord[], runs: RunRecord[]): U
         policyChecks: [
           {
             name: "MCP Association",
-            status: resource.connector ? "passed" : "warning",
-            message: resource.connector
-              ? `Running through MCP server ${resource.connector}.`
+            status: job.connector ? "passed" : "warning",
+            message: job.connector
+              ? `Running through MCP server ${job.connector}.`
               : "This job is missing an MCP server association.",
           },
         ],
@@ -87,23 +87,23 @@ export function buildUserJobs(resources: ResourceRecord[], runs: RunRecord[]): U
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-export function buildRunningJobs(resources: ResourceRecord[], runs: RunRecord[]) {
+export function buildRunningJobs(jobs: JobRecord[], runs: RunRecord[]) {
   const activeStatuses = new Set(["queued", "executing", "running"]);
   const activeRuns = runs.filter((run) => activeStatuses.has(run.status.toLowerCase()));
 
   return activeRuns
     .map((run) => {
-      const resource = resources.find((item) => item.id === run.resource_id);
+      const job = jobs.find((item) => item.id === run.job_id);
       return {
         id: run.id,
-        name: resource?.name ?? run.resource_id,
-        type: resource ? mapType(resource) : "AI Agent",
+        name: job?.name ?? run.job_id,
+        type: job ? mapType(job) : "AI Agent",
         status: "running" as const,
         createdAt: run.created_at,
         environment: run.target_environment,
         description:
-          resource?.config?.description?.toString() ??
-          resource?.config?.brief?.toString() ??
+          job?.config?.description?.toString() ??
+          job?.config?.brief?.toString() ??
           `Active run ${run.id}`,
         logs: [
           {

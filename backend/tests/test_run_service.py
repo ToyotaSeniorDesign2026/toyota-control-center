@@ -18,7 +18,7 @@ class RetryRunTests(unittest.TestCase):
     def test_retry_run_reuses_stored_execution_config(self) -> None:
         run = SimpleNamespace(
             id="run_1",
-            resource_id="res_123",
+            job_id="res_123",
             action="run",
             target_environment="dev",
             requested_by="u_analyst",
@@ -54,7 +54,7 @@ class RetryRunTests(unittest.TestCase):
             result = retry_run(db, user, "run_1")
 
         payload = create_run.call_args.args[2]
-        self.assertEqual(payload.resource_id, "res_123")
+        self.assertEqual(payload.job_id, "res_123")
         self.assertEqual(payload.target_environment, "prod")
         self.assertEqual(payload.params, {"topic": "rag"})
         self.assertEqual(payload.job_config.intent, "research_summary")

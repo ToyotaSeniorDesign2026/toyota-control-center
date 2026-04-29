@@ -18,7 +18,6 @@ interface UniversalFields {
   job_name: string;
   description: string;
   owner: string;
-  environment: string;
   target_environment: string;
   data_sensitivity: string;
   schedule: string;
@@ -51,6 +50,7 @@ interface ExcelDetails {
 interface SQLDetails {
   connector: string;
   connection_id: string;
+  db_driver: string;
   query: string;
   output_destination: string;
   result_limit: string;
@@ -96,22 +96,22 @@ const normalizeEnvironment = (value: unknown) => {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim().toLowerCase();
   if (normalized === "production") return "prod";
-  if (normalized === "semi-prod" || normalized === "semiprod") return "staging";
+  if (normalized === "staging" || normalized === "semiprod") return "semi-prod";
   return normalized;
 };
 
-const sqlConnectorOptions = ["sql-dab", "sql-dab-analytics"];
+const sqlConnectorOptions = ["sql-mcp", "sql-mcp-analytics"];
 
 const defaultConnectionIdForConnector = (connector: string) => {
-  if (connector === "sql-dab") return "postgres";
-  if (connector === "sql-dab-analytics") return "analytics";
+  if (connector === "sql-mcp") return "postgres";
+  if (connector === "sql-mcp-analytics") return "analytics";
   return "";
 };
 
 const normalizeSqlConnector = (value: unknown) => {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (sqlConnectorOptions.includes(normalized)) return normalized;
-  return "sql-dab";
+  return "sql-mcp";
 };
 
 export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange, hideFooter = false }: CreateJobFormProps) {
@@ -123,7 +123,6 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
     job_name: "",
     description: "",
     owner: "",
-    environment: "dev",
     target_environment: "dev",
     data_sensitivity: "low",
     schedule: "",
@@ -159,8 +158,9 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
 
   // SQL Details
   const [sqlDetails, setSqlDetails] = useState<SQLDetails>({
-    connector: "sql-dab",
+    connector: "sql-mcp",
     connection_id: "postgres",
+    db_driver: "postgresql+psycopg",
     query: "",
     output_destination: "",
     result_limit: "",
@@ -215,6 +215,7 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
     } else if (type === "SQL") {
       draft.connector = sql.connector;
       draft.connection_id = sql.connection_id;
+      draft.db_driver = sql.db_driver;
       draft.query = sql.query;
       draft.output_destination = sql.output_destination;
       draft.result_limit = sql.result_limit;
@@ -224,6 +225,7 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
       draft.data_sensitivity = resolvedUniversal.data_sensitivity;
       draft.config = {
         connection_id: sql.connection_id,
+        db_driver: sql.db_driver,
         query: sql.query,
         schedule: resolvedUniversal.schedule,
         output_destination: sql.output_destination,
@@ -232,6 +234,7 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
       draft.params = {
         query: sql.query,
         connection_id: sql.connection_id,
+        db_driver: sql.db_driver,
       };
     } else if (type === "Excel") {
       draft.input_data_sources = excel.input_data_sources;
@@ -282,8 +285,11 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
       ...((draftData.job_name ?? draftData.name) !== undefined && { job_name: draftData.job_name ?? draftData.name }),
       ...(draftData.description !== undefined && { description: draftData.description }),
       ...(draftData.owner !== undefined && { owner: draftData.owner }),
-      ...(draftData.environment !== undefined && { environment: normalizeEnvironment(draftData.environment) ?? draftData.environment }),
-      ...(draftData.target_environment !== undefined && { target_environment: normalizeEnvironment(draftData.target_environment) ?? draftData.target_environment }),
+      ...((draftData.target_environment ?? draftData.environment) !== undefined && {
+        target_environment:
+          normalizeEnvironment(draftData.target_environment ?? draftData.environment) ??
+          (draftData.target_environment ?? draftData.environment),
+      }),
       ...(draftData.data_sensitivity !== undefined && { data_sensitivity: draftData.data_sensitivity }),
       ...(incomingSchedule !== undefined && { schedule: incomingSchedule }),
       ...(draftData.approval_required !== undefined && { approval_required: draftData.approval_required }),
@@ -311,10 +317,12 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
     } else if (normalizedType === "SQL") {
       const connector = normalizeSqlConnector(draftData.connector ?? config.connector);
       const explicitConnectionId = draftData.connection_id ?? config.connection_id;
+      const explicitDriver = draftData.db_driver ?? config.db_driver ?? params.db_driver;
       setSqlDetails((prev) => ({
         ...prev,
         connector,
         connection_id: explicitConnectionId ?? defaultConnectionIdForConnector(connector),
+        ...(explicitDriver !== undefined && { db_driver: explicitDriver }),
         ...((draftData.query ?? params.query ?? config.query) !== undefined && { query: draftData.query ?? params.query ?? config.query }),
         ...((draftData.output_destination ?? config.output_destination) !== undefined && { output_destination: draftData.output_destination ?? config.output_destination }),
         ...((draftData.result_limit ?? config.result_limit) !== undefined && { result_limit: String(draftData.result_limit ?? config.result_limit) }),
@@ -465,7 +473,6 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
       job_name: "",
       description: "",
       owner: "",
-      environment: "dev",
       target_environment: "dev",
       data_sensitivity: "low",
       schedule: "",
@@ -493,8 +500,9 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
       file_location: "",
     });
     setSqlDetails({
-      connector: "sql-dab",
+      connector: "sql-mcp",
       connection_id: "postgres",
+      db_driver: "postgresql+psycopg",
       query: "",
       output_destination: "",
       result_limit: "",
@@ -578,7 +586,7 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
                   />
                 </div>
 
-                {/* Two-Column Responsive Layout: Owner & Environment */}
+                {/* Two-Column Responsive Layout: Owner & Target Environment */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {/* Owner */}
                   <div className="space-y-2">
@@ -600,24 +608,6 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
                     )}
                   </div>
 
-                  {/* Environment */}
-                  <div className="space-y-2">
-                    <Label htmlFor="environment" className="text-sm font-medium text-gray-700">
-                      Environment
-                    </Label>
-                    <Select value={universal.environment} onValueChange={(value) =>
-                      setUniversal({ ...universal, environment: value })
-                    }>
-                      <SelectTrigger id="environment" className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="dev">Development</SelectItem>
-                      <SelectItem value="staging">Staging</SelectItem>
-                      <SelectItem value="prod">Production</SelectItem>
-                    </SelectContent>
-                    </Select>
-                  </div>
                 </div>
 
                 {/* Two-Column Responsive Layout: Target Environment & Data Sensitivity */}
@@ -635,7 +625,7 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="dev">Development</SelectItem>
-                        <SelectItem value="staging">Staging</SelectItem>
+                        <SelectItem value="semi-prod">Semi-Production</SelectItem>
                         <SelectItem value="prod">Production</SelectItem>
                       </SelectContent>
                     </Select>
@@ -1018,13 +1008,32 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="sql-dab">Control Center Dev Database</SelectItem>
-                        <SelectItem value="sql-dab-analytics">Analytics Reporting Database</SelectItem>
+                        <SelectItem value="sql-mcp">Control Center Dev Database</SelectItem>
+                        <SelectItem value="sql-mcp-analytics">Analytics Reporting Database</SelectItem>
                       </SelectContent>
                     </Select>
                     {errors.sql_connector && (
                       <p className="text-xs text-red-600">{errors.sql_connector}</p>
                     )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="db_driver" className="text-sm font-medium text-gray-700">
+                      Database Type
+                    </Label>
+                    <Select
+                      value={sqlDetails.db_driver}
+                      onValueChange={(value) => setSqlDetails({ ...sqlDetails, db_driver: value })}
+                    >
+                      <SelectTrigger id="db_driver" className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="postgresql+psycopg">PostgreSQL</SelectItem>
+                        <SelectItem value="sqlite">SQLite</SelectItem>
+                        <SelectItem value="snowflake">Snowflake</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
 
                   <div className="space-y-2">
@@ -1034,7 +1043,7 @@ export function CreateJobForm({ onSubmit, onCancel, draftData, onDraftDataChange
                     <Input
                       id="connection_id"
                       required
-                      placeholder="e.g., sql-dab"
+                      placeholder="e.g., sql-mcp"
                       value={sqlDetails.connection_id}
                       onChange={(e) =>
                         setSqlDetails({

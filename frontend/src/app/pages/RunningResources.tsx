@@ -8,11 +8,11 @@ import { useJobRuns } from "../contexts/JobRunContext";
 import { buildRunningJobs, type UserJobViewModel } from "../lib/jobRunViewModels";
 
 export default function RunningJobs() {
-  const { resources, runs, loading, error } = useJobRuns();
+  const { jobs: jobRecords, runs, loading, error } = useJobRuns();
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [selectedJob, setSelectedJob] = useState<UserJobViewModel | null>(null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
-  const runningJobs = useMemo(() => buildRunningJobs(resources, runs), [resources, runs]);
+  const runningJobs = useMemo(() => buildRunningJobs(jobRecords, runs), [jobRecords, runs]);
 
   const handleJobClick = (job: UserJobViewModel) => {
     setSelectedJob(job);
