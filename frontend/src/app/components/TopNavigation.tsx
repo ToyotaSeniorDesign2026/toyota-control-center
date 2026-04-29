@@ -39,6 +39,7 @@ export function TopNavigation({
     return [
       { label: "Dashboard", active: activePage === "Dashboard", path: "/" },
       { label: "Jobs", active: activePage === "Jobs", path: "/jobs" },
+      { label: "Connectors", active: activePage === "Connectors", path: "/connectors" },
       { label: "Runs", active: activePage === "Runs", path: "/runs" },
       { label: "Research", active: activePage === "Research", path: "/research" },
       { label: "Approvals", active: activePage === "Approvals", path: "/approvals" },

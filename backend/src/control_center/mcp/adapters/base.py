@@ -1,17 +1,11 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
-if TYPE_CHECKING:
-    from mcp.types import Prompt, Resource, Tool
-else:
-    Prompt = Resource = Tool = Any
-
-from control_center.mcp.client import BaseClient
-from control_center.core.specs import BoundCapability
-from control_center.mcp.models import ModelTurnResult
-
+from mcp.types import Prompt, Resource, Tool
+from control_center.specs import BoundCapability
+from control_center.mcp import BaseClient, ModelTurnResult
 T = TypeVar("T")
 
 
@@ -43,13 +37,7 @@ class BaseAdapter(Generic[T], ABC):
         self.prompts: list[T] = []
 
     def parse_result(self, result: Any) -> str:
-        """
-        Normalize MCP operation results into text.
-        """
-        if getattr(result, "isError", False):
-            error_content = getattr(result, "content", None) or "Unknown error"
-            return f"Error: {error_content}"
-
+        """Normalize MCP operation results into text per the MCP spec."""
         if hasattr(result, "contents"):  # resource read result
             return "\n".join(
                 c.decode() if isinstance(c, bytes) else str(c)
@@ -59,8 +47,22 @@ class BaseAdapter(Generic[T], ABC):
         if hasattr(result, "messages"):  # prompt result
             return "\n".join(str(m) for m in result.messages)
 
-        if hasattr(result, "content"):  # tool result
-            return str(result.content)
+        if hasattr(result, "content") and isinstance(result.content, list):
+            # tool result — content is list[TextContent | ImageContent | ...]
+            parts: list[str] = []
+            for item in result.content:
+                text = getattr(item, "text", None)
+                if text is not None:
+                    parts.append(text)
+                else:
+                    # image / audio / resource_link — represent as a label
+                    mime = getattr(item, "mimeType", "")
+                    kind = getattr(item, "type", "binary")
+                    parts.append(f"[{kind}: {mime}]" if mime else f"[{kind}]")
+            result_text = "\n".join(parts) if parts else ""
+            if getattr(result, "isError", False):
+                return f"Error: {result_text or 'tool returned an error'}"
+            return result_text
 
         return str(result)
 

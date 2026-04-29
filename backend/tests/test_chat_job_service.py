@@ -4,10 +4,43 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from app.services.chat_job_service import maybe_run_sql_job_from_chat
+from app.services.chat_job_service import maybe_run_sql_job_from_chat, register_sql_job_from_chat
 
 
 class ChatJobServiceTests(unittest.TestCase):
+    def test_register_sql_job_from_chat_uses_existing_job_name_from_draft(self) -> None:
+        actor = SimpleNamespace(id="u_analyst", role="user", domain="collections")
+        created_resource = {"id": "res_get_users"}
+
+        with patch("app.services.chat_job_service.get_chat_actor", return_value=actor), patch(
+            "app.services.chat_job_service._find_sql_resource_for_actor", return_value=None
+        ), patch(
+            "app.services.chat_job_service.create_resource",
+            return_value=created_resource,
+        ) as create_resource_mock:
+            result = register_sql_job_from_chat(
+                object(),
+                extracted_fields={"creation_requested": True},
+                current_draft={
+                    "job_type": "SQL",
+                    "job_name": "get-users-10",
+                    "connector": "postgres",
+                    "connection_id": "postgres",
+                    "query": "SELECT * FROM users;",
+                    "target_environment": "dev",
+                    "run_type": "manual",
+                },
+            )
+
+        self.assertEqual(result.job_id, "res_get_users")
+        self.assertTrue(result.resource_created)
+        self.assertEqual(create_resource_mock.call_args.args[2].name, "get-users-10")
+        self.assertEqual(create_resource_mock.call_args.args[2].connector, "sql-mcp")
+        self.assertEqual(create_resource_mock.call_args.args[2].environment, "dev")
+        self.assertEqual(create_resource_mock.call_args.args[2].config["query"], "SELECT * FROM users;")
+        self.assertNotIn("target_environment", create_resource_mock.call_args.args[2].config)
+        self.assertNotIn("environment", create_resource_mock.call_args.args[2].config)
+
     def test_existing_sql_resource_runs_without_recreating_resource(self) -> None:
         db = object()
         actor = SimpleNamespace(id="u_analyst", role="user", domain="collections")
@@ -33,10 +66,10 @@ class ChatJobServiceTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertTrue(result.executed)
-        self.assertEqual(result.resource_id, "res_sql_1")
+        self.assertEqual(result.job_id, "res_sql_1")
         self.assertEqual(result.run_id, "run_123")
         create_resource_mock.assert_not_called()
-        self.assertEqual(create_run_mock.call_args.args[2].resource_id, "res_sql_1")
+        self.assertEqual(create_run_mock.call_args.args[2].job_id, "res_sql_1")
 
     def test_missing_sql_resource_can_be_created_and_run_from_chat(self) -> None:
         db = object()
@@ -58,7 +91,7 @@ class ChatJobServiceTests(unittest.TestCase):
             "app.services.chat_job_service.create_run_and_maybe_execute",
             return_value={"id": "run_456", "status": "queued"},
         ) as create_run_mock:
-            db = SimpleNamespace(get=lambda model, resource_id: resource_model)
+            db = SimpleNamespace(get=lambda model, job_id: resource_model)
             result = maybe_run_sql_job_from_chat(
                 db,
                 message="Create and run a SQL job named ad_hoc_sales_check with query select 1",
@@ -74,8 +107,8 @@ class ChatJobServiceTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertTrue(result.executed)
         self.assertTrue(result.resource_created)
-        self.assertEqual(create_resource_mock.call_args.args[2].connector, "sql-dab")
-        self.assertEqual(create_run_mock.call_args.args[2].resource_id, "res_new_1")
+        self.assertEqual(create_resource_mock.call_args.args[2].connector, "sql-mcp")
+        self.assertEqual(create_run_mock.call_args.args[2].job_id, "res_new_1")
 
     def test_non_execution_chat_message_does_not_trigger_sql_run(self) -> None:
         result = maybe_run_sql_job_from_chat(
@@ -123,7 +156,7 @@ class ChatJobServiceTests(unittest.TestCase):
             "app.services.chat_job_service.create_run_and_maybe_execute",
             return_value={"id": "run_get_runs", "status": "succeeded"},
         ) as create_run_mock:
-            db = SimpleNamespace(get=lambda model, resource_id: resource_model)
+            db = SimpleNamespace(get=lambda model, job_id: resource_model)
             result = maybe_run_sql_job_from_chat(
                 db,
                 message="please run the job for me",
@@ -131,7 +164,7 @@ class ChatJobServiceTests(unittest.TestCase):
                 current_draft={
                     "job_type": "SQL",
                     "job_name": "get-runs",
-                    "connector": "sql-dab",
+                    "connector": "sql-mcp",
                     "connection_id": "postgres",
                     "query": "SELECT * FROM runs",
                     "target_environment": "dev",
@@ -143,7 +176,7 @@ class ChatJobServiceTests(unittest.TestCase):
         self.assertTrue(result.executed)
         self.assertTrue(result.resource_created)
         self.assertEqual(create_resource_mock.call_args.args[2].name, "get-runs")
-        self.assertEqual(create_resource_mock.call_args.args[2].connector, "sql-dab")
+        self.assertEqual(create_resource_mock.call_args.args[2].connector, "sql-mcp")
         self.assertEqual(create_resource_mock.call_args.args[2].config["connection_id"], "postgres")
         self.assertEqual(create_run_mock.call_args.args[2].target_environment, "dev")
 
@@ -166,7 +199,7 @@ class ChatJobServiceTests(unittest.TestCase):
             "app.services.chat_job_service.create_run_and_maybe_execute",
             return_value={"id": "run_label", "status": "succeeded"},
         ):
-            db = SimpleNamespace(get=lambda model, resource_id: resource_model)
+            db = SimpleNamespace(get=lambda model, job_id: resource_model)
             result = maybe_run_sql_job_from_chat(
                 db,
                 message="please run the job now",
@@ -182,7 +215,7 @@ class ChatJobServiceTests(unittest.TestCase):
             )
 
         self.assertIsNotNone(result)
-        self.assertEqual(create_resource_mock.call_args.args[2].connector, "sql-dab")
+        self.assertEqual(create_resource_mock.call_args.args[2].connector, "sql-mcp")
 
 
 if __name__ == "__main__":

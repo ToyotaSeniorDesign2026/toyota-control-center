@@ -25,6 +25,7 @@ import CalendarPage from "./pages/Calendar";
 import RequiredActionForm from "./pages/RequiredActionForm";
 import RequiredActions from "./pages/RequiredActions";
 import CreateJob from "./pages/CreateJob";
+import Connectors from "./pages/Connectors";
 
 // Create the router with all routes
 export const router = createBrowserRouter([
@@ -123,6 +124,10 @@ export const router = createBrowserRouter([
       {
         path: "jobs",
         Component: Jobs,
+      },
+      {
+        path: "connectors",
+        Component: Connectors,
       },
       {
         path: "runs",

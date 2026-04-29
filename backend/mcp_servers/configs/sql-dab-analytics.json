@@ -1,8 +1,0 @@
-{
-  "type": "streamable-http",
-  "url": "${SQL_ANALYTICS_MCP_SERVER_URL}",
-  "headers": {
-    "Authorization": "Bearer ${SQL_ANALYTICS_MCP_SERVER_BEARER_TOKEN}"
-  },
-  "timeout": 30
-}

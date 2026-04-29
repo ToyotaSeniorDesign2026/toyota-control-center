@@ -12,11 +12,11 @@ import { useJobRuns } from "../contexts/JobRunContext";
 import { buildUserJobs, type UserJobViewModel } from "../lib/jobRunViewModels";
 
 export default function MyJobs() {
-  const { resources, runs, loading, error } = useJobRuns();
+  const { jobs: jobRecords, runs, loading, error } = useJobRuns();
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [selectedJob, setSelectedJob] = useState<UserJobViewModel | null>(null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
-  const jobs = useMemo(() => buildUserJobs(resources, runs), [resources, runs]);
+  const jobs = useMemo(() => buildUserJobs(jobRecords, runs), [jobRecords, runs]);
 
   const handleJobClick = (job: UserJobViewModel) => {
     setSelectedJob(job);

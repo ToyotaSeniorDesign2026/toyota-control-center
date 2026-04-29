@@ -20,27 +20,30 @@ import {
   ChevronDown,
   GitMerge,
   Plus,
+  Trash2,
 } from "lucide-react";
 import { useNavigate } from "react-router";
 import { Button } from "../components/ui/button";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
 import { ChatPanel } from "../components/ChatPanel";
+import { RunParamsModal, connectorNeedsRunParams } from "../components/RunParamsModal";
 import ExcelReportForm from "../components/user/ExcelReportForm";
 import SQLJobForm from "../components/user/SQLJobForm";
 import PowerPointForm from "../components/user/PowerPointForm";
 import { useCalendarOverlay } from "../contexts/CalendarContext";
 import { useJobRuns } from "../contexts/JobRunContext";
 import {
-  createResource,
-  createResourceRun,
+  createJob,
+  createJobRun,
+  deleteJob,
   getRunLogs,
   listMcpRepoBundles,
   listMcpServers,
   type MCPConnectionBundleSummary,
   type MCPServerSummary,
-  type ResourceCreatePayload,
-  type ResourceRecord,
+  type JobCreatePayload,
+  type JobRecord,
   type RunCreatePayload,
   type RunLogEntry,
   type RunRecord,
@@ -326,7 +329,7 @@ const getRunMetadata = (run: RunRecord) => {
   return { submitted, resolved, draft, jobConfig, metadata };
 };
 
-const resolveRunJobName = (run: RunRecord, resource?: ResourceRecord) => {
+const resolveRunJobName = (run: RunRecord, resource?: JobRecord) => {
   const { resolved, draft, metadata } = getRunMetadata(run);
   return (
     getString(resource?.name) ||
@@ -338,7 +341,7 @@ const resolveRunJobName = (run: RunRecord, resource?: ResourceRecord) => {
   );
 };
 
-const resolveRunJobType = (run: RunRecord, resource?: ResourceRecord) => {
+const resolveRunJobType = (run: RunRecord, resource?: JobRecord) => {
   const { draft, metadata } = getRunMetadata(run);
   return normalizeResourceType(
     getString(resource?.type) ||
@@ -349,7 +352,7 @@ const resolveRunJobType = (run: RunRecord, resource?: ResourceRecord) => {
   );
 };
 
-const resolveRunSchedule = (run: RunRecord, resource?: ResourceRecord) => {
+const resolveRunSchedule = (run: RunRecord, resource?: JobRecord) => {
   const { resolved, jobConfig } = getRunMetadata(run);
   const resourceConfig = isRecord(resource?.config) ? resource.config : null;
   return (
@@ -417,7 +420,7 @@ const createWorkspaceJobPayloadFromStoredJob = (job: StoredJob): WorkspaceJobPay
   };
 };
 
-const createWorkspaceJobPayloadFromRun = (run: RunRecord, resource?: ResourceRecord): WorkspaceJobPayload => {
+const createWorkspaceJobPayloadFromRun = (run: RunRecord, resource?: JobRecord): WorkspaceJobPayload => {
   const name = resolveRunJobName(run, resource);
   const type = resolveRunJobType(run, resource);
   const schedule = resolveRunSchedule(run, resource);
@@ -426,7 +429,7 @@ const createWorkspaceJobPayloadFromRun = (run: RunRecord, resource?: ResourceRec
   const tasks = Array.isArray(resolved?.tasks) ? resolved.tasks : [];
 
   return {
-    job_id: resource?.id ?? run.resource_id,
+    job_id: resource?.id ?? run.job_id,
     name,
     type: type as WorkspaceJobPayload["type"],
     schedule,
@@ -436,7 +439,7 @@ const createWorkspaceJobPayloadFromRun = (run: RunRecord, resource?: ResourceRec
       getString(resolved?.intent) ||
       `Latest database run ${run.id} for ${name}.`,
     inputs: [
-      `Resource ID: ${run.resource_id}`,
+      `Resource ID: ${run.job_id}`,
       `Environment: ${run.target_environment}`,
       `Action: ${run.action}`,
     ],
@@ -459,7 +462,7 @@ const createWorkspaceJobPayloadFromRun = (run: RunRecord, resource?: ResourceRec
   };
 };
 
-const createWorkspaceJobPayloadFromResource = (resource: ResourceRecord): WorkspaceJobPayload => {
+const createWorkspaceJobPayloadFromResource = (resource: JobRecord): WorkspaceJobPayload => {
   const config = resource.config ?? {};
   const schedule = getString(config.schedule) || "Manual run";
   const type = normalizeResourceType(resource.type);
@@ -484,16 +487,16 @@ const createWorkspaceJobPayloadFromResource = (resource: ResourceRecord): Worksp
   };
 };
 
-const createDashboardJobs = (runs: RunRecord[], resources: ResourceRecord[]): DashboardJobListItem[] => {
-  const jobResources = resources.filter((resource) => resource.type !== "repo_connection");
+const createDashboardJobs = (runs: RunRecord[], jobs: JobRecord[]): DashboardJobListItem[] => {
+  const jobResources = jobs.filter((job) => job.type !== "repo_connection");
   const resourceById = new Map(jobResources.map((resource) => [resource.id, resource]));
   const latestRunByResource = new Map<string, RunRecord>();
 
   [...runs]
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
     .forEach((run) => {
-      if (!latestRunByResource.has(run.resource_id)) {
-        latestRunByResource.set(run.resource_id, run);
+      if (!latestRunByResource.has(run.job_id)) {
+        latestRunByResource.set(run.job_id, run);
       }
     });
 
@@ -512,10 +515,10 @@ const createDashboardJobs = (runs: RunRecord[], resources: ResourceRecord[]): Da
       };
     }
 
-    const resolvedResource = resourceById.get(run.resource_id);
+    const resolvedResource = resourceById.get(run.job_id);
     const payload = createWorkspaceJobPayloadFromRun(run, resolvedResource);
     return {
-      id: run.resource_id,
+      id: run.job_id,
       name: payload.name,
       type: payload.type,
       schedule: payload.schedule,
@@ -564,15 +567,15 @@ const getRepoConnectionName = (repoSlug: string, explicitName?: string): string 
   return `${repoName}-repo`;
 };
 
-const createDashboardRuns = (runs: RunRecord[], resources: ResourceRecord[], scheduledOccurrences: ScheduledOccurrence[] = []) => {
-  const resourceById = new Map(resources.map((resource) => [resource.id, resource]));
+const createDashboardRuns = (runs: RunRecord[], jobs: JobRecord[], scheduledOccurrences: ScheduledOccurrence[] = []) => {
+  const resourceById = new Map(jobs.map((job) => [job.id, job]));
   const mappedRuns = runs.map((run) => {
-    const resource = resourceById.get(run.resource_id);
+    const resource = resourceById.get(run.job_id);
     const status = mapRunStatusToRunItemStatus(run.status);
     const scheduledTime = new Date(run.created_at);
     return {
       id: run.id,
-      resourceId: run.resource_id,
+      resourceId: run.job_id,
       jobName: resolveRunJobName(run, resource),
       jobType: resolveRunJobType(run, resource),
       status,
@@ -582,7 +585,7 @@ const createDashboardRuns = (runs: RunRecord[], resources: ResourceRecord[], sch
   });
   const projectedRuns = scheduledOccurrences.map((occurrence) => ({
     id: occurrence.id,
-    resourceId: occurrence.resourceId,
+    resourceId: occurrence.jobId,
     jobName: occurrence.jobName,
     jobType: occurrence.jobType,
     status: "scheduled" as const,
@@ -838,7 +841,7 @@ interface WorkspaceState {
 export default function UserHome() {
   const navigate = useNavigate();
   const {
-    resources,
+    jobs,
     runs,
     loading: jobRunsLoading,
     error: jobRunsError,
@@ -894,6 +897,7 @@ export default function UserHome() {
   const [jobSort, setJobSort] = useState<"name" | "status" | "type" | "recently-updated">("name");
   const [jobFilter, setJobFilter] = useState<string>("all");
   const [runningJobIds, setRunningJobIds] = useState<string[]>([]);
+  const [runParamsJob, setRunParamsJob] = useState<JobRecord | null>(null);
   const [templateSort, setTemplateSort] = useState<"name" | "category" | "recently-used" | "recommended">("name");
   const [templateFilter, setTemplateFilter] = useState<"all" | "PowerPoint" | "Excel" | "SQL" | "Workflow" | "Form" | "Dashboard">("all");
   const [selectedPromotions, setSelectedPromotions] = useState<string[]>([]);
@@ -909,7 +913,7 @@ export default function UserHome() {
   const [repoConnectionSuccess, setRepoConnectionSuccess] = useState<string | null>(null);
   const [isSavingRepoConnection, setIsSavingRepoConnection] = useState(false);
   const [consoleHeight, setConsoleHeight] = useState(50);
-  const [consoleActiveTab, setConsoleActiveTab] = useState<"json" | "logs" | "events">("json");
+  const [consoleActiveTab, setConsoleActiveTab] = useState<"json" | "logs" | "events" | "output">("json");
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [runLogs, setRunLogs] = useState<RunLogEntry[]>([]);
   const [expandedActionId, setExpandedActionId] = useState<string | null>(null);
@@ -940,10 +944,10 @@ export default function UserHome() {
     },
   ]);
   const [aiInput, setAiInput] = useState("");
-  const baseDashboardJobs = useMemo(() => createDashboardJobs(runs, resources), [runs, resources]);
+  const baseDashboardJobs = useMemo(() => createDashboardJobs(runs, jobs), [runs, jobs]);
   const connectedRepoResources = useMemo(
-    () => resources.filter((resource) => resource.type === "repo_connection"),
-    [resources],
+    () => jobs.filter((job) => job.type === "repo_connection"),
+    [jobs],
   );
   const dashboardJobs = useMemo(
     () =>
@@ -957,8 +961,8 @@ export default function UserHome() {
       ),
     [baseDashboardJobs, runningJobIds],
   );
-  const scheduledRunProjections = useMemo(() => createScheduledRunProjections(resources), [resources]);
-  const dashboardRuns = useMemo(() => createDashboardRuns(runs, resources, scheduledRunProjections), [runs, resources, scheduledRunProjections]);
+  const scheduledRunProjections = useMemo(() => createScheduledRunProjections(jobs), [jobs]);
+  const dashboardRuns = useMemo(() => createDashboardRuns(runs, jobs, scheduledRunProjections), [runs, jobs, scheduledRunProjections]);
   const activeDashboardJobs = useMemo(
     () => dashboardJobs.filter((job) => job.status === "Running" || job.status === "Healthy"),
     [dashboardJobs],
@@ -1033,13 +1037,13 @@ export default function UserHome() {
   );
   const filteredDashboardRuns = useMemo(() => {
     if (!selectedResourceId) return dashboardRuns;
-    const filtered = runs.filter((r) => r.resource_id === selectedResourceId);
-    const projected = scheduledRunProjections.filter((run) => run.resourceId === selectedResourceId);
-    return createDashboardRuns(filtered, resources, projected);
-  }, [runs, resources, selectedResourceId, dashboardRuns, scheduledRunProjections]);
+    const filtered = runs.filter((r) => r.job_id === selectedResourceId);
+    const projected = scheduledRunProjections.filter((run) => run.jobId === selectedResourceId);
+    return createDashboardRuns(filtered, jobs, projected);
+  }, [runs, jobs, selectedResourceId, dashboardRuns, scheduledRunProjections]);
   const selectedResourceName = useMemo(
-    () => resources.find((r) => r.id === selectedResourceId)?.name ?? null,
-    [resources, selectedResourceId]
+    () => jobs.find((r) => r.id === selectedResourceId)?.name ?? null,
+    [jobs, selectedResourceId]
   );
   const [customFormBuilder, setCustomFormBuilder] = useState<CustomFormBuilderState>({
     formName: "",
@@ -1240,6 +1244,26 @@ export default function UserHome() {
     ];
   };
 
+  const getConsoleOutput = () => {
+    const execLog = runLogs.find((l) => l.message === "Connector execution finished");
+    if (!execLog) return null;
+    const meta = execLog.metadata as any;
+    const execution = meta?.metadata?.execution ?? meta?.execution ?? null;
+    return {
+      final_text: execution?.final_text ?? null,
+      tool_executions: (execution?.tool_executions ?? []) as Array<{
+        framework_name?: string;
+        server_name?: string;
+        remote_name?: string;
+        arguments?: Record<string, unknown>;
+        parsed_result?: unknown;
+      }>,
+      result: execution?.result ?? null,
+      error: execution?.error ?? meta?.error ?? null,
+      status: execution?.status ?? meta?.status ?? null,
+    };
+  };
+
   // Fetch run logs whenever activeRunId changes, polling until the run reaches a terminal state
   useEffect(() => {
     if (!activeRunId) return;
@@ -1250,9 +1274,12 @@ export default function UserHome() {
         const result = await getRunLogs(activeRunId, getAuthToken());
         if (!stopped) {
           setRunLogs(result.logs);
-          // Stop polling once the run is in a terminal state
-          const terminal = ["completed", "failed", "stopped", "cancelled", "canceled"];
-          if (terminal.includes(result.status.toLowerCase())) stopped = true;
+          // Stop polling once the run is in a terminal state; auto-switch to output
+          const terminal = ["completed", "succeeded", "failed", "stopped", "cancelled", "canceled", "deployed"];
+          if (terminal.includes(result.status.toLowerCase())) {
+            stopped = true;
+            setConsoleActiveTab("output");
+          }
         }
       } catch {
         // ignore fetch errors silently
@@ -1910,15 +1937,15 @@ export default function UserHome() {
       const normalized = value.trim().toLowerCase();
       return normalized === "production" ? "prod" : normalized;
     };
-    const sqlConnectors = ["sql-dab", "sql-dab-analytics"];
+    const sqlConnectors = ["sql-mcp", "sql-mcp-analytics"];
     const defaultConnectionIdForConnector = (connector: string) => {
-      if (connector === "sql-dab") return "postgres";
-      if (connector === "sql-dab-analytics") return "analytics";
+      if (connector === "sql-mcp") return "postgres";
+      if (connector === "sql-mcp-analytics") return "analytics";
       return "";
     };
     const normalizeConnector = (connector: any) => {
       const normalized = typeof connector === "string" ? connector.trim().toLowerCase() : "";
-      return sqlConnectors.includes(normalized) ? normalized : "sql-dab";
+      return sqlConnectors.includes(normalized) ? normalized : "sql-mcp";
     };
     const normalizedType = String(fields.job_type ?? fields.type ?? "").trim().toLowerCase();
     const isSql =
@@ -1929,8 +1956,9 @@ export default function UserHome() {
     const normalized: Record<string, any> = {
       ...fields,
       ...(fields.name && !fields.job_name ? { job_name: fields.name } : {}),
-      ...(fields.environment !== undefined ? { environment: normalizeEnv(fields.environment) } : {}),
-      ...(fields.target_environment !== undefined ? { target_environment: normalizeEnv(fields.target_environment) } : {}),
+      ...((fields.target_environment ?? fields.environment) !== undefined
+        ? { target_environment: normalizeEnv(fields.target_environment ?? fields.environment) }
+        : {}),
       ...(fields.schedule === undefined && config.schedule !== undefined ? { schedule: config.schedule } : {}),
     };
     const normalizedSchedule = typeof normalized.schedule === "string" ? normalized.schedule.trim() : "";
@@ -1938,10 +1966,11 @@ export default function UserHome() {
       normalized.run_type = "scheduled";
     }
 
-    if (isSql) {
+    if (isSql && fields.sql_subtype !== "sql_github_write") {
       const connector = normalizeConnector(fields.connector ?? config.connector);
       const explicitConnectionId = fields.connection_id ?? config.connection_id;
       const parsedConnection = parseSqlConnectionString(config.sql_connection_string);
+      const { target_environment: _targetEnvironmentConfig, environment: _environmentConfig, ...sqlConfig } = config;
       const database =
         fields.database ??
         config.database ??
@@ -1954,11 +1983,12 @@ export default function UserHome() {
       normalized.connection_id = explicitConnectionId ?? defaultConnectionIdForConnector(connector);
       normalized.database = database ?? "";
       normalized.target_environment = normalized.target_environment ?? normalized.environment ?? "dev";
+      delete normalized.environment;
       normalized.query = fields.query ?? params.query ?? config.query ?? "";
       normalized.output_destination = fields.output_destination ?? config.output_destination ?? "";
       normalized.result_limit = fields.result_limit ?? config.result_limit ?? "";
       normalized.config = {
-        ...config,
+        ...sqlConfig,
         connection_id: normalized.connection_id,
         ...(normalized.database ? { database: normalized.database } : {}),
         ...(parsedConnection.host ? { host: config.host ?? parsedConnection.host } : {}),
@@ -1966,7 +1996,6 @@ export default function UserHome() {
         ...(parsedConnection.username ? { username: config.username ?? parsedConnection.username } : {}),
         query: normalized.query,
         schedule: normalized.schedule,
-        target_environment: normalized.target_environment,
         output_destination: normalized.output_destination,
         result_limit: normalized.result_limit,
       };
@@ -2023,11 +2052,17 @@ export default function UserHome() {
       return;
     }
     const normalized = normalizeExtractedJobFields(fields);
+    // sql_github_write drafts carry a `repo` field but are NOT standalone repo connections —
+    // they are part of the SQL-to-GitHub write flow and should stay in the job draft.
+    const isGithubWriteFlow = normalized.sql_subtype === "sql_github_write";
     const isRepoConnectionDraft =
-      normalized.connection_intent === "connect_repo" ||
-      normalized.type === "repo_connection" ||
-      normalized.connector === "github" ||
-      Boolean(normalized.repo);
+      !isGithubWriteFlow &&
+      (
+        normalized.connection_intent === "connect_repo" ||
+        normalized.type === "repo_connection" ||
+        normalized.connector === "github" ||
+        Boolean(normalized.repo)
+      );
 
     if (isRepoConnectionDraft) {
       applyRepoConnectionFields(normalized);
@@ -2048,6 +2083,27 @@ export default function UserHome() {
         setRepoConnectionError("Chat started a GitHub repo connection, but I still need the repo slug.");
       }
       return;
+    }
+
+    // For the GitHub write flow, silently register any new repo the user provides so it
+    // appears in the Connected Repo Context for future sessions. registerRepoConnection
+    // deduplicates internally, so re-calling with an already-connected repo is safe.
+    if (isGithubWriteFlow) {
+      const repoSlug = normalizeGithubRepoInput(String(normalized.repo ?? ""));
+      if (repoSlug) {
+        void registerRepoConnection(
+          {
+            repo: repoSlug,
+            ref: String(normalized.ref ?? ""),
+            path: "",
+            displayName: repoSlug.split("/")[1] ?? repoSlug,
+            description: "",
+          },
+          "chat",
+        ).catch(() => {
+          // silently ignore — don't interrupt the write flow for a background registration failure
+        });
+      }
     }
 
     setJobDraft((prev) => mergeDraftValues(prev, normalized));
@@ -2071,10 +2127,10 @@ export default function UserHome() {
 
     if (jobType === "SQL") {
       return Boolean(
-        String(draft.connector ?? "").trim() &&
+          String(draft.connector ?? "").trim() &&
           String(draft.connection_id ?? draft.config?.connection_id ?? "").trim() &&
           String(draft.query ?? draft.config?.query ?? draft.params?.query ?? "").trim() &&
-          String(draft.target_environment ?? draft.config?.target_environment ?? draft.environment ?? "").trim()
+          String(draft.target_environment ?? draft.environment ?? "").trim()
       );
     }
 
@@ -2116,7 +2172,7 @@ export default function UserHome() {
     }));
   };
 
-  const buildRepoConnectionPayload = (form: RepoConnectionFormState): ResourceCreatePayload => {
+  const buildRepoConnectionPayload = (form: RepoConnectionFormState): JobCreatePayload => {
     const repo = normalizeGithubRepoInput(form.repo);
     if (!isValidGithubRepoSlug(repo)) {
       throw new Error("Enter a GitHub repo as owner/repo or a full GitHub URL.");
@@ -2161,7 +2217,7 @@ export default function UserHome() {
     setRepoConnectionSuccess(null);
 
     try {
-      const resource = existing ?? await createResource(payload, getAuthToken());
+      const resource = existing ?? await createJob(payload, getAuthToken());
       await refreshJobRuns();
       setRepoConnectionForm((prev) => ({
         ...DEFAULT_REPO_CONNECTION_FORM,
@@ -2198,16 +2254,16 @@ export default function UserHome() {
 
   const normalizeSqlConnectorForResource = (connector: unknown) => {
     const normalized = typeof connector === "string" ? connector.trim().toLowerCase() : "";
-    if (normalized === "sql-dab" || normalized === "control center dev database" || normalized === "control-center dev database") {
-      return "sql-dab";
+    if (normalized === "sql-mcp" || normalized === "control center dev database" || normalized === "control-center dev database") {
+      return "sql-mcp";
     }
-    if (normalized === "sql-dab-analytics" || normalized === "analytics reporting database") {
-      return "sql-dab-analytics";
+    if (normalized === "sql-mcp-analytics" || normalized === "analytics reporting database") {
+      return "sql-mcp-analytics";
     }
-    return "sql-dab";
+    return "sql-mcp";
   };
 
-  const buildResourcePayloadFromDraft = (draft: Record<string, any>): ResourceCreatePayload => {
+  const buildResourcePayloadFromDraft = (draft: Record<string, any>): JobCreatePayload => {
     const jobType = String(draft.job_type ?? "").trim();
     const schedule = String(draft.schedule ?? draft.config?.schedule ?? "").trim();
     const timezone = typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "America/Chicago";
@@ -2225,7 +2281,7 @@ export default function UserHome() {
 
     if (jobType === "SQL") {
       const connector = normalizeSqlConnectorForResource(draft.connector);
-      const connectionId = String(draft.connection_id ?? draft.config?.connection_id ?? (connector === "sql-dab" ? "postgres" : "analytics")).trim();
+      const connectionId = String(draft.connection_id ?? draft.config?.connection_id ?? (connector === "sql-mcp" ? "postgres" : "analytics")).trim();
       const query = String(draft.query ?? draft.config?.query ?? draft.params?.query ?? "").trim();
       return {
         ...basePayload,
@@ -2287,16 +2343,16 @@ export default function UserHome() {
     }
 
     const payload = buildResourcePayloadFromDraft(jobDraft);
-    const existingResource = resources.find(
-      (resource) => resource.name === payload.name && resource.type === payload.type && resource.connector === payload.connector
+    const existingResource = jobs.find(
+      (job) => job.name === payload.name && job.type === payload.type && job.connector === payload.connector
     );
 
     setIsRegisteringJob(true);
     try {
-      const resource = existingResource ?? await createResource(payload, getAuthToken());
+      const resource = existingResource ?? await createJob(payload, getAuthToken());
       setJobDraft((prev) => ({
         ...prev,
-        resource_id: resource.id,
+        job_id: resource.id,
         name: resource.name,
         connector: resource.connector,
         connection_id: resource.config?.connection_id ?? prev.connection_id,
@@ -2318,7 +2374,7 @@ export default function UserHome() {
       });
 
       if (options.autoRun) {
-        const run = await createResourceRun(resource.id, buildRunPayloadFromResource(resource), getAuthToken());
+        const run = await createJobRun(resource.id, buildRunPayloadFromResource(resource), getAuthToken());
         setActiveRunId(run.id);
         setRunLogs([]);
         setConsoleActiveTab("logs");
@@ -2350,7 +2406,7 @@ export default function UserHome() {
     }
   };
 
-  const buildRunPayloadFromResource = (resource: ResourceRecord): RunCreatePayload => {
+  const buildRunPayloadFromResource = (resource: JobRecord): RunCreatePayload => {
     const config = resource.config ?? {};
     return {
       action: "run",
@@ -2374,18 +2430,17 @@ export default function UserHome() {
     };
   };
 
-  const runResourceFromUi = async (resourceId: string) => {
-    const resource = resources.find((item) => item.id === resourceId);
-    if (!resource) {
-      emitConsoleEvent("missing_fields_identified", "Unable to run job because the resource was not found", { resource_id: resourceId });
-      return;
-    }
-
+  const executeRunWithParams = async (resource: JobRecord, extraParams: Record<string, unknown>) => {
+    const resourceId = resource.id;
     setRunningJobIds((current) => Array.from(new Set([...current, resourceId])));
-    emitConsoleEvent("draft_updated", `Started run for ${resource.name}`, { resource_id: resource.id });
-
+    emitConsoleEvent("draft_updated", `Started run for ${resource.name}`, { resource_id: resourceId });
     try {
-      const run = await createResourceRun(resource.id, buildRunPayloadFromResource(resource), getAuthToken());
+      const basePayload = buildRunPayloadFromResource(resource);
+      const run = await createJobRun(
+        resource.id,
+        { ...basePayload, params: { ...basePayload.params, ...extraParams } },
+        getAuthToken(),
+      );
       setActiveRunId(run.id);
       setRunLogs([]);
       setConsoleActiveTab("logs");
@@ -2393,7 +2448,7 @@ export default function UserHome() {
       await refreshJobRuns();
     } catch (err) {
       emitConsoleEvent("missing_fields_identified", `Unable to run ${resource.name}`, {
-        resource_id: resource.id,
+        resource_id: resourceId,
         error: err instanceof Error ? err.message : "Unknown error",
       });
     } finally {
@@ -2401,12 +2456,48 @@ export default function UserHome() {
     }
   };
 
+  const runResourceFromUi = async (resourceId: string) => {
+    const resource = jobs.find((item) => item.id === resourceId);
+    if (!resource) {
+      emitConsoleEvent("missing_fields_identified", "Unable to run job because the resource was not found", { resource_id: resourceId });
+      return;
+    }
+
+    if (connectorNeedsRunParams(resource)) {
+      setRunParamsJob(resource);
+      return;
+    }
+
+    await executeRunWithParams(resource, {});
+  };
+
+  const handleDeleteJob = async (jobId: string, jobName: string) => {
+    if (!window.confirm(`Delete job "${jobName}"? This will also remove all of its run history and cannot be undone.`)) {
+      return;
+    }
+    try {
+      await deleteJob(jobId, getAuthToken());
+      await refreshJobRuns();
+    } catch (err) {
+      alert(`Failed to delete job: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const handleRunParamsSubmit = (params: Record<string, string>) => {
+    if (!runParamsJob) return;
+    const resource = runParamsJob;
+    setRunParamsJob(null); // close modal immediately — don't block UI on execution
+    void executeRunWithParams(resource, params);
+  };
+
+  // kept for compatibility with the post-creation immediate-run path below
+
   useEffect(() => {
     if (
       jobDraft.job_type !== "SQL" ||
       !jobDraft.creation_requested ||
       !isCreateJobDraftComplete(jobDraft) ||
-      jobDraft.resource_id ||
+      jobDraft.job_id ||
       isRegisteringJob
     ) {
       return;
@@ -2434,7 +2525,7 @@ export default function UserHome() {
       });
       autoRegisteredDraftKeyRef.current = null;
     });
-  }, [jobDraft, isRegisteringJob, resources]);
+  }, [jobDraft, isRegisteringJob, jobs]);
 
   // Render tab content - shared across all panes
   const renderTabContent = (tab: WorkspaceTab | undefined) => {
@@ -2446,7 +2537,7 @@ export default function UserHome() {
       ? ((tab.payload as WorkspaceJobPayload | undefined) ?? (currentJobName ? mockJobSpecs[currentJobName] : null))
       : null;
     const currentJobResource = currentJobSpec
-      ? resources.find((resource) => resource.id === currentJobSpec.job_id || resource.id === tab.id)
+      ? jobs.find((job) => job.id === currentJobSpec.job_id || job.id === tab.id)
       : null;
     
     // Get template if needed
@@ -3149,7 +3240,7 @@ export default function UserHome() {
                 const resourceId = tab.payload?.job_id as string | undefined;
                 const jobRuns = resourceId
                   ? [...runs]
-                      .filter((r) => r.resource_id === resourceId)
+                      .filter((r) => r.job_id === resourceId)
                       .sort((a, b) => b.created_at.localeCompare(a.created_at))
                   : [];
 
@@ -4355,14 +4446,23 @@ export default function UserHome() {
                         </span>
                       </div>
                     </button>
-                    <button
-                      onClick={() => void runResourceFromUi(job.id)}
-                      className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-[#ed0923] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#d10820] disabled:cursor-not-allowed disabled:bg-gray-300"
-                      disabled={runningJobIds.includes(job.id)}
-                    >
-                      <PlayCircle className="h-3.5 w-3.5" />
-                      {runningJobIds.includes(job.id) ? "Running..." : "Run manually"}
-                    </button>
+                    <div className="mt-3 flex items-center gap-2">
+                      <button
+                        onClick={() => void runResourceFromUi(job.id)}
+                        className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md bg-[#ed0923] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#d10820] disabled:cursor-not-allowed disabled:bg-gray-300"
+                        disabled={runningJobIds.includes(job.id)}
+                      >
+                        <PlayCircle className="h-3.5 w-3.5" />
+                        {runningJobIds.includes(job.id) ? "Running..." : "Run manually"}
+                      </button>
+                      <button
+                        onClick={() => void handleDeleteJob(job.id, job.name)}
+                        title="Delete job"
+                        className="inline-flex items-center justify-center rounded-md border border-gray-200 p-1.5 text-gray-400 hover:border-red-300 hover:bg-red-50 hover:text-red-600"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </div>
                 ))}
                 {readyJobs.length === 0 && (
@@ -4423,6 +4523,13 @@ export default function UserHome() {
                         >
                           <PlayCircle className="h-3.5 w-3.5" />
                           {runningJobIds.includes(job.id) ? "Running..." : "Run manually"}
+                        </button>
+                        <button
+                          onClick={() => void handleDeleteJob(job.id, job.name)}
+                          title="Delete job"
+                          className="inline-flex items-center justify-center rounded-md border border-gray-200 p-1.5 text-gray-400 hover:border-red-300 hover:bg-red-50 hover:text-red-600"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       </div>
                     </div>
@@ -5172,20 +5279,23 @@ export default function UserHome() {
                       
                       {consoleHeight > 80 && (
                         <div className="flex items-center gap-1 border-l border-gray-300 pl-3">
-                          {["json", "logs", "events"].map((tab) => (
+                          {(["json", "logs", "events", "output"] as const).map((tab) => (
                             <button
                               key={tab}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setConsoleActiveTab(tab as any);
+                                setConsoleActiveTab(tab);
                               }}
-                              className={`px-2.5 py-1 text-xs font-medium rounded transition ${
+                              className={`px-2.5 py-1 text-xs font-medium rounded transition relative ${
                                 consoleActiveTab === tab
                                   ? "text-[#ed0923] bg-[#ed0923]/10"
                                   : "text-gray-600 hover:text-gray-900 hover:bg-gray-100"
                               }`}
                             >
                               {tab.toUpperCase()}
+                              {tab === "output" && getConsoleOutput() && (
+                                <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-green-500" />
+                              )}
                             </button>
                           ))}
                         </div>
@@ -5229,6 +5339,9 @@ export default function UserHome() {
                               </div>
                             ))}
                           </div>
+                        )}
+                        {consoleActiveTab === "output" && (
+                          <ConsoleOutputPanel output={getConsoleOutput()} runId={activeRunId} />
                         )}
                       </div>
                     )}
@@ -5513,20 +5626,23 @@ export default function UserHome() {
                       
                       {consoleHeight > 80 && (
                         <div className="flex items-center gap-1 border-l border-gray-300 pl-3">
-                          {["json", "logs", "events"].map((tab) => (
+                          {(["json", "logs", "events", "output"] as const).map((tab) => (
                             <button
                               key={tab}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setConsoleActiveTab(tab as any);
+                                setConsoleActiveTab(tab);
                               }}
-                              className={`px-2.5 py-1 text-xs font-medium rounded transition ${
+                              className={`px-2.5 py-1 text-xs font-medium rounded transition relative ${
                                 consoleActiveTab === tab
                                   ? "text-[#ed0923] bg-[#ed0923]/10"
                                   : "text-gray-600 hover:text-gray-900 hover:bg-gray-100"
                               }`}
                             >
                               {tab.toUpperCase()}
+                              {tab === "output" && getConsoleOutput() && (
+                                <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-green-500" />
+                              )}
                             </button>
                           ))}
                         </div>
@@ -5571,6 +5687,9 @@ export default function UserHome() {
                             ))}
                           </div>
                         )}
+                        {consoleActiveTab === "output" && (
+                          <ConsoleOutputPanel output={getConsoleOutput()} runId={activeRunId} />
+                        )}
                       </div>
                     )}
                   </div>
@@ -5603,7 +5722,7 @@ export default function UserHome() {
               currentDraftData={jobDraft}
               assistantNotices={chatAssistantNotices}
               onConsoleEvent={emitConsoleEvent}
-              resources={resources.map((r) => ({
+              resources={jobs.map((r) => ({
                 id: r.id,
                 name: r.name,
                 type: r.type ?? "Custom",
@@ -5689,6 +5808,204 @@ export default function UserHome() {
             </p>
           </div>
         </div>
+      )}
+
+      {runParamsJob && (
+        <RunParamsModal
+          job={runParamsJob}
+          onClose={() => setRunParamsJob(null)}
+          onSubmit={handleRunParamsSubmit}
+          isSubmitting={false}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Console Output Panel
+// ---------------------------------------------------------------------------
+
+interface OutputData {
+  final_text: string | null;
+  tool_executions: Array<{
+    framework_name?: string;
+    server_name?: string;
+    remote_name?: string;
+    arguments?: Record<string, unknown>;
+    parsed_result?: unknown;
+  }>;
+  result: unknown;
+  error: string | null;
+  status: string | null;
+}
+
+function tryParseRows(value: unknown): Array<Record<string, unknown>> | null {
+  // Parse JSON string wrapper if present
+  let parsed: unknown = value;
+  if (typeof value === "string") {
+    try { parsed = JSON.parse(value); } catch { return null; }
+  }
+
+  // Unwrap MCP ContentBlock envelope: [{type:"text", text:"{...}"}]
+  if (Array.isArray(parsed) && parsed.length > 0 && parsed[0] && typeof parsed[0] === "object" && "type" in parsed[0]) {
+    const block = (parsed as Array<Record<string, unknown>>).find((b) => b["type"] === "text" && typeof b["text"] === "string");
+    if (block) {
+      try { parsed = JSON.parse(block["text"] as string); } catch { return null; }
+    }
+  }
+
+  // {columns:[...], rows:[[...],...]} → array of objects
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const p = parsed as Record<string, unknown>;
+    if (Array.isArray(p["columns"]) && Array.isArray(p["rows"])) {
+      const cols = p["columns"] as string[];
+      return (p["rows"] as unknown[][]).map((row) =>
+        Object.fromEntries(cols.map((col, i) => [col, row[i]]))
+      );
+    }
+  }
+
+  // Already an array of objects
+  if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === "object") {
+    return parsed as Array<Record<string, unknown>>;
+  }
+
+  return null;
+}
+
+function ResultTable({ rows }: { rows: Array<Record<string, unknown>> }) {
+  const cols = Array.from(new Set(rows.flatMap((r) => Object.keys(r))));
+  return (
+    <div className="overflow-x-auto rounded border border-gray-200">
+      <table className="text-xs w-full border-collapse">
+        <thead>
+          <tr className="bg-gray-50">
+            {cols.map((c) => (
+              <th key={c} className="px-3 py-1.5 text-left font-semibold text-gray-700 border-b border-gray-200 whitespace-nowrap">
+                {c}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-gray-50"}>
+              {cols.map((c) => (
+                <td key={c} className="px-3 py-1.5 text-gray-800 border-b border-gray-100 whitespace-nowrap max-w-xs truncate">
+                  {row[c] === null || row[c] === undefined ? (
+                    <span className="text-gray-400 italic">null</span>
+                  ) : (
+                    String(row[c])
+                  )}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="px-3 py-1 text-xs text-gray-400 border-t border-gray-200 bg-gray-50">
+        {rows.length} row{rows.length !== 1 ? "s" : ""}
+      </div>
+    </div>
+  );
+}
+
+function ConsoleOutputPanel({ output, runId }: { output: OutputData | null; runId: string | null }) {
+  if (!output && !runId) {
+    return (
+      <p className="text-xs text-gray-400 py-2">No output yet — run a job to see results here.</p>
+    );
+  }
+  if (!output) {
+    return (
+      <p className="text-xs text-gray-400 py-2">Waiting for job to complete…</p>
+    );
+  }
+
+  const rows = tryParseRows(output.result);
+
+  return (
+    <div className="space-y-4 font-sans text-xs">
+      {/* Error */}
+      {output.error && (
+        <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-red-700">
+          <span className="font-semibold">Error: </span>{output.error}
+        </div>
+      )}
+
+      {/* Final text (agent summary) */}
+      {output.final_text && (
+        <div className="rounded border border-gray-200 bg-white px-3 py-2">
+          <p className="text-xs font-semibold text-gray-500 mb-1">Result</p>
+          <p className="whitespace-pre-wrap text-gray-900 leading-relaxed">{output.final_text}</p>
+        </div>
+      )}
+
+      {/* GitHub write result */}
+      {!output.final_text && rows === null && output.result && (
+        <div className="rounded border border-gray-200 bg-white px-3 py-2">
+          <p className="text-xs font-semibold text-gray-500 mb-1">Result</p>
+          <pre className="whitespace-pre-wrap text-gray-900">{JSON.stringify(output.result, null, 2)}</pre>
+        </div>
+      )}
+
+      {/* Direct result as table */}
+      {rows && (
+        <div>
+          <p className="text-xs font-semibold text-gray-500 mb-1">Query Results</p>
+          <ResultTable rows={rows} />
+        </div>
+      )}
+
+      {/* Tool executions */}
+      {output.tool_executions.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-gray-500">Tool Executions ({output.tool_executions.length})</p>
+          {output.tool_executions.map((te, i) => {
+            const teRows = tryParseRows(te.parsed_result);
+            return (
+              <div key={i} className="rounded border border-gray-200 bg-gray-50 px-3 py-2 space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-gray-700">{te.remote_name ?? te.framework_name ?? "tool"}</span>
+                  {te.server_name && (
+                    <span className="text-gray-400">({te.server_name})</span>
+                  )}
+                </div>
+                {te.arguments && Object.keys(te.arguments).length > 0 && (
+                  <div>
+                    <p className="text-gray-400 mb-0.5">Arguments</p>
+                    <pre className="bg-white rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 whitespace-pre-wrap overflow-x-auto">
+                      {JSON.stringify(te.arguments, null, 2)}
+                    </pre>
+                  </div>
+                )}
+                {teRows ? (
+                  <div>
+                    <p className="text-gray-400 mb-0.5">Result</p>
+                    <ResultTable rows={teRows} />
+                  </div>
+                ) : te.parsed_result !== undefined && te.parsed_result !== null ? (
+                  <div>
+                    <p className="text-gray-400 mb-0.5">Result</p>
+                    <pre className="bg-white rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 whitespace-pre-wrap overflow-x-auto">
+                      {typeof te.parsed_result === "string"
+                        ? te.parsed_result
+                        : JSON.stringify(te.parsed_result, null, 2)}
+                    </pre>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Empty state when run succeeded but no output captured */}
+      {!output.error && !output.final_text && output.tool_executions.length === 0 && !output.result && (
+        <p className="text-xs text-gray-400 py-2">
+          Job completed but produced no captured output.
+        </p>
       )}
     </div>
   );

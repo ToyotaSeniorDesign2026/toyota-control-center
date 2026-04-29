@@ -1,0 +1,9 @@
+{
+  "command": "python",
+  "args": ["control-center-server/server.py"],
+  "type": "stdio",
+  "env": {
+    "CC_API_BASE_URL": "${CC_API_BASE_URL}",
+    "CC_SERVICE_TOKEN": "${CC_INTERNAL_SERVICE_TOKEN}"
+  }
+}

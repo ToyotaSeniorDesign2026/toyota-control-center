@@ -5,27 +5,12 @@ import datetime as dt
 import os
 import tempfile
 from contextlib import AsyncExitStack
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import Any, TypeAlias
 
-if TYPE_CHECKING:
-    from mcp import ClientSession, StdioServerParameters
-    from mcp.client.sse import sse_client
-    from mcp.client.stdio import stdio_client
-    from mcp.client.streamable_http import streamable_http_client
-else:
-    ClientSession = None  # type: ignore[assignment]
-    StdioServerParameters = None  # type: ignore[assignment]
-    sse_client = None  # type: ignore[assignment]
-    stdio_client = None  # type: ignore[assignment]
-    streamable_http_client = None  # type: ignore[assignment]
-    _MCP_IMPORT_ERROR: Exception | None = None
-    try:  # pragma: no cover
-        from mcp import ClientSession, StdioServerParameters
-        from mcp.client.sse import sse_client
-        from mcp.client.stdio import stdio_client
-        from mcp.client.streamable_http import streamable_http_client
-    except Exception as exc:  # pragma: no cover
-        _MCP_IMPORT_ERROR = exc
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.sse import sse_client
+from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamable_http_client
 
 try:  # optional dependency in local environments
     from dotenv import load_dotenv
@@ -38,13 +23,6 @@ __all__ = ["BaseClient", "JSONPayload", "LLMClient"]
 JSONPayload: TypeAlias = dict[str, Any]
 
 load_dotenv()
-
-
-def _require_mcp_runtime() -> None:
-    if _MCP_IMPORT_ERROR is not None:
-        raise RuntimeError(
-            "The MCP Python SDK is required to use LLMClient. Install it with `uv add mcp`."
-        ) from _MCP_IMPORT_ERROR
 
 
 class BaseClient(abc.ABC):
@@ -96,8 +74,8 @@ class LLMClient(BaseClient):
     """
     MCP runtime client responsible only for transport and execution.
 
-    This class intentionally avoids orchestration, policy, and model concerns so
-    it can be reused by higher-level agents.
+    This class intentionally avoids orchestration, policy, and model concerns,
+    so it can be reused by higher-level agents.
     """
 
     def __init__(self) -> None:
@@ -177,7 +155,6 @@ class LLMClient(BaseClient):
         return session
 
     async def connect_to_server(self, server_name: str, server_config: JSONPayload) -> None:
-        _require_mcp_runtime()
         try:
             transport_type = str(server_config.get("type") or "stdio").strip().lower()
             if transport_type == "stdio":
