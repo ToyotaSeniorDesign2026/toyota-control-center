@@ -66,6 +66,12 @@ class Settings:
 
     # Internal service token — used by the Control Center MCP server to call the API
     internal_service_token: str | None = os.getenv("CC_INTERNAL_SERVICE_TOKEN")
+    toyota_jobs_repo: str = os.getenv("TOYOTA_JOBS_REPO", "toyota-jobs")
+    toyota_jobs_owner: str | None = os.getenv("TOYOTA_JOBS_OWNER")
+    toyota_jobs_deploy_branch: str = os.getenv("TOYOTA_JOBS_DEPLOY_BRANCH", "dev")
+    toyota_jobs_publish_branch: str = os.getenv("TOYOTA_JOBS_PUBLISH_BRANCH", "prod")
+    toyota_jobs_path_prefix: str = os.getenv("TOYOTA_JOBS_PATH_PREFIX", "jobs")
+    github_personal_access_token: str | None = os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
 
 
 settings = Settings()

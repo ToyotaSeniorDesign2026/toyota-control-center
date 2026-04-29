@@ -392,7 +392,7 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
       updateActivityStep(1, "in-progress");
 
       const conversationHistory = messages
-        .filter(msg => (msg.role === "user" || msg.role === "assistant") && msg.role !== "activity")
+        .filter(msg => msg.role === "user" || msg.role === "assistant")
         .map(msg => ({
           role: msg.role,
           content: msg.content,
@@ -401,7 +401,8 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
       updateActivityStep(1, "completed");
       updateActivityStep(2, "in-progress");
 
-      const response = await fetch("/api/chat/send", {
+      const activeSessionEnv = sessionEnvOverride ?? sessionEnv;
+      const response = await fetch("/api/chat/agent", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -410,10 +411,7 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
           message: requestMessage,
           conversation_history: conversationHistory,
           model: selectedModel,
-          current_draft_data: currentDraftData,
-          available_resources: resources ?? [],
-          github_personal_access_token: githubPersonalAccessToken ?? (sessionGitHubToken || undefined),
-          session_env: sessionEnvOverride ?? sessionEnv,
+          session_env: Object.keys(activeSessionEnv).length > 0 ? activeSessionEnv : undefined,
         }),
       });
 
