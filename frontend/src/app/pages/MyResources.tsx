@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { CheckCircle } from "lucide-react";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
@@ -7,24 +7,18 @@ import {
   formatJobDate,
   getJobTypeColor,
   getJobStatusColor,
-  type Job,
 } from "./jobsData";
-import { getMyJobs, subscribeToUserDashboardStore } from "../lib/userDashboardStore";
+import { useJobRuns } from "../contexts/JobRunContext";
+import { buildUserJobs, type UserJobViewModel } from "../lib/jobRunViewModels";
 
 export default function MyJobs() {
+  const { jobs: jobRecords, runs, loading, error } = useJobRuns();
   const [isProfileOpen, setIsProfileOpen] = useState(false);
-  const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  const [selectedJob, setSelectedJob] = useState<UserJobViewModel | null>(null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
-  const [jobs, setJobs] = useState<Job[]>(() => getMyJobs());
+  const jobs = useMemo(() => buildUserJobs(jobRecords, runs), [jobRecords, runs]);
 
-  useEffect(() => {
-    setJobs(getMyJobs());
-    return subscribeToUserDashboardStore(() => {
-      setJobs(getMyJobs());
-    });
-  }, []);
-
-  const handleJobClick = (job: Job) => {
+  const handleJobClick = (job: UserJobViewModel) => {
     setSelectedJob(job);
     setIsDetailModalOpen(true);
   };
@@ -59,33 +53,41 @@ export default function MyJobs() {
               <p className="mt-1 text-xs text-gray-600">{jobs.length} total jobs</p>
             </div>
             <div className="divide-y divide-gray-200">
-              {jobs.map((job) => (
-                <div
-                  key={job.id}
-                  className="cursor-pointer p-4 transition-colors hover:bg-gray-50"
-                  onClick={() => handleJobClick(job)}
-                >
-                  <div className="mb-2 flex items-start justify-between">
-                    <div className="flex-1">
-                      <div className="text-sm font-medium text-gray-900">{job.name}</div>
-                      <div className={`mt-1 text-xs font-medium ${getJobTypeColor(job.type)}`}>
-                        {job.type}
+              {loading && jobs.length === 0 ? (
+                <div className="p-6 text-sm text-gray-600">Loading live jobs...</div>
+              ) : error ? (
+                <div className="p-6 text-sm text-red-700">Unable to load live jobs: {error}</div>
+              ) : jobs.length === 0 ? (
+                <div className="p-6 text-sm text-gray-600">No jobs in the database right now.</div>
+              ) : (
+                jobs.map((job) => (
+                  <div
+                    key={job.id}
+                    className="cursor-pointer p-4 transition-colors hover:bg-gray-50"
+                    onClick={() => handleJobClick(job)}
+                  >
+                    <div className="mb-2 flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="text-sm font-medium text-gray-900">{job.name}</div>
+                        <div className={`mt-1 text-xs font-medium ${getJobTypeColor(job.type)}`}>
+                          {job.type}
+                        </div>
                       </div>
-                    </div>
-                    <span className={`rounded-full border px-2 py-1 text-[11px] font-semibold ${getJobStatusColor(job.status)}`}>
-                      {job.status}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-500">{formatJobDate(job.createdAt)}</span>
-                    {job.environment && (
-                      <span className="rounded bg-gray-100 px-2 py-1 text-xs font-medium text-gray-700">
-                        {job.environment}
+                      <span className={`rounded-full border px-2 py-1 text-[11px] font-semibold ${getJobStatusColor(job.status)}`}>
+                        {job.status}
                       </span>
-                    )}
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-gray-500">{formatJobDate(job.createdAt)}</span>
+                      {job.environment && (
+                        <span className="rounded bg-gray-100 px-2 py-1 text-xs font-medium text-gray-700">
+                          {job.environment}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))
+              )}
             </div>
           </div>
         </div>

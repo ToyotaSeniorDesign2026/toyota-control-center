@@ -3,6 +3,7 @@ import { router } from "./routes";
 import { UserProvider } from "./contexts/UserContext";
 import { AIProvider } from "./contexts/AIContext";
 import { CalendarProvider } from "./contexts/CalendarContext";
+import { JobRunProvider } from "./contexts/JobRunContext";
 import { CalendarOverlay } from "./components/CalendarOverlay";
 
 function App() {
@@ -10,8 +11,10 @@ function App() {
     <UserProvider>
       <AIProvider>
         <CalendarProvider>
-          <RouterProvider router={router} />
-          <CalendarOverlay />
+          <JobRunProvider>
+            <RouterProvider router={router} />
+            <CalendarOverlay />
+          </JobRunProvider>
         </CalendarProvider>
       </AIProvider>
     </UserProvider>

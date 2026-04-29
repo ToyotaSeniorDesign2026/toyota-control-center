@@ -4,8 +4,15 @@ import { Button } from "./ui/button";
 interface Job {
   id: string;
   name: string;
-  type: "AI Agent" | "SQL Query" | "dbt Model" | "API Connection";
-  status: "pending" | "approved" | "running" | "completed";
+  type:
+    | "AI Agent"
+    | "SQL Query"
+    | "dbt Model"
+    | "API Connection"
+    | "Excel Report"
+    | "PowerPoint Deck"
+    | "MCP Job";
+  status: "pending" | "approved" | "running" | "completed" | "failed";
   createdAt: string;
   environment?: string;
   description?: string;
@@ -32,6 +39,8 @@ export function JobDetailModal({ job, isOpen, onClose }: JobDetailModalProps) {
         return "bg-blue-100 text-blue-700 border-blue-200";
       case "completed":
         return "bg-gray-100 text-gray-700 border-gray-200";
+      case "failed":
+        return "bg-red-100 text-red-700 border-red-200";
       default:
         return "bg-gray-100 text-gray-700 border-gray-200";
     }
@@ -47,6 +56,12 @@ export function JobDetailModal({ job, isOpen, onClose }: JobDetailModalProps) {
         return "text-orange-600 bg-orange-50";
       case "API Connection":
         return "text-blue-600 bg-blue-50";
+      case "Excel Report":
+        return "text-emerald-600 bg-emerald-50";
+      case "PowerPoint Deck":
+        return "text-orange-600 bg-orange-50";
+      case "MCP Job":
+        return "text-violet-600 bg-violet-50";
       default:
         return "text-gray-600 bg-gray-50";
     }

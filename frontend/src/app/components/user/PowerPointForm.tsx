@@ -288,6 +288,15 @@ const PowerPointForm: React.FC<PowerPointFormProps> = ({
           </div>
         )}
 
+        {showAIPrefill && (
+          <div style={styles.infoBox}>
+            <Info size={16} color="#EB0A1E" />
+            <span>
+              AI prefilled this form{aiPrompt ? ` from prompt: "${aiPrompt}"` : ""}. Review and adjust before submit.
+            </span>
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} style={styles.form}>
           {/* Basic Information Section */}
           <div style={styles.section}>

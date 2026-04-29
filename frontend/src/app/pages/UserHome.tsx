@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -20,18 +20,46 @@ import {
   ChevronDown,
   GitMerge,
   Plus,
+  Trash2,
 } from "lucide-react";
 import { useNavigate } from "react-router";
 import { Button } from "../components/ui/button";
 import { UserNavigation } from "../components/UserNavigation";
 import { UserProfilePanel } from "../components/user/UserProfilePanel";
 import { ChatPanel } from "../components/ChatPanel";
-import { CreateJobForm } from "../components/CreateJobForm";
+import { RunParamsModal, connectorNeedsRunParams } from "../components/RunParamsModal";
 import ExcelReportForm from "../components/user/ExcelReportForm";
 import SQLJobForm from "../components/user/SQLJobForm";
 import PowerPointForm from "../components/user/PowerPointForm";
 import { useCalendarOverlay } from "../contexts/CalendarContext";
-import { createJobFromForm, getCalendarEvents, getDraftForms, getMyJobs, getPendingPromotionResources, getSavedTemplates, mapJobToPendingPromotionResource, saveDraft, saveTemplate, subscribeToUserDashboardStore, withdrawPendingSubmission } from "../lib/userDashboardStore";
+import { useJobRuns } from "../contexts/JobRunContext";
+import {
+  createJob,
+  createJobRun,
+  deleteJob,
+  getRunLogs,
+  listMcpRepoBundles,
+  listMcpServers,
+  type MCPConnectionBundleSummary,
+  type MCPServerSummary,
+  type JobCreatePayload,
+  type JobRecord,
+  type RunCreatePayload,
+  type RunLogEntry,
+  type RunRecord,
+} from "../lib/controlCenterApi";
+import { createScheduledRunProjections, type ScheduledOccurrence } from "../lib/scheduleOccurrences";
+import {
+  createJobFromForm,
+  getDraftForms,
+  getPendingPromotionResources,
+  getSavedTemplates,
+  mapJobToPendingPromotionResource,
+  saveDraft,
+  saveTemplate,
+  subscribeToUserDashboardStore,
+  withdrawPendingSubmission,
+} from "../lib/userDashboardStore";
 import type { Job as StoredJob } from "./resourcesData";
 import {
   mockReadyForPromotion,
@@ -50,26 +78,22 @@ import {
   getUrgencyLabel,
 } from "./requiredActionsData";
 
-const kpis = [
-  { label: "My Active Jobs", value: 12, hint: "+2 this week", tone: "text-green-600" },
-  { label: "Pending Approvals", value: 3, hint: "2 high priority", tone: "text-amber-600" },
-  { label: "Failed Runs (24h)", value: 1, hint: "Investigate before noon", tone: "text-red-600" },
-  { label: "Saved Jobs", value: 27, hint: "5 updated recently", tone: "text-[#ed0923]" },
-];
+const MS_IN_24_HOURS = 24 * 60 * 60 * 1000;
+const RESOURCE_SCHEDULES_UPDATED_EVENT = "control-center-resource-schedules-updated";
 
-const recentJobs = [
-  { name: "Monthly Dealer KPI Deck", type: "PowerPoint", schedule: "Monthly, day 1", status: "Healthy" },
-  { name: "Warranty Claims Rollup", type: "Excel", schedule: "Weekly, Mon 08:00", status: "Running" },
-  { name: "Customer Churn Analysis", type: "SQL", schedule: "Daily, 06:00", status: "Needs Attention" },
-  { name: "Quarterly Revenue Report", type: "PowerPoint", schedule: "Quarterly, day 1", status: "Healthy" },
-];
+const isWithinLast24Hours = (date?: Date) => {
+  if (!date) return false;
+  const ageMs = Date.now() - date.getTime();
+  return ageMs >= 0 && ageMs <= MS_IN_24_HOURS;
+};
 
 type DashboardJobListItem = {
   id: string;
   name: string;
   type: string;
   schedule: string;
-  status: "Healthy" | "Running" | "Needs Attention";
+  status: "Ready" | "Healthy" | "Running" | "Needs Attention";
+  updatedAt: string;
   payload?: WorkspaceJobPayload;
 };
 
@@ -77,12 +101,6 @@ const draftJobs = [
   { id: "draft-001", name: "Customer Retention Workflow", type: "Workflow", lastEdited: "1 hour ago" },
   { id: "draft-002", name: "Dealer Forecast Pipeline", type: "SQL", lastEdited: "3 hours ago" },
   { id: "draft-003", name: "Revenue Summary Agent", type: "AI Agent", lastEdited: "Yesterday" },
-];
-
-const retiredJobs = [
-  { id: "retired-001", name: "Legacy Revenue Dashboard", type: "Dashboard", retiredDate: "Feb 15, 2026" },
-  { id: "retired-002", name: "Old Churn Monitor", type: "Python Script", retiredDate: "Jan 30, 2026" },
-  { id: "retired-003", name: "Archive Claims Summary", type: "Excel", retiredDate: "Jan 20, 2026" },
 ];
 
 const activityTimeline = [
@@ -96,63 +114,13 @@ const activityTimeline = [
 // Mock run data for Runs/Calendar panel
 interface RunItem {
   id: string;
+  resourceId?: string;
   jobName: string;
-  jobType: "PowerPoint" | "Excel" | "SQL" | "Custom";
+  jobType: string;
   status: "scheduled" | "running" | "completed" | "failed";
   scheduledTime: Date;
   completedTime?: Date;
 }
-
-const mockUpcomingRuns: RunItem[] = [
-  {
-    id: "run-001",
-    jobName: "Monthly Dealer KPI Deck",
-    jobType: "PowerPoint",
-    status: "scheduled",
-    scheduledTime: new Date(Date.now() + 24 * 60 * 60 * 1000), // Tomorrow 8:00 AM
-  },
-  {
-    id: "run-002",
-    jobName: "Customer Churn Analysis",
-    jobType: "SQL",
-    status: "scheduled",
-    scheduledTime: new Date(Date.now() + 18 * 60 * 60 * 1000), // Today 6:00 PM
-  },
-  {
-    id: "run-003",
-    jobName: "Quarterly Revenue Report",
-    jobType: "PowerPoint",
-    status: "scheduled",
-    scheduledTime: new Date(Date.now() + 22 * 24 * 60 * 60 * 1000), // Apr 1, 9:00 AM
-  },
-];
-
-const mockRecentRuns: RunItem[] = [
-  {
-    id: "run-004",
-    jobName: "Warranty Claims Rollup",
-    jobType: "Excel",
-    status: "completed",
-    scheduledTime: new Date(Date.now() - 30 * 60 * 1000), // 30 minutes ago
-    completedTime: new Date(Date.now() - 10 * 60 * 1000), // 10 minutes ago
-  },
-  {
-    id: "run-005",
-    jobName: "Customer Churn Analysis",
-    jobType: "SQL",
-    status: "failed",
-    scheduledTime: new Date(Date.now() - 90 * 60 * 1000), // 90 minutes ago
-    completedTime: new Date(Date.now() - 60 * 60 * 1000), // 1 hour ago
-  },
-  {
-    id: "run-006",
-    jobName: "Monthly Dealer KPI Deck",
-    jobType: "PowerPoint",
-    status: "completed",
-    scheduledTime: new Date(Date.now() - 24 * 60 * 60 * 1000 - 2 * 60 * 60 * 1000), // Yesterday 2 hours earlier
-    completedTime: new Date(Date.now() - 24 * 60 * 60 * 1000), // Yesterday
-  },
-];
 
 const formatRunTime = (date: Date): string => {
   const now = new Date();
@@ -336,6 +304,100 @@ const mapStoredJobToWorkspaceType = (type: StoredJob["type"]): "PowerPoint" | "E
   return "SQL";
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const getString = (value: unknown): string | null =>
+  typeof value === "string" && value.trim() ? value.trim() : null;
+
+const titleCase = (value: string) =>
+  value
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+
+const normalizeResourceType = (type?: string | null) => {
+  const normalized = type?.toLowerCase();
+  if (normalized === "powerpoint" || normalized === "powerpoint deck") return "PowerPoint";
+  if (normalized === "excel" || normalized === "excel report") return "Excel";
+  if (normalized === "sql" || normalized === "sql query") return "SQL";
+  if (normalized === "mcp") return "MCP";
+  if (normalized === "research") return "Research";
+  return type ? titleCase(type) : "Custom";
+};
+
+const getNestedRecord = (record: Record<string, unknown> | null | undefined, key: string) => {
+  const value = record?.[key];
+  return isRecord(value) ? value : null;
+};
+
+const getRunMetadata = (run: RunRecord) => {
+  const submitted = isRecord(run.submitted_config_json) ? run.submitted_config_json : null;
+  const resolved = isRecord(run.resolved_job_spec_json) ? run.resolved_job_spec_json : null;
+  const draft = getNestedRecord(submitted, "draft");
+  const jobConfig = getNestedRecord(submitted, "job_config");
+  const metadata = getNestedRecord(jobConfig, "metadata");
+
+  return { submitted, resolved, draft, jobConfig, metadata };
+};
+
+const resolveRunJobName = (run: RunRecord, resource?: JobRecord) => {
+  const { resolved, draft, metadata } = getRunMetadata(run);
+  return (
+    getString(resource?.name) ||
+    getString(resolved?.name) ||
+    getString(draft?.name) ||
+    getString(metadata?.name) ||
+    getString(metadata?.job_name) ||
+    `Run ${run.id}`
+  );
+};
+
+const resolveRunJobType = (run: RunRecord, resource?: JobRecord) => {
+  const { draft, metadata } = getRunMetadata(run);
+  return normalizeResourceType(
+    getString(resource?.type) ||
+      getString(draft?.jobType) ||
+      getString(metadata?.job_type) ||
+      getString(run.execution_backend) ||
+      "Custom"
+  );
+};
+
+const resolveRunSchedule = (run: RunRecord, resource?: JobRecord) => {
+  const { resolved, jobConfig } = getRunMetadata(run);
+  const resourceConfig = isRecord(resource?.config) ? resource.config : null;
+  return (
+    getString(resolved?.schedule) ||
+    getString(jobConfig?.schedule) ||
+    getString(resourceConfig?.schedule) ||
+    (run.trigger_source === "schedule" ? "Scheduled run" : "On demand")
+  );
+};
+
+const mapRunStatusToDashboardStatus = (status: string): DashboardJobListItem["status"] => {
+  const normalized = status.toLowerCase();
+  if (["queued", "running", "executing", "in_progress"].includes(normalized)) return "Running";
+  if (["failed", "stopped", "cancelled", "canceled", "blocked", "requires_approval"].includes(normalized)) {
+    return "Needs Attention";
+  }
+  return "Healthy";
+};
+
+const mapRunStatusToRunItemStatus = (status: string): RunItem["status"] => {
+  const normalized = status.toLowerCase();
+  if (["queued", "scheduled", "pending"].includes(normalized)) return "scheduled";
+  if (["running", "executing", "in_progress"].includes(normalized)) return "running";
+  if (["failed", "stopped", "cancelled", "canceled", "blocked"].includes(normalized)) return "failed";
+  return "completed";
+};
+
+const getDashboardJobStatusClasses = (status: DashboardJobListItem["status"]) => {
+  if (status === "Ready") return "bg-amber-100 text-amber-700";
+  if (status === "Healthy") return "bg-green-100 text-green-700";
+  if (status === "Running") return "bg-blue-100 text-blue-700";
+  return "bg-red-100 text-red-700";
+};
+
 const createWorkspaceJobPayloadFromStoredJob = (job: StoredJob): WorkspaceJobPayload => {
   const scheduleMessage =
     job.logs?.find((entry) => entry.message.toLowerCase().includes("runs "))?.message ?? "Manual schedule";
@@ -369,60 +431,185 @@ const createWorkspaceJobPayloadFromStoredJob = (job: StoredJob): WorkspaceJobPay
   };
 };
 
-const createDashboardJobs = (): DashboardJobListItem[] => {
-  const storedJobs = getMyJobs().map((job) => ({
-    id: job.id,
-    name: job.name,
-    type: mapStoredJobTypeToDashboardType(job.type),
-    schedule:
-      job.logs?.find((entry) => entry.message.toLowerCase().includes("runs "))?.message ?? "Manual schedule",
-    status: mapStoredJobStatusToDashboardStatus(job.status),
-    payload: createWorkspaceJobPayloadFromStoredJob(job),
-  }));
+const createWorkspaceJobPayloadFromRun = (run: RunRecord, resource?: JobRecord): WorkspaceJobPayload => {
+  const name = resolveRunJobName(run, resource);
+  const type = resolveRunJobType(run, resource);
+  const schedule = resolveRunSchedule(run, resource);
+  const status = mapRunStatusToDashboardStatus(run.status);
+  const { resolved } = getRunMetadata(run);
+  const tasks = Array.isArray(resolved?.tasks) ? resolved.tasks : [];
 
-  const fallbackJobs = recentJobs
-    .filter((job) => !storedJobs.some((storedJob) => storedJob.name === job.name))
-    .map((job, index) => ({
-      id: `fallback-job-${index + 1}`,
-      ...job,
-      payload: mockJobSpecs[job.name],
-    }));
-
-  return [...storedJobs, ...fallbackJobs];
+  return {
+    job_id: resource?.id ?? run.job_id,
+    name,
+    type: type as WorkspaceJobPayload["type"],
+    schedule,
+    status,
+    description:
+      getString(resolved?.description) ||
+      getString(resolved?.intent) ||
+      `Latest database run ${run.id} for ${name}.`,
+    inputs: [
+      `Resource ID: ${run.job_id}`,
+      `Environment: ${run.target_environment}`,
+      `Action: ${run.action}`,
+    ],
+    outputs: [
+      run.connector_run_id ? `Connector run: ${run.connector_run_id}` : "Control Center run record",
+      run.workflow_url ? `Workflow: ${run.workflow_url}` : "Execution metadata",
+    ],
+    steps:
+      tasks.length > 0
+        ? tasks.map((task, index) => ({
+            id: `task-${index + 1}`,
+            name: String(task),
+            action: "Run task from resolved job spec",
+          }))
+        : [
+            { id: "step-1", name: "Create run", action: `Submitted by ${run.requested_by}` },
+            { id: "step-2", name: "Evaluate risk", action: `${run.risk_level} risk, score ${run.risk_score}` },
+            { id: "step-3", name: "Execute", action: run.error || `Current status: ${run.status}` },
+          ],
+  };
 };
 
-const mapCalendarEventTypeToRunType = (jobType?: string): RunItem["jobType"] => {
-  if (jobType === "PowerPoint Deck") return "PowerPoint";
-  if (jobType === "Excel Report") return "Excel";
-  if (jobType === "Custom Job") return "Custom";
-  return "SQL";
+const createWorkspaceJobPayloadFromResource = (resource: JobRecord): WorkspaceJobPayload => {
+  const config = resource.config ?? {};
+  const schedule = getString(config.schedule) || "Manual run";
+  const type = normalizeResourceType(resource.type);
+
+  return {
+    job_id: resource.id,
+    name: resource.name,
+    type: type as WorkspaceJobPayload["type"],
+    schedule,
+    status: "Healthy",
+    description: getString(config.description) || `Registered ${type} resource ready to run.`,
+    inputs: [
+      `Resource ID: ${resource.id}`,
+      `Environment: ${resource.environment}`,
+      `Connector: ${resource.connector}`,
+    ],
+    outputs: ["Control Center run record", "Execution metadata"],
+    steps: [
+      { id: "step-1", name: "Registered", action: "Saved in the Control Center resources table" },
+      { id: "step-2", name: "Ready", action: "Available for manual or chatbot-triggered runs" },
+    ],
+  };
 };
 
-const createDashboardRuns = () => {
-  const calendarEvents = getCalendarEvents();
-  const mappedRuns = calendarEvents.map((event) => ({
-    id: event.id,
-    jobName: event.title,
-    jobType: mapCalendarEventTypeToRunType(event.jobType),
-    status: event.kind === "past" ? "completed" : "scheduled",
-    scheduledTime: new Date(`${event.date}T${event.time}:00`),
+const createDashboardJobs = (runs: RunRecord[], jobs: JobRecord[]): DashboardJobListItem[] => {
+  const jobResources = jobs.filter((job) => job.type !== "repo_connection");
+  const resourceById = new Map(jobResources.map((resource) => [resource.id, resource]));
+  const latestRunByResource = new Map<string, RunRecord>();
+
+  [...runs]
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+    .forEach((run) => {
+      if (!latestRunByResource.has(run.job_id)) {
+        latestRunByResource.set(run.job_id, run);
+      }
+    });
+
+  return jobResources.map((resource) => {
+    const run = latestRunByResource.get(resource.id);
+    if (!run) {
+      const payload = createWorkspaceJobPayloadFromResource(resource);
+      return {
+        id: resource.id,
+        name: resource.name,
+        type: payload.type,
+        schedule: payload.schedule,
+        status: "Ready" as const,
+        updatedAt: resource.updated_at,
+        payload,
+      };
+    }
+
+    const resolvedResource = resourceById.get(run.job_id);
+    const payload = createWorkspaceJobPayloadFromRun(run, resolvedResource);
+    return {
+      id: run.job_id,
+      name: payload.name,
+      type: payload.type,
+      schedule: payload.schedule,
+      status: payload.status as DashboardJobListItem["status"],
+      updatedAt: run.updated_at,
+      payload,
+    };
+  });
+};
+
+type RepoConnectionFormState = {
+  repo: string;
+  ref: string;
+  path: string;
+  displayName: string;
+  description: string;
+};
+
+const DEFAULT_REPO_CONNECTION_FORM: RepoConnectionFormState = {
+  repo: "",
+  ref: "",
+  path: "",
+  displayName: "",
+  description: "",
+};
+
+const normalizeGithubRepoInput = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+
+  const httpsMatch = trimmed.match(/github\.com\/([^/\s]+\/[^/\s#?]+?)(?:\.git)?(?:[#?].*)?$/i);
+  if (httpsMatch) return httpsMatch[1].replace(/\/+$/, "");
+
+  const sshMatch = trimmed.match(/github\.com:([^/\s]+\/[^/\s]+?)(?:\.git)?$/i);
+  if (sshMatch) return sshMatch[1].replace(/\/+$/, "");
+
+  return trimmed.replace(/^(https?:\/\/)?github\.com\//i, "").replace(/\.git$/i, "").replace(/^\/+|\/+$/g, "");
+};
+
+const isValidGithubRepoSlug = (value: string): boolean => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value);
+
+const getRepoConnectionName = (repoSlug: string, explicitName?: string): string => {
+  const preferredName = explicitName.trim();
+  if (preferredName) return preferredName;
+  const repoName = repoSlug.split("/")[1] ?? repoSlug;
+  return `${repoName}-repo`;
+};
+
+const createDashboardRuns = (runs: RunRecord[], jobs: JobRecord[], scheduledOccurrences: ScheduledOccurrence[] = []) => {
+  const resourceById = new Map(jobs.map((job) => [job.id, job]));
+  const mappedRuns = runs.map((run) => {
+    const resource = resourceById.get(run.job_id);
+    const status = mapRunStatusToRunItemStatus(run.status);
+    const scheduledTime = new Date(run.created_at);
+    return {
+      id: run.id,
+      resourceId: run.job_id,
+      jobName: resolveRunJobName(run, resource),
+      jobType: resolveRunJobType(run, resource),
+      status,
+      scheduledTime,
+      completedTime: status === "scheduled" || status === "running" ? undefined : new Date(run.updated_at),
+    };
+  });
+  const projectedRuns = scheduledOccurrences.map((occurrence) => ({
+    id: occurrence.id,
+    resourceId: occurrence.jobId,
+    jobName: occurrence.jobName,
+    jobType: occurrence.jobType,
+    status: "scheduled" as const,
+    scheduledTime: occurrence.scheduledTime,
   }));
 
-  const upcomingRuns = [
-    ...mappedRuns.filter((run) => run.status === "scheduled"),
-    ...mockUpcomingRuns,
-  ]
-    .sort((a, b) => a.scheduledTime.getTime() - b.scheduledTime.getTime())
-    .filter((run, index, array) => array.findIndex((candidate) => candidate.jobName === run.jobName && candidate.status === run.status) === index);
+  const upcomingRuns = [...mappedRuns, ...projectedRuns]
+    .filter((run) => run.status === "scheduled" || run.status === "running")
+    .sort((a, b) => a.scheduledTime.getTime() - b.scheduledTime.getTime());
 
-  const recentRuns = [
-    ...mappedRuns
-      .filter((run) => run.status === "completed")
-      .map((run) => ({ ...run, completedTime: run.scheduledTime })),
-    ...mockRecentRuns,
-  ]
-    .sort((a, b) => (b.completedTime?.getTime() ?? b.scheduledTime.getTime()) - (a.completedTime?.getTime() ?? a.scheduledTime.getTime()))
-    .filter((run, index, array) => array.findIndex((candidate) => candidate.jobName === run.jobName && candidate.status === run.status) === index);
+  const recentRuns = mappedRuns
+    .filter((run) => run.status === "completed" || run.status === "failed")
+    .sort((a, b) => (b.completedTime?.getTime() ?? b.scheduledTime.getTime()) - (a.completedTime?.getTime() ?? a.scheduledTime.getTime()));
 
   return { upcomingRuns, recentRuns };
 };
@@ -522,7 +709,7 @@ interface JobStep {
 interface JobSpec {
   job_id: string;
   name: string;
-  type: "PowerPoint" | "Excel" | "SQL" | "Script" | "API";
+  type: string;
   schedule: string;
   status: "Healthy" | "Running" | "Needs Attention" | "Failed";
   inputs: string[];
@@ -667,8 +854,16 @@ const RESIZE_HANDLE_WIDTH = 4;
 
 export default function UserHome() {
   const navigate = useNavigate();
+  const {
+    jobs,
+    runs,
+    loading: jobRunsLoading,
+    error: jobRunsError,
+    refresh: refreshJobRuns,
+  } = useJobRuns();
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [activePanelId, setActivePanelId] = useState<string | null>(null);
+  const [selectedResourceId, setSelectedResourceId] = useState<string | null>(null);
   
   // Panel resize state
   const [jobsPanelWidth, setJobsPanelWidth] = useState(280);
@@ -693,6 +888,9 @@ export default function UserHome() {
   
   // Job draft state - holds data being created via chat
   const [jobDraft, setJobDraft] = useState<Record<string, any>>({});
+  const [isRegisteringJob, setIsRegisteringJob] = useState(false);
+  const [chatAssistantNotices, setChatAssistantNotices] = useState<Array<{ id: string; content: string }>>([]);
+  const autoRegisteredDraftKeyRef = useRef<string | null>(null);
   
   // Console events for live job creation workflow tracking
   interface ConsoleEvent {
@@ -712,10 +910,12 @@ export default function UserHome() {
   const [templateSearch, setTemplateSearch] = useState("");
   const [jobSearch, setJobSearch] = useState("");
   const [jobSort, setJobSort] = useState<"name" | "status" | "type" | "recently-updated">("name");
-  const [jobFilter, setJobFilter] = useState<"all" | "PowerPoint" | "Excel" | "SQL" | "Healthy" | "Running" | "Needs Attention">("all");
+  const [jobFilter, setJobFilter] = useState<string>("all");
   const [jobDetailTabById, setJobDetailTabById] = useState<Record<string, "overview" | "runs" | "preview" | "settings">>({});
   const [isDraftsExpanded, setIsDraftsExpanded] = useState(true);
   const [isRetiredJobsExpanded, setIsRetiredJobsExpanded] = useState(false);
+  const [runningJobIds, setRunningJobIds] = useState<string[]>([]);
+  const [runParamsJob, setRunParamsJob] = useState<JobRecord | null>(null);
   const [templateSort, setTemplateSort] = useState<"name" | "category" | "recently-used" | "recommended">("name");
   const [templateFilter, setTemplateFilter] = useState<"all" | "PowerPoint" | "Excel" | "SQL" | "Workflow" | "Form" | "Dashboard">("all");
   const [selectedPromotions, setSelectedPromotions] = useState<string[]>([]);
@@ -724,8 +924,16 @@ export default function UserHome() {
   const [rejectedPromotionsState, setRejectedPromotionsState] = useState(mockRejectedPromotions);
   const [pendingPromotionsState, setPendingPromotionsState] = useState(mockPendingPromotions);
   const [submittedPromotions, setSubmittedPromotions] = useState(() => getPendingPromotionResources());
+  const [availableMcpServers, setAvailableMcpServers] = useState<MCPServerSummary[]>([]);
+  const [repoConnectionBundles, setRepoConnectionBundles] = useState<MCPConnectionBundleSummary[]>([]);
+  const [repoConnectionForm, setRepoConnectionForm] = useState<RepoConnectionFormState>(DEFAULT_REPO_CONNECTION_FORM);
+  const [repoConnectionError, setRepoConnectionError] = useState<string | null>(null);
+  const [repoConnectionSuccess, setRepoConnectionSuccess] = useState<string | null>(null);
+  const [isSavingRepoConnection, setIsSavingRepoConnection] = useState(false);
   const [consoleHeight, setConsoleHeight] = useState(50);
-  const [consoleActiveTab, setConsoleActiveTab] = useState<"json" | "logs" | "events">("json");
+  const [consoleActiveTab, setConsoleActiveTab] = useState<"json" | "logs" | "events" | "output">("json");
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [runLogs, setRunLogs] = useState<RunLogEntry[]>([]);
   const [expandedActionId, setExpandedActionId] = useState<string | null>(null);
   const [isResizingConsole, setIsResizingConsole] = useState(false);
   const lastResizeY = useRef<number>(0);
@@ -754,8 +962,107 @@ export default function UserHome() {
     },
   ]);
   const [aiInput, setAiInput] = useState("");
-  const [dashboardJobs, setDashboardJobs] = useState<DashboardJobListItem[]>(() => createDashboardJobs());
-  const [dashboardRuns, setDashboardRuns] = useState(() => createDashboardRuns());
+  const baseDashboardJobs = useMemo(() => createDashboardJobs(runs, jobs), [runs, jobs]);
+  const connectedRepoResources = useMemo(
+    () => jobs.filter((job) => job.type === "repo_connection"),
+    [jobs],
+  );
+  const dashboardJobs = useMemo(
+    () =>
+      baseDashboardJobs.map((job) =>
+        runningJobIds.includes(job.id)
+          ? {
+              ...job,
+              status: "Running" as const,
+            }
+          : job,
+      ),
+    [baseDashboardJobs, runningJobIds],
+  );
+  const scheduledRunProjections = useMemo(() => createScheduledRunProjections(jobs), [jobs]);
+  const dashboardRuns = useMemo(() => createDashboardRuns(runs, jobs, scheduledRunProjections), [runs, jobs, scheduledRunProjections]);
+  const activeDashboardJobs = useMemo(
+    () => dashboardJobs.filter((job) => job.status === "Running" || job.status === "Healthy"),
+    [dashboardJobs],
+  );
+  const runningDashboardJobs = useMemo(
+    () => dashboardJobs.filter((job) => job.status === "Running"),
+    [dashboardJobs],
+  );
+  const githubMcpServer = useMemo(
+    () => availableMcpServers.find((server) => server.name === "github") ?? null,
+    [availableMcpServers],
+  );
+  const preferredRepoBundle = useMemo(
+    () => repoConnectionBundles.find((bundle) => bundle.primary_server === "github") ?? null,
+    [repoConnectionBundles],
+  );
+  const failedRunsLast24h = useMemo(
+    () =>
+      dashboardRuns.recentRuns.filter(
+        (run) => run.status === "failed" && isWithinLast24Hours(run.completedTime ?? run.scheduledTime),
+      ),
+    [dashboardRuns.recentRuns],
+  );
+  const pendingApprovalPromotions = useMemo(
+    () => [...submittedPromotions, ...pendingPromotionsState],
+    [submittedPromotions, pendingPromotionsState],
+  );
+  const promotionQueueCounts = useMemo(
+    () => ({
+      ready: mockReadyForPromotion.length,
+      pending: pendingApprovalPromotions.length,
+      needsRevision: rejectedPromotionsState.length,
+    }),
+    [pendingApprovalPromotions.length, rejectedPromotionsState.length],
+  );
+  const urgentActionCount = useMemo(
+    () => requiredActionItems.filter((action) => action.urgency === "urgent").length,
+    [],
+  );
+  const dashboardKpis = useMemo(
+    () => [
+      {
+        label: "My Active Jobs",
+        value: activeDashboardJobs.length,
+        hint: `${runningDashboardJobs.length} running, ${activeDashboardJobs.length - runningDashboardJobs.length} healthy`,
+        tone: "text-green-600",
+        tabType: "active-jobs" as const,
+      },
+      {
+        label: "Pending Approvals",
+        value: pendingApprovalPromotions.length,
+        hint: `${pendingApprovalPromotions.length === 1 ? "1 request" : `${pendingApprovalPromotions.length} requests`} waiting`,
+        tone: "text-amber-600",
+        tabType: "pending-approvals" as const,
+      },
+      {
+        label: "Failed Runs (24h)",
+        value: failedRunsLast24h.length,
+        hint: failedRunsLast24h.length === 0 ? "No failures in view" : "Needs review",
+        tone: "text-red-600",
+        tabType: "failed-runs" as const,
+      },
+      {
+        label: "Saved Jobs",
+        value: dashboardJobs.length,
+        hint: `${dashboardJobs.filter((job) => job.status === "Ready").length} ready to run`,
+        tone: "text-[#ed0923]",
+        tabType: "saved-jobs" as const,
+      },
+    ],
+    [activeDashboardJobs, dashboardJobs, failedRunsLast24h.length, pendingApprovalPromotions.length, runningDashboardJobs.length],
+  );
+  const filteredDashboardRuns = useMemo(() => {
+    if (!selectedResourceId) return dashboardRuns;
+    const filtered = runs.filter((r) => r.job_id === selectedResourceId);
+    const projected = scheduledRunProjections.filter((run) => run.jobId === selectedResourceId);
+    return createDashboardRuns(filtered, jobs, projected);
+  }, [runs, jobs, selectedResourceId, dashboardRuns, scheduledRunProjections]);
+  const selectedResourceName = useMemo(
+    () => jobs.find((r) => r.id === selectedResourceId)?.name ?? null,
+    [jobs, selectedResourceId]
+  );
   const [customFormBuilder, setCustomFormBuilder] = useState<CustomFormBuilderState>({
     formName: "",
     purpose: "",
@@ -777,13 +1084,20 @@ export default function UserHome() {
   const customFormDraftPayload = createCustomFormDraftPayload(customFormBuilder);
 
   useEffect(() => {
-    setDashboardJobs(createDashboardJobs());
-    setDashboardRuns(createDashboardRuns());
     setSubmittedPromotions(getPendingPromotionResources());
     return subscribeToUserDashboardStore(() => {
-      setDashboardJobs(createDashboardJobs());
-      setDashboardRuns(createDashboardRuns());
       setSubmittedPromotions(getPendingPromotionResources());
+    });
+  }, []);
+
+  useEffect(() => {
+    const token = getAuthToken();
+    void Promise.all([
+      listMcpServers(token).catch(() => ({ items: [] as MCPServerSummary[] })),
+      listMcpRepoBundles("dev", token).catch(() => ({ items: [] as MCPConnectionBundleSummary[] })),
+    ]).then(([serversResponse, bundlesResponse]) => {
+      setAvailableMcpServers(serversResponse.items);
+      setRepoConnectionBundles(bundlesResponse.items);
     });
   }, []);
 
@@ -923,25 +1237,23 @@ export default function UserHome() {
   };
 
   const getConsoleLogs = () => {
-    // If there are console events, show them as logs
+    // Prefer real run logs when available
+    if (runLogs.length > 0) {
+      return runLogs.map((log) => ({
+        time: (() => { try { return new Date(log.timestamp).toLocaleTimeString(); } catch { return log.timestamp; } })(),
+        message: log.message,
+        level: log.level,
+      }));
+    }
+    // Fall back to workflow console events
     if (consoleEvents.length > 0) {
       return consoleEvents.map((event) => ({
         time: formatConsoleTime(event.timestamp),
         message: event.message,
-        type: event.type,
+        level: "INFO",
       }));
     }
-
-    // Otherwise show default execution logs
-    return [
-      { time: "09:04:02", message: "Job execution started" },
-      { time: "09:04:05", message: "Extracting data from source systems" },
-      { time: "09:04:12", message: "Processing records: 15,240 rows" },
-      { time: "09:04:18", message: "Validation: 99.8% data quality" },
-      { time: "09:04:25", message: "Generating outputs: 3 files" },
-      { time: "09:04:28", message: "Distribution: sent to 5 recipients" },
-      { time: "09:04:30", message: "Job execution completed successfully" },
-    ];
+    return [];
   };
 
   const getConsoleEvents = () => {
@@ -965,6 +1277,53 @@ export default function UserHome() {
       { action: "System backed up job configuration", timestamp: "3 hours ago" },
     ];
   };
+
+  const getConsoleOutput = () => {
+    const execLog = runLogs.find((l) => l.message === "Connector execution finished");
+    if (!execLog) return null;
+    const meta = execLog.metadata as any;
+    const execution = meta?.metadata?.execution ?? meta?.execution ?? null;
+    return {
+      final_text: execution?.final_text ?? null,
+      tool_executions: (execution?.tool_executions ?? []) as Array<{
+        framework_name?: string;
+        server_name?: string;
+        remote_name?: string;
+        arguments?: Record<string, unknown>;
+        parsed_result?: unknown;
+      }>,
+      result: execution?.result ?? null,
+      error: execution?.error ?? meta?.error ?? null,
+      status: execution?.status ?? meta?.status ?? null,
+    };
+  };
+
+  // Fetch run logs whenever activeRunId changes, polling until the run reaches a terminal state
+  useEffect(() => {
+    if (!activeRunId) return;
+    let stopped = false;
+
+    const fetchLogs = async () => {
+      try {
+        const result = await getRunLogs(activeRunId, getAuthToken());
+        if (!stopped) {
+          setRunLogs(result.logs);
+          // Stop polling once the run is in a terminal state; auto-switch to output
+          const terminal = ["completed", "succeeded", "failed", "stopped", "cancelled", "canceled", "deployed"];
+          if (terminal.includes(result.status.toLowerCase())) {
+            stopped = true;
+            setConsoleActiveTab("output");
+          }
+        }
+      } catch {
+        // ignore fetch errors silently
+      }
+    };
+
+    void fetchLogs();
+    const interval = setInterval(() => { if (!stopped) void fetchLogs(); }, 2500);
+    return () => { stopped = true; clearInterval(interval); };
+  }, [activeRunId]);
 
   const CONSOLE_COLLAPSED_HEIGHT = 50;
   const CONSOLE_EXPANDED_HEIGHT = 300;
@@ -1066,10 +1425,10 @@ export default function UserHome() {
         case "type":
           return a.type.localeCompare(b.type);
         case "status":
-          const statusOrder = { "Healthy": 0, "Running": 1, "Needs Attention": 2 };
-          return (statusOrder[a.status as keyof typeof statusOrder] || 3) - (statusOrder[b.status as keyof typeof statusOrder] || 3);
+          const statusOrder = { "Ready": 0, "Healthy": 1, "Running": 2, "Needs Attention": 3 };
+          return (statusOrder[a.status as keyof typeof statusOrder] || 4) - (statusOrder[b.status as keyof typeof statusOrder] || 4);
         case "recently-updated":
-          return 0; // Would require timestamp data
+          return b.updatedAt.localeCompare(a.updatedAt);
         default:
           return 0;
       }
@@ -1669,6 +2028,626 @@ export default function UserHome() {
     }, 1000);
   };
 
+  const normalizeExtractedJobFields = (fields: Record<string, any>) => {
+    const config = typeof fields.config === "object" && fields.config !== null ? fields.config : {};
+    const params = typeof fields.params === "object" && fields.params !== null ? fields.params : {};
+    const parseSqlConnectionString = (value: any) => {
+      if (typeof value !== "string") return {};
+      const parts = value
+        .split(";")
+        .map((segment) => segment.trim())
+        .filter(Boolean);
+      const entries = Object.fromEntries(
+        parts.map((segment) => {
+          const separatorIndex = segment.indexOf("=");
+          if (separatorIndex < 0) return ["", ""];
+          const key = segment.slice(0, separatorIndex).trim().toLowerCase();
+          const rawValue = segment.slice(separatorIndex + 1).trim();
+          return [key, rawValue];
+        }).filter(([key]) => key),
+      );
+      return {
+        host: typeof entries.host === "string" ? entries.host : "",
+        port: typeof entries.port === "string" ? entries.port : "",
+        database: typeof entries.database === "string" ? entries.database : "",
+        username: typeof entries.username === "string" ? entries.username : "",
+      };
+    };
+    const normalizeEnv = (value: any) => {
+      if (typeof value !== "string") return value;
+      const normalized = value.trim().toLowerCase();
+      return normalized === "production" ? "prod" : normalized;
+    };
+    const sqlConnectors = ["sql-mcp", "sql-mcp-analytics"];
+    const defaultConnectionIdForConnector = (connector: string) => {
+      if (connector === "sql-mcp") return "postgres";
+      if (connector === "sql-mcp-analytics") return "analytics";
+      return "";
+    };
+    const normalizeConnector = (connector: any) => {
+      const normalized = typeof connector === "string" ? connector.trim().toLowerCase() : "";
+      return sqlConnectors.includes(normalized) ? normalized : "sql-mcp";
+    };
+    const normalizedType = String(fields.job_type ?? fields.type ?? "").trim().toLowerCase();
+    const isSql =
+      normalizedType === "sql" ||
+      normalizedType === "query" ||
+      Boolean(fields.query || config.query || params.query || fields.connection_id || config.connection_id);
+
+    const normalized: Record<string, any> = {
+      ...fields,
+      ...(fields.name && !fields.job_name ? { job_name: fields.name } : {}),
+      ...((fields.target_environment ?? fields.environment) !== undefined
+        ? { target_environment: normalizeEnv(fields.target_environment ?? fields.environment) }
+        : {}),
+      ...(fields.schedule === undefined && config.schedule !== undefined ? { schedule: config.schedule } : {}),
+    };
+    const normalizedSchedule = typeof normalized.schedule === "string" ? normalized.schedule.trim() : "";
+    if (normalizedSchedule && normalized.run_type !== "scheduled") {
+      normalized.run_type = "scheduled";
+    }
+
+    if (isSql && fields.sql_subtype !== "sql_github_write") {
+      const connector = normalizeConnector(fields.connector ?? config.connector);
+      const explicitConnectionId = fields.connection_id ?? config.connection_id;
+      const parsedConnection = parseSqlConnectionString(config.sql_connection_string);
+      const { target_environment: _targetEnvironmentConfig, environment: _environmentConfig, ...sqlConfig } = config;
+      const database =
+        fields.database ??
+        config.database ??
+        parsedConnection.database;
+      normalized.job_type = "SQL";
+      normalized.kind = fields.kind ?? "runtime";
+      normalized.type = "sql";
+      normalized.data_sensitivity = fields.data_sensitivity ?? "low";
+      normalized.connector = connector;
+      normalized.connection_id = explicitConnectionId ?? defaultConnectionIdForConnector(connector);
+      normalized.database = database ?? "";
+      normalized.target_environment = normalized.target_environment ?? normalized.environment ?? "dev";
+      delete normalized.environment;
+      normalized.query = fields.query ?? params.query ?? config.query ?? "";
+      normalized.output_destination = fields.output_destination ?? config.output_destination ?? "";
+      normalized.result_limit = fields.result_limit ?? config.result_limit ?? "";
+      normalized.config = {
+        ...sqlConfig,
+        connection_id: normalized.connection_id,
+        ...(normalized.database ? { database: normalized.database } : {}),
+        ...(parsedConnection.host ? { host: config.host ?? parsedConnection.host } : {}),
+        ...(parsedConnection.port ? { port: config.port ?? parsedConnection.port } : {}),
+        ...(parsedConnection.username ? { username: config.username ?? parsedConnection.username } : {}),
+        query: normalized.query,
+        schedule: normalized.schedule,
+        output_destination: normalized.output_destination,
+        result_limit: normalized.result_limit,
+      };
+      normalized.params = {
+        ...params,
+        query: normalized.query,
+        connection_id: normalized.connection_id,
+        ...(normalized.database ? { database: normalized.database } : {}),
+      };
+    }
+
+    return normalized;
+  };
+
+  const mergeDraftValues = (previous: Record<string, any>, next: Record<string, any>): Record<string, any> => {
+    const merged: Record<string, any> = { ...previous };
+
+    for (const [key, value] of Object.entries(next)) {
+      if (value === undefined || value === null) {
+        continue;
+      }
+
+      if (typeof value === "string") {
+        if (value.trim() === "") {
+          continue;
+        }
+        merged[key] = value;
+        continue;
+      }
+
+      if (Array.isArray(value)) {
+        if (value.length === 0) {
+          continue;
+        }
+        merged[key] = value;
+        continue;
+      }
+
+      if (typeof value === "object") {
+        const previousObject = typeof previous[key] === "object" && previous[key] !== null ? previous[key] : {};
+        merged[key] = mergeDraftValues(previousObject, value);
+        continue;
+      }
+
+      merged[key] = value;
+    }
+
+    return merged;
+  };
+
+  const handleChatFieldsExtracted = (fields: Record<string, any>) => {
+    if (fields.__reset_draft__) {
+      setJobDraft({});
+      return;
+    }
+    const normalized = normalizeExtractedJobFields(fields);
+    // sql_github_write drafts carry a `repo` field but are NOT standalone repo connections —
+    // they are part of the SQL-to-GitHub write flow and should stay in the job draft.
+    const isGithubWriteFlow = normalized.sql_subtype === "sql_github_write";
+    const isRepoConnectionDraft =
+      !isGithubWriteFlow &&
+      (
+        normalized.connection_intent === "connect_repo" ||
+        normalized.type === "repo_connection" ||
+        normalized.connector === "github" ||
+        Boolean(normalized.repo)
+      );
+
+    if (isRepoConnectionDraft) {
+      applyRepoConnectionFields(normalized);
+      if (normalizeGithubRepoInput(String(normalized.repo ?? ""))) {
+        void registerRepoConnection(
+          {
+            repo: String(normalized.repo ?? ""),
+            ref: String(normalized.ref ?? ""),
+            path: String(normalized.path ?? ""),
+            displayName: String(normalized.name ?? ""),
+            description: String(normalized.description ?? ""),
+          },
+          "chat",
+        ).catch((error) => {
+          setRepoConnectionError(error instanceof Error ? error.message : "Unable to connect the GitHub repo.");
+        });
+      } else {
+        setRepoConnectionError("Chat started a GitHub repo connection, but I still need the repo slug.");
+      }
+      return;
+    }
+
+    // For the GitHub write flow, silently register any new repo the user provides so it
+    // appears in the Connected Repo Context for future sessions. registerRepoConnection
+    // deduplicates internally, so re-calling with an already-connected repo is safe.
+    if (isGithubWriteFlow) {
+      const repoSlug = normalizeGithubRepoInput(String(normalized.repo ?? ""));
+      if (repoSlug) {
+        void registerRepoConnection(
+          {
+            repo: repoSlug,
+            ref: String(normalized.ref ?? ""),
+            path: "",
+            displayName: repoSlug.split("/")[1] ?? repoSlug,
+            description: "",
+          },
+          "chat",
+        ).catch(() => {
+          // silently ignore — don't interrupt the write flow for a background registration failure
+        });
+      }
+    }
+
+    setJobDraft((prev) => mergeDraftValues(prev, normalized));
+  };
+
+  const isCreateJobDraftComplete = (draft: Record<string, any>) => {
+    const jobType = String(draft.job_type ?? draft.type ?? "").trim();
+    const schedule = String(draft.schedule ?? draft.config?.schedule ?? "").trim();
+    const hasUniversalRequiredFields = Boolean(
+      String(draft.job_name ?? draft.name ?? "").trim() &&
+        String(draft.owner ?? "").trim()
+    );
+
+    if (!hasUniversalRequiredFields) {
+      return false;
+    }
+
+    if (draft.run_type === "scheduled" && !schedule) {
+      return false;
+    }
+
+    if (jobType === "SQL") {
+      return Boolean(
+          String(draft.connector ?? "").trim() &&
+          String(draft.connection_id ?? draft.config?.connection_id ?? "").trim() &&
+          String(draft.query ?? draft.config?.query ?? draft.params?.query ?? "").trim() &&
+          String(draft.target_environment ?? draft.environment ?? "").trim()
+      );
+    }
+
+    if (jobType === "Airflow") {
+      return Boolean(String(draft.dag_name ?? draft.config?.dag_id ?? "").trim());
+    }
+
+    if (jobType === "Excel") {
+      return Boolean(String(draft.output_file_name ?? "").trim());
+    }
+
+    if (jobType === "PowerPoint") {
+      return Boolean(String(draft.slide_template ?? "").trim());
+    }
+
+    return Boolean(jobType);
+  };
+
+  const getAuthToken = () => {
+    if (typeof window === "undefined") return "u_analyst";
+    return window.localStorage.getItem("control-center-auth-token") ?? "u_analyst";
+  };
+
+  const applyRepoConnectionFields = (fields: Record<string, any>) => {
+    const repo = normalizeGithubRepoInput(String(fields.repo ?? fields.config?.repo ?? ""));
+    const ref = String(fields.ref ?? fields.config?.ref ?? "").trim();
+    const path = String(fields.path ?? fields.config?.path ?? "").trim();
+    const displayName = String(fields.name ?? "").trim();
+    const description = String(fields.description ?? fields.config?.description ?? "").trim();
+
+    setRepoConnectionError(null);
+    setRepoConnectionSuccess(null);
+    setRepoConnectionForm((prev) => ({
+      repo: repo || prev.repo,
+      ref: ref || prev.ref,
+      path: path || prev.path,
+      displayName: displayName || prev.displayName,
+      description: description || prev.description,
+    }));
+  };
+
+  const buildRepoConnectionPayload = (form: RepoConnectionFormState): JobCreatePayload => {
+    const repo = normalizeGithubRepoInput(form.repo);
+    if (!isValidGithubRepoSlug(repo)) {
+      throw new Error("Enter a GitHub repo as owner/repo or a full GitHub URL.");
+    }
+
+    const bundleServerNames = preferredRepoBundle?.server_names?.length ? preferredRepoBundle.server_names : ["github"];
+    const companionServers = preferredRepoBundle?.companion_servers ?? [];
+
+    return {
+      name: getRepoConnectionName(repo, form.displayName),
+      kind: "runtime",
+      type: "repo_connection",
+      connector: "github",
+      environment: "dev",
+      data_sensitivity: "low",
+      tags: ["github", "repo-connection", "mcp"],
+      config: {
+        repo,
+        provider: "github",
+        ...(form.ref.trim() ? { ref: form.ref.trim(), default_branch: form.ref.trim() } : {}),
+        ...(form.path.trim() ? { path: form.path.trim() } : {}),
+        ...(form.description.trim() ? { description: form.description.trim() } : {}),
+        server_names: bundleServerNames,
+        primary_server: "github",
+        companion_servers: companionServers,
+        connection_mode: "manual_or_chat",
+      },
+    };
+  };
+
+  const registerRepoConnection = async (form: RepoConnectionFormState, source: "manual" | "chat" = "manual") => {
+    const payload = buildRepoConnectionPayload(form);
+    const repo = String(payload.config.repo);
+    const ref = String(payload.config.ref ?? "");
+    const existing = connectedRepoResources.find((resource) => {
+      const config = resource.config ?? {};
+      return normalizeGithubRepoInput(String(config.repo ?? "")) === repo && String(config.ref ?? "") === ref;
+    });
+
+    setIsSavingRepoConnection(true);
+    setRepoConnectionError(null);
+    setRepoConnectionSuccess(null);
+
+    try {
+      const resource = existing ?? await createJob(payload, getAuthToken());
+      await refreshJobRuns();
+      setRepoConnectionForm((prev) => ({
+        ...DEFAULT_REPO_CONNECTION_FORM,
+        repo,
+        ref,
+        path: String(resource.config?.path ?? prev.path ?? ""),
+        displayName: resource.name,
+        description: String(resource.config?.description ?? prev.description ?? ""),
+      }));
+      setRepoConnectionSuccess(
+        existing
+          ? `Repo ${repo}${ref ? ` @ ${ref}` : ""} is already connected and ready for MCP workflows.`
+          : `Connected ${repo}${ref ? ` @ ${ref}` : ""} for ${source === "chat" ? "chat and" : ""} future MCP workflows.`,
+      );
+      emitConsoleEvent("draft_updated", `Connected GitHub repo ${repo}`, {
+        resource_id: resource.id,
+        repo,
+        server_names: resource.config?.server_names ?? ["github"],
+        source,
+      });
+      return resource;
+    } finally {
+      setIsSavingRepoConnection(false);
+    }
+  };
+
+  const handleManualRepoConnection = async () => {
+    try {
+      await registerRepoConnection(repoConnectionForm, "manual");
+    } catch (error) {
+      setRepoConnectionError(error instanceof Error ? error.message : "Unable to connect the GitHub repo.");
+    }
+  };
+
+  const normalizeSqlConnectorForResource = (connector: unknown) => {
+    const normalized = typeof connector === "string" ? connector.trim().toLowerCase() : "";
+    if (normalized === "sql-mcp" || normalized === "control center dev database" || normalized === "control-center dev database") {
+      return "sql-mcp";
+    }
+    if (normalized === "sql-mcp-analytics" || normalized === "analytics reporting database") {
+      return "sql-mcp-analytics";
+    }
+    return "sql-mcp";
+  };
+
+  const buildResourcePayloadFromDraft = (draft: Record<string, any>): JobCreatePayload => {
+    const jobType = String(draft.job_type ?? "").trim();
+    const schedule = String(draft.schedule ?? draft.config?.schedule ?? "").trim();
+    const timezone = typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "America/Chicago";
+    const scheduleConfig = {
+      ...(schedule ? { schedule } : {}),
+      ...(schedule ? { timezone } : {}),
+    };
+    const basePayload = {
+      name: String(draft.job_name ?? draft.name ?? "").trim(),
+      kind: "runtime" as const,
+      environment: String(draft.target_environment ?? draft.environment ?? "dev"),
+      data_sensitivity: String(draft.data_sensitivity ?? "low"),
+      tags: Array.isArray(draft.tags) ? draft.tags : [],
+    };
+
+    if (jobType === "SQL") {
+      const connector = normalizeSqlConnectorForResource(draft.connector);
+      const connectionId = String(draft.connection_id ?? draft.config?.connection_id ?? (connector === "sql-mcp" ? "postgres" : "analytics")).trim();
+      const query = String(draft.query ?? draft.config?.query ?? draft.params?.query ?? "").trim();
+      return {
+        ...basePayload,
+        type: "sql",
+        connector,
+        config: {
+          connection_id: connectionId,
+          query,
+          ...scheduleConfig,
+        },
+      };
+    }
+
+    if (jobType === "Excel") {
+      return {
+        ...basePayload,
+        type: "excel",
+        connector: String(draft.connector ?? draft.config?.connection_id ?? "filesystem"),
+        config: {
+          brief: String(draft.description ?? draft.input_data_sources ?? "Excel job").trim(),
+          connection_id: String(draft.connection_id ?? draft.config?.connection_id ?? "filesystem"),
+          ...scheduleConfig,
+        },
+      };
+    }
+
+    if (jobType === "PowerPoint") {
+      return {
+        ...basePayload,
+        type: "powerpoint",
+        connector: String(draft.connector ?? draft.config?.connection_id ?? "filesystem"),
+        config: {
+          brief: String(draft.description ?? draft.slide_template ?? "PowerPoint job").trim(),
+          connection_id: String(draft.connection_id ?? draft.config?.connection_id ?? "filesystem"),
+          ...scheduleConfig,
+        },
+      };
+    }
+
+    if (jobType === "Airflow") {
+      return {
+        ...basePayload,
+        type: "airflow_dag",
+        connector: String(draft.connector ?? "airflow"),
+        config: {
+          dag_id: String(draft.dag_name ?? draft.config?.dag_id ?? "").trim(),
+          api_base_url: String(draft.api_base_url ?? draft.config?.api_base_url ?? "http://localhost:8080"),
+          ...scheduleConfig,
+        },
+      };
+    }
+
+    throw new Error(`Job type '${jobType || "unknown"}' is not supported yet.`);
+  };
+
+  const registerJobResourceFromDraft = async (options: { askToRun?: boolean; autoRun?: boolean; closeTabId?: string } = {}) => {
+    if (!isCreateJobDraftComplete(jobDraft)) {
+      throw new Error("Fill the required SQL job fields before creating the job.");
+    }
+
+    const payload = buildResourcePayloadFromDraft(jobDraft);
+    const existingResource = jobs.find(
+      (job) => job.name === payload.name && job.type === payload.type && job.connector === payload.connector
+    );
+
+    setIsRegisteringJob(true);
+    try {
+      const resource = existingResource ?? await createJob(payload, getAuthToken());
+      setJobDraft((prev) => ({
+        ...prev,
+        job_id: resource.id,
+        name: resource.name,
+        connector: resource.connector,
+        connection_id: resource.config?.connection_id ?? prev.connection_id,
+        query: resource.config?.query ?? prev.query,
+        target_environment: prev.target_environment ?? prev.environment ?? "dev",
+        config: {
+          ...(prev.config ?? {}),
+          ...(resource.config ?? {}),
+        },
+      }));
+      await refreshJobRuns();
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event(RESOURCE_SCHEDULES_UPDATED_EVENT));
+      }
+      emitConsoleEvent("draft_updated", `Registered ${resource.type} resource ${resource.name}`, {
+        resource_id: resource.id,
+        name: resource.name,
+        connector: resource.connector,
+      });
+
+      if (options.autoRun) {
+        const run = await createJobRun(resource.id, buildRunPayloadFromResource(resource), getAuthToken());
+        setActiveRunId(run.id);
+        setRunLogs([]);
+        setConsoleActiveTab("logs");
+        setConsoleHeight(300);
+        setChatAssistantNotices((prev) => [
+          ...prev,
+          {
+            id: `resource-created-and-run-${resource.id}-${run.id}-${Date.now()}`,
+            content: `Created SQL job \`${resource.name}\` and started run \`${run.id}\`.`,
+          },
+        ]);
+      } else if (options.askToRun) {
+        setChatAssistantNotices((prev) => [
+          ...prev,
+          {
+            id: `resource-created-${resource.id}-${Date.now()}`,
+            content: `Created ${resource.type.toUpperCase()} job \`${resource.name}\` and saved it as a Control Center resource. Do you want me to run it now?`,
+          },
+        ]);
+      }
+
+      if (options.closeTabId) {
+        handleCloseTabInPane(options.closeTabId, "primary");
+      }
+
+      return resource;
+    } finally {
+      setIsRegisteringJob(false);
+    }
+  };
+
+  const buildRunPayloadFromResource = (resource: JobRecord): RunCreatePayload => {
+    const config = resource.config ?? {};
+    return {
+      action: "run",
+      target_environment: resource.environment || "dev",
+      params: {
+        ...(config.query ? { query: config.query } : {}),
+        ...(config.connection_id ? { connection_id: config.connection_id } : {}),
+      },
+      job_config: {
+        intent: "run",
+        schedule: typeof config.schedule === "string" ? config.schedule : null,
+        metadata: {
+          created_via: "user_home",
+          job_type: resource.type,
+        },
+      },
+      mcp_config: {
+        server_names: resource.connector ? [resource.connector] : [],
+        allow_auto_selection: false,
+      },
+    };
+  };
+
+  const executeRunWithParams = async (resource: JobRecord, extraParams: Record<string, unknown>) => {
+    const resourceId = resource.id;
+    setRunningJobIds((current) => Array.from(new Set([...current, resourceId])));
+    emitConsoleEvent("draft_updated", `Started run for ${resource.name}`, { resource_id: resourceId });
+    try {
+      const basePayload = buildRunPayloadFromResource(resource);
+      const run = await createJobRun(
+        resource.id,
+        { ...basePayload, params: { ...basePayload.params, ...extraParams } },
+        getAuthToken(),
+      );
+      setActiveRunId(run.id);
+      setRunLogs([]);
+      setConsoleActiveTab("logs");
+      setConsoleHeight(300);
+      await refreshJobRuns();
+    } catch (err) {
+      emitConsoleEvent("missing_fields_identified", `Unable to run ${resource.name}`, {
+        resource_id: resourceId,
+        error: err instanceof Error ? err.message : "Unknown error",
+      });
+    } finally {
+      setRunningJobIds((current) => current.filter((id) => id !== resourceId));
+    }
+  };
+
+  const runResourceFromUi = async (resourceId: string) => {
+    const resource = jobs.find((item) => item.id === resourceId);
+    if (!resource) {
+      emitConsoleEvent("missing_fields_identified", "Unable to run job because the resource was not found", { resource_id: resourceId });
+      return;
+    }
+
+    if (connectorNeedsRunParams(resource)) {
+      setRunParamsJob(resource);
+      return;
+    }
+
+    await executeRunWithParams(resource, {});
+  };
+
+  const handleDeleteJob = async (jobId: string, jobName: string) => {
+    if (!window.confirm(`Delete job "${jobName}"? This will also remove all of its run history and cannot be undone.`)) {
+      return;
+    }
+    try {
+      await deleteJob(jobId, getAuthToken());
+      await refreshJobRuns();
+    } catch (err) {
+      alert(`Failed to delete job: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const handleRunParamsSubmit = (params: Record<string, string>) => {
+    if (!runParamsJob) return;
+    const resource = runParamsJob;
+    setRunParamsJob(null); // close modal immediately — don't block UI on execution
+    void executeRunWithParams(resource, params);
+  };
+
+  // kept for compatibility with the post-creation immediate-run path below
+
+  useEffect(() => {
+    if (
+      jobDraft.job_type !== "SQL" ||
+      !jobDraft.creation_requested ||
+      !isCreateJobDraftComplete(jobDraft) ||
+      jobDraft.job_id ||
+      isRegisteringJob
+    ) {
+      return;
+    }
+
+    const payload = buildResourcePayloadFromDraft(jobDraft);
+    const draftKey = JSON.stringify({
+      name: payload.name,
+      connector: payload.connector,
+      connection_id: payload.config.connection_id,
+      query: payload.config.query,
+      target_environment: jobDraft.target_environment ?? jobDraft.environment ?? "dev",
+    });
+
+    if (autoRegisteredDraftKeyRef.current === draftKey) {
+      return;
+    }
+    autoRegisteredDraftKeyRef.current = draftKey;
+    void registerJobResourceFromDraft({
+      askToRun: !Boolean(jobDraft.run_after_create || jobDraft.action === "run"),
+      autoRun: Boolean(jobDraft.run_after_create || jobDraft.action === "run"),
+    }).catch((err) => {
+      emitConsoleEvent("missing_fields_identified", "Unable to register SQL resource", {
+        error: err instanceof Error ? err.message : "Unknown error",
+      });
+      autoRegisteredDraftKeyRef.current = null;
+    });
+  }, [jobDraft, isRegisteringJob, jobs]);
+
   // Render tab content - shared across all panes
   const renderTabContent = (tab: WorkspaceTab | undefined) => {
     if (!tab) return null;
@@ -1677,6 +2656,9 @@ export default function UserHome() {
     const currentJobName = tab.type === "job" ? tab.jobName : null;
     const currentJobSpec = tab.type === "job"
       ? ((tab.payload as WorkspaceJobPayload | undefined) ?? (currentJobName ? mockJobSpecs[currentJobName] : null))
+      : null;
+    const currentJobResource = currentJobSpec
+      ? jobs.find((job) => job.id === currentJobSpec.job_id || job.id === tab.id)
       : null;
     
     // Get template if needed
@@ -2245,53 +3227,56 @@ export default function UserHome() {
     return (
       <>
         {tab.type === "create-job" ? (
-          /* Create Job Form */
-          <CreateJobForm
-            draftData={jobDraft}
-            onDraftDataChange={setJobDraft}
-            onSubmit={(jobData) => {
-              // Log the job data to console for now
-              console.log("New job created:", jobData);
-              
-              // In a real app, you would send this to the backend API here
-              // Example: 
-              // await api.createJob(jobData)
-              
-              // Show a success toast/notification
-              // You can add a toast notification here using a toast library
-              
-              // Reset the form state is handled by CreateJobForm
-            }}
-            onCancel={() => handleCloseTabInPane(tab.id, "primary")}
-          />
+          <div className="flex h-full items-center justify-center p-8 text-center">
+            <div className="max-w-sm">
+              <p className="text-lg font-semibold text-gray-700">Use the AI Chat Assistant</p>
+              <p className="mt-2 text-sm text-gray-500">
+                Job creation is handled through the chat panel. Describe the SQL job you want to create and the assistant will guide you.
+              </p>
+            </div>
+          </div>
         ) : tab.type === "job" && currentJobSpec ? (
           /* Job Workspace View */
           <div className="mx-auto max-w-[1600px] px-6 py-8">
             {(() => {
               const activeJobDetailTab = jobDetailTabById[tab.id] ?? "overview";
               const isAttentionJob = currentJobSpec.status === "Needs Attention";
-              const relatedRunRecords = dashboardRuns.recentRuns.filter((run) => run.jobName === currentJobSpec.name);
 
               return (
                 <div className="space-y-6">
               {/* Job Header */}
-              <div>
-                <h1 className="text-3xl font-bold text-gray-900">{currentJobSpec.name}</h1>
-                <div className="flex items-center gap-3 mt-3">
-                  <span className="rounded-lg bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700">{currentJobSpec.type}</span>
-                  <span className="text-sm text-gray-600">Schedule: {currentJobSpec.schedule}</span>
-                  <span
-                    className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
-                      currentJobSpec.status === "Healthy"
-                        ? "bg-green-100 text-green-700"
-                        : currentJobSpec.status === "Running"
-                          ? "bg-blue-100 text-blue-700"
-                          : "bg-red-100 text-red-700"
-                    }`}
-                  >
-                    {currentJobSpec.status}
-                  </span>
+              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <h1 className="text-3xl font-bold text-gray-900">{currentJobSpec.name}</h1>
+                  <div className="flex items-center gap-3 mt-3">
+                    <span className="rounded-lg bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700">{currentJobSpec.type}</span>
+                    <span className="text-sm text-gray-600">Schedule: {currentJobSpec.schedule}</span>
+                    <span
+                      className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
+                        currentJobSpec.status === "Healthy"
+                          ? "bg-green-100 text-green-700"
+                          : currentJobSpec.status === "Running"
+                            ? "bg-blue-100 text-blue-700"
+                            : "bg-red-100 text-red-700"
+                      }`}
+                    >
+                      {currentJobSpec.status}
+                    </span>
+                  </div>
                 </div>
+                <button
+                  onClick={() => {
+                    if (currentJobResource) {
+                      void runResourceFromUi(currentJobResource.id);
+                    }
+                  }}
+                  disabled={!currentJobResource || runningJobIds.includes(currentJobResource.id)}
+                  className="inline-flex items-center justify-center gap-2 rounded-md bg-[#ed0923] px-4 py-2 text-sm font-semibold text-white hover:bg-[#d10820] disabled:cursor-not-allowed disabled:bg-gray-300"
+                  title={currentJobResource ? "Run this job manually" : "This job is not linked to a saved Control Center resource"}
+                >
+                  <PlayCircle className="h-4 w-4" />
+                  {currentJobResource && runningJobIds.includes(currentJobResource.id) ? "Running..." : "Run Job"}
+                </button>
               </div>
 
               {/* Tabs */}
@@ -2403,39 +3388,79 @@ export default function UserHome() {
                 </div>
               )}
 
-              {activeJobDetailTab === "runs" && (
-                <div className="rounded-xl border border-gray-200 bg-white p-6">
-                  <h2 className="text-lg font-semibold text-gray-900 mb-4">Run History</h2>
-                  <div className="space-y-3">
-                    {relatedRunRecords.length > 0 ? (
-                      relatedRunRecords.map((run) => (
-                        <div key={run.id} className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-                          <div className="flex flex-wrap items-center justify-between gap-3">
-                            <div>
-                              <p className="text-sm font-medium text-gray-900">{run.jobName}</p>
-                              <p className="text-xs text-gray-500 mt-1">
-                                Scheduled {formatScheduledTime(run.scheduledTime)}
-                              </p>
-                            </div>
-                            <span className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${getRunStatusColor(run.status)}`}>
-                              {run.status === "completed" ? "Completed" : run.status === "failed" ? "Failed" : run.status}
-                            </span>
-                          </div>
-                          {run.completedTime && (
-                            <p className="mt-3 text-xs text-gray-500">
-                              Last update: {formatRunTime(run.completedTime)}
-                            </p>
-                          )}
-                        </div>
-                      ))
+              {activeJobDetailTab === "runs" && (() => {
+                const resourceId = tab.payload?.job_id as string | undefined;
+                const jobRuns = resourceId
+                  ? [...runs]
+                      .filter((r) => r.job_id === resourceId)
+                      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+                  : [];
+
+                const statusBadgeClass = (status: string) => {
+                  const s = status.toLowerCase();
+                  if (["running", "executing", "in_progress"].includes(s)) return "bg-blue-100 text-blue-700";
+                  if (["failed", "stopped", "cancelled", "canceled", "blocked"].includes(s)) return "bg-red-100 text-red-700";
+                  if (["queued", "pending", "scheduled"].includes(s)) return "bg-amber-100 text-amber-700";
+                  return "bg-green-100 text-green-700";
+                };
+
+                return (
+                  <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+                    <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+                      <h2 className="text-lg font-semibold text-gray-900">
+                        Run History
+                      </h2>
+                      <span className="text-xs text-gray-500">{jobRuns.length} run{jobRuns.length !== 1 ? "s" : ""}</span>
+                    </div>
+                    {jobRuns.length === 0 ? (
+                      <div className="px-6 py-12 text-center">
+                        <p className="text-sm font-medium text-gray-500">No runs found for this job</p>
+                        <p className="text-xs text-gray-400 mt-1">Runs will appear here once the job has been executed</p>
+                      </div>
                     ) : (
-                      <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-4 text-sm text-gray-500">
-                        No recent runs were found for this job.
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-gray-50 text-left">
+                              <th className="px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+                              <th className="px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Run ID</th>
+                              <th className="px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Action</th>
+                              <th className="px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Environment</th>
+                              <th className="px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Trigger</th>
+                              <th className="px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Started</th>
+                              <th className="px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Updated</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-100">
+                            {jobRuns.map((run) => (
+                              <tr key={run.id} className="hover:bg-gray-50 transition">
+                                <td className="px-6 py-3">
+                                  <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${statusBadgeClass(run.status)}`}>
+                                    {run.status}
+                                  </span>
+                                </td>
+                                <td className="px-6 py-3 font-mono text-xs text-gray-600">{run.id.slice(0, 8)}</td>
+                                <td className="px-6 py-3 text-gray-700">{run.action}</td>
+                                <td className="px-6 py-3 text-gray-600">{run.target_environment}</td>
+                                <td className="px-6 py-3 text-gray-600 capitalize">{run.trigger_source ?? "manual"}</td>
+                                <td className="px-6 py-3 text-gray-500 whitespace-nowrap">
+                                  {new Date(run.created_at).toLocaleString()}
+                                </td>
+                                <td className="px-6 py-3 text-gray-500 whitespace-nowrap">
+                                  {run.error
+                                    ? <span className="text-red-600 font-mono text-xs" title={run.error}>{new Date(run.updated_at).toLocaleString()} — {run.error.slice(0, 60)}{run.error.length > 60 ? "…" : ""}</span>
+                                    : new Date(run.updated_at).toLocaleString()
+                                  }
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
                       </div>
                     )}
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {activeJobDetailTab === "preview" && (
                 <div className="rounded-xl border border-gray-200 bg-white p-6">
@@ -2466,7 +3491,7 @@ export default function UserHome() {
 
               {activeJobDetailTab === "settings" && (
                 <div className="rounded-xl border border-gray-200 bg-white p-6">
-                  <h2 className="text-lg font-semibold text-gray-900 mb-4">Job Settings</h2>
+                  <h2 className="text-lg font-semibold text-gray-900 mb-4">Settings</h2>
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                     <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
                       <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Schedule</p>
@@ -2475,6 +3500,14 @@ export default function UserHome() {
                     <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
                       <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Status</p>
                       <p className="mt-2 text-sm text-gray-900">{currentJobSpec.status}</p>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 md:col-span-2">
+                      <p className="text-xs font-semibold text-gray-500 uppercase">Resource ID</p>
+                      <p className="text-sm font-mono text-gray-800 mt-1">{tab.payload?.job_id ?? "—"}</p>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 md:col-span-2">
+                      <p className="text-xs font-semibold text-gray-500 uppercase">Description</p>
+                      <p className="mt-2 text-sm text-gray-700">{currentJobSpec.description ?? "No description provided."}</p>
                     </div>
                     <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 md:col-span-2">
                       <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Owner Guidance</p>
@@ -3068,47 +4101,45 @@ export default function UserHome() {
             <div className="space-y-6">
               <div>
                 <h1 className="text-3xl font-bold text-gray-900">My Active Jobs</h1>
-                <p className="mt-2 text-sm text-gray-600">Jobs currently running or scheduled</p>
+                <p className="mt-2 text-sm text-gray-600">Jobs currently running or healthy</p>
               </div>
 
               <div className="rounded-xl border border-gray-200 bg-white p-6">
                 <div className="space-y-4">
-                  {dashboardJobs
-                    .filter((job) => job.status === "Running" || job.status === "Healthy")
-                    .map((job) => (
-                      <div key={job.id} className="flex items-start justify-between p-4 border border-gray-100 rounded-lg hover:bg-gray-50 transition">
-                        <div className="flex-1">
-                          <p className="font-medium text-gray-900">{job.name}</p>
-                          <div className="flex items-center gap-2 mt-2">
-                            <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded">{job.type}</span>
-                            <span className="text-xs text-gray-500">Schedule: {job.schedule}</span>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
-                              job.status === "Healthy"
-                                ? "bg-green-100 text-green-700"
-                                : "bg-blue-100 text-blue-700"
-                            }`}
-                          >
-                            {job.status}
-                          </span>
-                          <button
-                            onClick={() =>
-                              handleOpenTabInPane(
-                                { type: "job", name: job.name, id: job.id, payload: job.payload },
-                                "primary"
-                              )
-                            }
-                            className="px-3 py-1 text-xs text-[#ed0923] hover:bg-red-50 rounded transition"
-                          >
-                            View
-                          </button>
+                  {activeDashboardJobs.map((job) => (
+                    <div key={job.id} className="flex items-start justify-between p-4 border border-gray-100 rounded-lg hover:bg-gray-50 transition">
+                      <div className="flex-1">
+                        <p className="font-medium text-gray-900">{job.name}</p>
+                        <div className="flex items-center gap-2 mt-2">
+                          <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded">{job.type}</span>
+                          <span className="text-xs text-gray-500">Schedule: {job.schedule}</span>
                         </div>
                       </div>
-                    ))}
-                  {dashboardJobs.filter((job) => job.status === "Running" || job.status === "Healthy").length === 0 && (
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
+                            job.status === "Healthy"
+                              ? "bg-green-100 text-green-700"
+                              : "bg-blue-100 text-blue-700"
+                          }`}
+                        >
+                          {job.status}
+                        </span>
+                        <button
+                          onClick={() =>
+                            handleOpenTabInPane(
+                              { type: "job", name: job.name, id: job.id, payload: job.payload },
+                              "primary"
+                            )
+                          }
+                          className="px-3 py-1 text-xs text-[#ed0923] hover:bg-red-50 rounded transition"
+                        >
+                          View
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {activeDashboardJobs.length === 0 && (
                     <div className="text-center py-8 text-gray-500">No active jobs at the moment</div>
                   )}
                 </div>
@@ -3126,7 +4157,7 @@ export default function UserHome() {
 
               <div className="rounded-xl border border-gray-200 bg-white p-6">
                 <div className="space-y-4">
-                  {pendingPromotionsState.map((promotion) => (
+                  {pendingApprovalPromotions.map((promotion) => (
                     <div key={promotion.id} className="flex items-start justify-between p-4 border border-amber-200 bg-amber-50 rounded-lg">
                       <div className="flex-1">
                         <p className="font-medium text-gray-900">{promotion.name}</p>
@@ -3155,7 +4186,7 @@ export default function UserHome() {
                       </div>
                     </div>
                   ))}
-                  {pendingPromotionsState.length === 0 && (
+                  {pendingApprovalPromotions.length === 0 && (
                     <div className="text-center py-8 text-gray-500">No pending approvals</div>
                   )}
                 </div>
@@ -3173,38 +4204,36 @@ export default function UserHome() {
 
               <div className="rounded-xl border border-gray-200 bg-white p-6">
                 <div className="space-y-4">
-                  {dashboardRuns.recentRuns
-                    .filter((run) => run.status === "failed")
-                    .map((run) => (
-                      <div key={run.id} className="flex items-start justify-between p-4 border border-red-200 bg-red-50 rounded-lg">
-                        <div className="flex-1">
-                          <p className="font-medium text-gray-900">{run.jobName}</p>
-                          <div className="flex items-center gap-2 mt-2">
-                            <span className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded">{run.jobType}</span>
-                            <span className="text-xs text-gray-500">
-                              Failed {formatRunTime(run.scheduledTime)}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="inline-flex rounded-full px-3 py-1 text-xs font-semibold bg-red-100 text-red-700">
-                            Failed
+                  {failedRunsLast24h.map((run) => (
+                    <div key={run.id} className="flex items-start justify-between p-4 border border-red-200 bg-red-50 rounded-lg">
+                      <div className="flex-1">
+                        <p className="font-medium text-gray-900">{run.jobName}</p>
+                        <div className="flex items-center gap-2 mt-2">
+                          <span className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded">{run.jobType}</span>
+                          <span className="text-xs text-gray-500">
+                            Failed {formatRunTime(run.completedTime ?? run.scheduledTime)}
                           </span>
-                          <button
-                            onClick={() =>
-                              handleOpenTabInPane(
-                                { type: "job", name: run.jobName, id: run.jobName },
-                                "primary"
-                              )
-                            }
-                            className="px-3 py-1 text-xs text-[#ed0923] hover:bg-red-100 rounded transition"
-                          >
-                            Details
-                          </button>
                         </div>
                       </div>
-                    ))}
-                  {dashboardRuns.recentRuns.filter((run) => run.status === "failed").length === 0 && (
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex rounded-full px-3 py-1 text-xs font-semibold bg-red-100 text-red-700">
+                          Failed
+                        </span>
+                        <button
+                          onClick={() =>
+                            handleOpenTabInPane(
+                              { type: "job", name: run.jobName, id: run.jobName },
+                              "primary"
+                            )
+                          }
+                          className="px-3 py-1 text-xs text-[#ed0923] hover:bg-red-100 rounded transition"
+                        >
+                          Details
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {failedRunsLast24h.length === 0 && (
                     <div className="text-center py-8 text-gray-500">No failed runs in the last 24 hours</div>
                   )}
                 </div>
@@ -3233,13 +4262,7 @@ export default function UserHome() {
                       </div>
                       <div className="flex items-center gap-2">
                         <span
-                          className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
-                            job.status === "Healthy"
-                              ? "bg-green-100 text-green-700"
-                              : job.status === "Running"
-                                ? "bg-blue-100 text-blue-700"
-                                : "bg-red-100 text-red-700"
-                          }`}
+                          className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getDashboardJobStatusClasses(job.status)}`}
                         >
                           {job.status}
                         </span>
@@ -3279,25 +4302,12 @@ export default function UserHome() {
 
               {/* KPIs */}
               <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-                {kpis.map((kpi, idx) => {
-                  // Map KPI label to dashboard tab type
-                  const getTabType = () => {
-                    if (kpi.label === "My Active Jobs") return "active-jobs";
-                    if (kpi.label === "Pending Approvals") return "pending-approvals";
-                    if (kpi.label === "Failed Runs (24h)") return "failed-runs";
-                    if (kpi.label === "Saved Jobs") return "saved-jobs";
-                    return null;
-                  };
-                  
-                  const tabType = getTabType();
-                  
+                {dashboardKpis.map((kpi) => {
                   return (
                     <button
-                      key={idx}
+                      key={kpi.tabType}
                       onClick={() => {
-                        if (tabType) {
-                          handleOpenTabInPane({ type: tabType, name: kpi.label, id: tabType }, "primary");
-                        }
+                        handleOpenTabInPane({ type: kpi.tabType, name: kpi.label, id: kpi.tabType }, "primary");
                       }}
                       className="rounded-xl border border-gray-200 bg-white p-6 hover:border-[#ed0923] hover:shadow-lg transition cursor-pointer"
                     >
@@ -3318,31 +4328,193 @@ export default function UserHome() {
                   <div className="flex items-center gap-3">
                     <AlertTriangle className="h-5 w-5 text-red-500" />
                     <div>
-                      <p className="text-2xl font-bold text-gray-900">1</p>
-                      <p className="text-xs text-gray-600">Urgent action</p>
+                      <p className="text-2xl font-bold text-gray-900">{urgentActionCount}</p>
+                      <p className="text-xs text-gray-600">{urgentActionCount === 1 ? "Urgent action" : "Urgent actions"}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
                     <PlayCircle className="h-5 w-5 text-blue-500" />
                     <div>
-                      <p className="text-2xl font-bold text-gray-900">2</p>
-                      <p className="text-xs text-gray-600">Running jobs</p>
+                      <p className="text-2xl font-bold text-gray-900">{runningDashboardJobs.length}</p>
+                      <p className="text-xs text-gray-600">{runningDashboardJobs.length === 1 ? "Running job" : "Running jobs"}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
                     <Sparkles className="h-5 w-5 text-amber-500" />
                     <div>
-                      <p className="text-2xl font-bold text-gray-900">3</p>
-                      <p className="text-xs text-gray-600">Drafts pending</p>
+                      <p className="text-2xl font-bold text-gray-900">{draftJobs.length}</p>
+                      <p className="text-xs text-gray-600">{draftJobs.length === 1 ? "Draft pending" : "Drafts pending"}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
                     <CheckCircle2 className="h-5 w-5 text-green-500" />
                     <div>
-                      <p className="text-2xl font-bold text-gray-900">2</p>
-                      <p className="text-xs text-gray-600">Promotions ready</p>
+                      <p className="text-2xl font-bold text-gray-900">{promotionQueueCounts.ready}</p>
+                      <p className="text-xs text-gray-600">{promotionQueueCounts.ready === 1 ? "Promotion ready" : "Promotions ready"}</p>
                     </div>
                   </div>
+                </div>
+              </div>
+
+              <div className="grid gap-6 lg:grid-cols-[1.3fr_0.9fr]">
+                <div className="rounded-xl border border-gray-200 bg-white p-6">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div>
+                      <h2 className="text-lg font-semibold text-gray-900">Connect a GitHub Repo</h2>
+                      <p className="mt-1 text-sm text-gray-600">
+                        Save a repo once on the dashboard so chat and future multi-MCP workflows can reuse it.
+                      </p>
+                    </div>
+                    <div className="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600">
+                      {githubMcpServer ? "GitHub MCP server available" : "GitHub MCP server not currently available"}
+                    </div>
+                  </div>
+
+                  <div className="mt-5 grid gap-4 md:grid-cols-2">
+                    <div className="md:col-span-2">
+                      <label className="mb-2 block text-sm font-medium text-gray-900">GitHub repo</label>
+                      <input
+                        value={repoConnectionForm.repo}
+                        onChange={(e) => {
+                          setRepoConnectionError(null);
+                          setRepoConnectionSuccess(null);
+                          setRepoConnectionForm((prev) => ({ ...prev, repo: e.target.value }));
+                        }}
+                        placeholder="owner/repo or https://github.com/owner/repo"
+                        className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-900">Default branch or ref</label>
+                      <input
+                        value={repoConnectionForm.ref}
+                        onChange={(e) => setRepoConnectionForm((prev) => ({ ...prev, ref: e.target.value }))}
+                        placeholder="main"
+                        className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-900">Optional subpath</label>
+                      <input
+                        value={repoConnectionForm.path}
+                        onChange={(e) => setRepoConnectionForm((prev) => ({ ...prev, path: e.target.value }))}
+                        placeholder="models/marts"
+                        className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-900">Display name</label>
+                      <input
+                        value={repoConnectionForm.displayName}
+                        onChange={(e) => setRepoConnectionForm((prev) => ({ ...prev, displayName: e.target.value }))}
+                        placeholder="dbt-core repo"
+                        className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-900">Description</label>
+                      <input
+                        value={repoConnectionForm.description}
+                        onChange={(e) => setRepoConnectionForm((prev) => ({ ...prev, description: e.target.value }))}
+                        placeholder="Used for dbt model work"
+                        className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
+                      />
+                    </div>
+                  </div>
+
+                  {repoConnectionError && (
+                    <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                      {repoConnectionError}
+                    </div>
+                  )}
+                  {repoConnectionSuccess && (
+                    <div className="mt-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+                      {repoConnectionSuccess}
+                    </div>
+                  )}
+
+                  <div className="mt-5 flex flex-wrap items-center gap-3">
+                    <button
+                      onClick={() => void handleManualRepoConnection()}
+                      disabled={isSavingRepoConnection || !githubMcpServer}
+                      className="rounded-lg bg-[#ed0923] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#d10820] disabled:cursor-not-allowed disabled:bg-gray-300"
+                    >
+                      {isSavingRepoConnection ? "Connecting..." : "Connect Repo"}
+                    </button>
+                    <button
+                      onClick={() => setIsChatPanelOpen(true)}
+                      className="rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
+                    >
+                      Open Chat to Connect
+                    </button>
+                  </div>
+
+                  <div className="mt-5 rounded-xl border border-dashed border-gray-200 bg-gray-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Chat Shortcut</p>
+                    <p className="mt-2 text-sm text-gray-700">
+                      Try: "Connect the GitHub repo <span className="font-mono">toyota-data/dbt-core</span> on branch <span className="font-mono">develop</span>."
+                    </p>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-gray-200 bg-white p-6">
+                  <h2 className="text-lg font-semibold text-gray-900">Connected Repo Context</h2>
+                  <p className="mt-1 text-sm text-gray-600">
+                    Connected repos become reusable MCP-aware resources instead of one-off chat state.
+                  </p>
+
+                  <div className="mt-4 space-y-3">
+                    {connectedRepoResources.length === 0 ? (
+                      <div className="rounded-lg bg-gray-50 px-4 py-5 text-sm text-gray-500">
+                        No GitHub repos connected yet.
+                      </div>
+                    ) : (
+                      connectedRepoResources.map((resource) => {
+                        const config = resource.config ?? {};
+                        const serverNames = Array.isArray(config.server_names)
+                          ? config.server_names.map((value) => String(value))
+                          : [resource.connector];
+                        return (
+                          <div key={resource.id} className="rounded-lg border border-gray-200 p-4">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="text-sm font-semibold text-gray-900">{String(config.repo ?? resource.name)}</p>
+                                <p className="mt-1 text-xs text-gray-500">
+                                  {String(config.ref ?? "default branch")}
+                                  {config.path ? ` • ${String(config.path)}` : ""}
+                                </p>
+                              </div>
+                              <span className="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-700">
+                                {resource.status}
+                              </span>
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {serverNames.map((serverName) => (
+                                <span key={serverName} className="rounded-full bg-red-50 px-2.5 py-1 text-[11px] font-semibold text-[#ed0923]">
+                                  {serverName}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  {preferredRepoBundle && (
+                    <div className="mt-5 rounded-xl bg-[#111827] p-4 text-white">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-red-200">Recommended MCP Bundle</p>
+                      <p className="mt-2 text-sm font-semibold">{preferredRepoBundle.title}</p>
+                      <p className="mt-1 text-sm text-gray-300">{preferredRepoBundle.summary}</p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {preferredRepoBundle.server_names.map((serverName) => (
+                          <span key={serverName} className="rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-white">
+                            {serverName}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -3352,14 +4524,26 @@ export default function UserHome() {
                 <div className="rounded-lg border border-gray-200 bg-white p-4">
                   <h3 className="text-sm font-semibold text-gray-900 mb-3">Recent Jobs</h3>
                   <div className="space-y-2">
-                    {recentJobs.slice(0, 3).map((job) => (
-                      <div key={job.name} className="p-2 bg-gray-50 rounded text-left hover:bg-gray-100 cursor-pointer transition text-xs">
+                    {dashboardJobs.slice(0, 3).map((job) => (
+                      <button
+                        key={job.id}
+                        onClick={() =>
+                          handleOpenTabInPane(
+                            { type: "job", name: job.name, id: job.id, payload: job.payload },
+                            "primary"
+                          )
+                        }
+                        className="w-full p-2 bg-gray-50 rounded text-left hover:bg-gray-100 cursor-pointer transition text-xs"
+                      >
                         <p className="font-medium text-gray-900 truncate">{job.name}</p>
-                        <span className={`inline-block mt-1 rounded px-2 py-0.5 text-[9px] font-semibold ${job.status === "Healthy" ? "bg-green-100 text-green-700" : job.status === "Running" ? "bg-blue-100 text-blue-700" : "bg-red-100 text-red-700"}`}>
+                        <span className={`inline-block mt-1 rounded px-2 py-0.5 text-[9px] font-semibold ${getDashboardJobStatusClasses(job.status)}`}>
                           {job.status}
                         </span>
-                      </div>
+                      </button>
                     ))}
+                    {dashboardJobs.length === 0 && (
+                      <p className="p-2 text-xs text-gray-500">No saved jobs found</p>
+                    )}
                   </div>
                 </div>
 
@@ -3383,15 +4567,15 @@ export default function UserHome() {
                   <div className="space-y-1 text-xs">
                     <div className="flex items-center justify-between p-2 bg-blue-50 rounded">
                       <span className="text-gray-700">Ready</span>
-                      <span className="font-bold text-blue-700">2</span>
+                      <span className="font-bold text-blue-700">{promotionQueueCounts.ready}</span>
                     </div>
                     <div className="flex items-center justify-between p-2 bg-yellow-50 rounded">
                       <span className="text-gray-700">Pending</span>
-                      <span className="font-bold text-yellow-700">1</span>
+                      <span className="font-bold text-yellow-700">{promotionQueueCounts.pending}</span>
                     </div>
                     <div className="flex items-center justify-between p-2 bg-red-50 rounded">
                       <span className="text-gray-700">Needs Revision</span>
-                      <span className="font-bold text-red-700">1</span>
+                      <span className="font-bold text-red-700">{promotionQueueCounts.needsRevision}</span>
                     </div>
                   </div>
                 </div>
@@ -3458,18 +4642,29 @@ export default function UserHome() {
     switch (activePanelId) {
       case "jobs":
         const filteredAndSortedJobs = getFilteredAndSortedJobs();
-        const jobTypeLists = {
-          PowerPoint: dashboardJobs.filter(j => j.type === "PowerPoint").length,
-          Excel: dashboardJobs.filter(j => j.type === "Excel").length,
-          SQL: dashboardJobs.filter(j => j.type === "SQL").length,
-        };
-        const jobStatusLists = {
-          Healthy: dashboardJobs.filter(j => j.status === "Healthy").length,
-          Running: dashboardJobs.filter(j => j.status === "Running").length,
-          "Needs Attention": dashboardJobs.filter(j => j.status === "Needs Attention").length,
-        };
+        const readyJobs = filteredAndSortedJobs.filter((job) => job.status === "Ready");
+        const currentJobs = filteredAndSortedJobs.filter((job) => job.status !== "Ready");
+        const jobTypeFilters = Array.from(new Set(dashboardJobs.map((job) => job.type))).sort();
         return (
           <div className="p-4 space-y-3 flex flex-col h-full">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Runs Table</p>
+                <p className="text-xs text-gray-500">{runs.length} database runs loaded</p>
+              </div>
+              <button
+                onClick={() => void refreshJobRuns()}
+                className="rounded-md border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Refresh
+              </button>
+            </div>
+            {jobRunsError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                {jobRunsError}
+              </div>
+            )}
+
             {/* Search Input */}
             <div>
               <input
@@ -3500,7 +4695,7 @@ export default function UserHome() {
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-gray-600">Filter:</label>
               <div className="flex flex-wrap gap-1.5">
-                {["all", "PowerPoint", "Excel", "SQL"].map((filterOption) => (
+                {["all", ...jobTypeFilters].map((filterOption) => (
                   <button
                     key={filterOption}
                     onClick={() => setJobFilter(filterOption as any)}
@@ -3515,7 +4710,7 @@ export default function UserHome() {
                 ))}
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {["Healthy", "Running", "Needs Attention"].map((filterOption) => (
+                {["Ready", "Healthy", "Running", "Needs Attention"].map((filterOption) => (
                   <button
                     key={filterOption}
                     onClick={() => setJobFilter(filterOption as any)}
@@ -3531,164 +4726,188 @@ export default function UserHome() {
               </div>
             </div>
 
+            {/* Ready Jobs Section */}
+            <div className="border-t border-gray-200 pt-3 mt-2">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-bold text-gray-900 uppercase tracking-wide">
+                  Ready ({readyJobs.length})
+                </h3>
+              </div>
+              <div className="space-y-1.5">
+                {readyJobs.map((job) => (
+                  <div
+                    key={job.id}
+                    className={`w-full p-3 rounded-lg text-left border ${
+                      activeJobName === job.name
+                        ? "bg-[#ed0923]/10 border-[#ed0923]"
+                        : "bg-amber-50 border-amber-100"
+                    }`}
+                  >
+                    <button
+                      draggable
+                      onDragStart={(e) => handleJobDragStart(e, job.name)}
+                      onClick={() => {
+                        setSelectedResourceId(job.id);
+                        handleOpenTabInPane(
+                          { type: "job", name: job.name, id: job.id, payload: job.payload },
+                          "primary"
+                        );
+                      }}
+                      className="w-full cursor-move text-left"
+                    >
+                      <p className="text-sm font-medium text-gray-900">{job.name}</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-xs text-gray-500">{job.type}</span>
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${getDashboardJobStatusClasses(job.status)}`}>
+                          {job.status}
+                        </span>
+                      </div>
+                    </button>
+                    <div className="mt-3 flex items-center gap-2">
+                      <button
+                        onClick={() => void runResourceFromUi(job.id)}
+                        className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md bg-[#ed0923] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#d10820] disabled:cursor-not-allowed disabled:bg-gray-300"
+                        disabled={runningJobIds.includes(job.id)}
+                      >
+                        <PlayCircle className="h-3.5 w-3.5" />
+                        {runningJobIds.includes(job.id) ? "Running..." : "Run manually"}
+                      </button>
+                      <button
+                        onClick={() => void handleDeleteJob(job.id, job.name)}
+                        title="Delete job"
+                        className="inline-flex items-center justify-center rounded-md border border-gray-200 p-1.5 text-gray-400 hover:border-red-300 hover:bg-red-50 hover:text-red-600"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {readyJobs.length === 0 && (
+                  <p className="rounded-lg bg-gray-50 px-3 py-4 text-center text-sm text-gray-500">No ready jobs</p>
+                )}
+              </div>
+            </div>
+
             {/* Current Jobs Section - Always visible and prioritized */}
             <div className="border-t border-gray-200 pt-3 mt-2">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-xs font-bold text-gray-900 uppercase tracking-wide">
-                  My Current Jobs ({filteredAndSortedJobs.length})
+                  My Current Jobs ({currentJobs.length})
                 </h3>
-                <button
-                  onClick={() => handleOpenTabInPane({ type: "create-job", id: "create-job", name: "Create Job" }, "primary")}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#ed0923] text-white rounded-md text-xs font-medium hover:bg-[#d10820] transition"
-                  title="Create a new job"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  Create
-                </button>
               </div>
               <div className="flex-1 overflow-y-auto space-y-1.5">
-                {filteredAndSortedJobs.length > 0 ? (
-                  filteredAndSortedJobs.map((job) => (
-                    <button
+                {jobRunsLoading && dashboardJobs.length === 0 ? (
+                  <div className="text-center py-8">
+                    <p className="text-sm text-gray-500">Loading runs from Control Center...</p>
+                  </div>
+                ) : currentJobs.length > 0 ? (
+                  currentJobs.map((job) => (
+                    <div
                       key={job.id}
                       draggable
                       onDragStart={(e) => handleJobDragStart(e, job.name)}
-                      onClick={() =>
-                        handleOpenTabInPane(
-                          { type: "job", name: job.name, id: job.id, payload: job.payload },
-                          "primary"
-                        )
-                      }
-                      className={`w-full p-3 rounded-lg transition text-left cursor-move ${
+                      className={`w-full p-3 rounded-lg transition text-left ${
                         activeJobName === job.name
                           ? "bg-[#ed0923]/10 border border-[#ed0923]"
                           : "bg-gray-50 hover:bg-gray-100 border border-transparent"
                       }`}
                     >
-                      <p className="text-sm font-medium text-gray-900">{job.name}</p>
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className="text-xs text-gray-500">{job.type}</span>
-                        <span
-                          className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                            job.status === "Healthy"
-                              ? "bg-green-100 text-green-700"
-                              : job.status === "Running"
-                                ? "bg-blue-100 text-blue-700"
-                                : "bg-red-100 text-red-700"
-                          }`}
+                      <button
+                        onClick={() => {
+                          setSelectedResourceId(job.id);
+                          handleOpenTabInPane(
+                            { type: "job", name: job.name, id: job.id, payload: job.payload },
+                            "primary"
+                          );
+                        }}
+                        className="w-full cursor-move text-left"
+                      >
+                        <p className="text-sm font-medium text-gray-900">{job.name}</p>
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className="text-xs text-gray-500">{job.type}</span>
+                          <span
+                            className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${getDashboardJobStatusClasses(job.status)}`}
+                          >
+                            {job.status}
+                          </span>
+                        </div>
+                      </button>
+                      <div className="mt-3 flex items-center gap-2">
+                        <button
+                          onClick={() => void runResourceFromUi(job.id)}
+                          className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md bg-[#ed0923] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#d10820] disabled:cursor-not-allowed disabled:bg-gray-300"
+                          disabled={runningJobIds.includes(job.id)}
                         >
-                          {job.status}
-                        </span>
+                          <PlayCircle className="h-3.5 w-3.5" />
+                          {runningJobIds.includes(job.id) ? "Running..." : "Run manually"}
+                        </button>
+                        <button
+                          onClick={() => void handleDeleteJob(job.id, job.name)}
+                          title="Delete job"
+                          className="inline-flex items-center justify-center rounded-md border border-gray-200 p-1.5 text-gray-400 hover:border-red-300 hover:bg-red-50 hover:text-red-600"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
                       </div>
-                    </button>
+                    </div>
                   ))
                 ) : (
                   <div className="text-center py-8">
-                    <p className="text-sm text-gray-500">No jobs match your search</p>
+                    <p className="text-sm text-gray-500">
+                      {dashboardJobs.length === 0 ? "No jobs found in the runs table" : "No jobs match your search"}
+                    </p>
                   </div>
                 )}
               </div>
-            </div>
-
-            {/* Drafts Section - Collapsible, expanded by default */}
-            <div className="border-t border-gray-200 pt-3">
-              <button
-                onClick={() => setIsDraftsExpanded(!isDraftsExpanded)}
-                className="w-full flex items-center justify-between hover:bg-gray-50 px-1 py-1.5 rounded transition"
-              >
-                <div className="flex items-center gap-2">
-                  {isDraftsExpanded ? (
-                    <ChevronDown className="h-4 w-4 text-gray-600" />
-                  ) : (
-                    <ChevronRight className="h-4 w-4 text-gray-600" />
-                  )}
-                  <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">Drafts</h3>
-                </div>
-                <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded font-medium">
-                  {draftJobs.length}
-                </span>
-              </button>
-              {isDraftsExpanded && (
-                <div className="space-y-1.5 mt-2">
-                  {draftJobs.map((draft) => (
-                    <button
-                      key={draft.id}
-                      onClick={() => handleOpenTabInPane({ type: "job", name: draft.name, id: draft.name }, "primary")}
-                      className="w-full p-3 rounded-lg transition text-left bg-amber-50 hover:bg-amber-100 border border-amber-200"
-                    >
-                      <p className="text-sm font-medium text-gray-900">{draft.name}</p>
-                      <div className="flex items-center gap-2 mt-2">
-                        <span className={`text-xs font-medium ${getJobTypeColor(draft.type)}`}>{draft.type}</span>
-                        <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold bg-amber-100 text-amber-700">
-                          Draft
-                        </span>
-                        <span className="text-xs text-gray-500">{draft.lastEdited}</span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Retired Jobs Section - Collapsible, collapsed by default */}
-            <div className="border-t border-gray-200 pt-3">
-              <button
-                onClick={() => setIsRetiredJobsExpanded(!isRetiredJobsExpanded)}
-                className="w-full flex items-center justify-between hover:bg-gray-50 px-1 py-1.5 rounded transition"
-              >
-                <div className="flex items-center gap-2">
-                  {isRetiredJobsExpanded ? (
-                    <ChevronDown className="h-4 w-4 text-gray-600" />
-                  ) : (
-                    <ChevronRight className="h-4 w-4 text-gray-600" />
-                  )}
-                  <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">Retired Jobs</h3>
-                </div>
-                <span className="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded font-medium">
-                  {retiredJobs.length}
-                </span>
-              </button>
-              {isRetiredJobsExpanded && (
-                <div className="space-y-1.5 mt-2">
-                  {retiredJobs.map((retired) => (
-                    <button
-                      key={retired.id}
-                      onClick={() => handleOpenTabInPane({ type: "job", name: retired.name, id: retired.name }, "primary")}
-                      className="w-full p-3 rounded-lg transition text-left bg-gray-50 hover:bg-gray-100 border border-gray-300 opacity-75"
-                    >
-                      <p className="text-sm font-medium text-gray-900">{retired.name}</p>
-                      <div className="flex items-center gap-2 mt-2">
-                        <span className="text-xs font-medium text-gray-600">{retired.type}</span>
-                        <span className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold bg-gray-200 text-gray-700">
-                          Retired
-                        </span>
-                        <span className="text-xs text-gray-500">{retired.retiredDate}</span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
             </div>
           </div>
         );
       case "runs":
         return (
           <div className="p-4 space-y-3 flex flex-col h-full overflow-y-auto">
+            {/* Filter header */}
+            {selectedResourceName ? (
+              <div className="flex items-center justify-between gap-2 rounded-lg bg-[#ed0923]/5 border border-[#ed0923]/20 px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-[#ed0923]">Filtered by job</p>
+                  <p className="text-xs font-medium text-gray-800 truncate">{selectedResourceName}</p>
+                </div>
+                <button
+                  onClick={() => setSelectedResourceId(null)}
+                  className="shrink-0 text-[10px] font-medium text-gray-500 hover:text-gray-800 underline"
+                >
+                  Show all
+                </button>
+              </div>
+            ) : (
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">All Runs</p>
+                <p className="text-[10px] text-gray-400">Click a job to filter</p>
+              </div>
+            )}
+
             {/* Upcoming Runs */}
             <div className="space-y-2">
               <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">Upcoming Runs</h3>
               <div className="space-y-1.5">
-                {dashboardRuns.upcomingRuns.map((run) => (
-                  <div key={run.id} className="p-2 rounded-lg bg-gray-50 border border-gray-200 text-left hover:bg-gray-100 transition cursor-pointer">
-                    <p className="text-sm font-medium text-gray-900 truncate">{run.jobName}</p>
-                    <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                      <span className={`inline-flex text-[10px] font-semibold rounded px-1.5 py-0.5 ${getJobTypeColor(run.jobType)}`}>
-                        {run.jobType}
-                      </span>
-                      <span className="text-xs text-gray-500">{formatScheduledTime(run.scheduledTime)}</span>
+                {filteredDashboardRuns.upcomingRuns.length > 0 ? (
+                  filteredDashboardRuns.upcomingRuns.map((run) => (
+                    <div key={run.id} className="p-2 rounded-lg bg-gray-50 border border-gray-200 text-left hover:bg-gray-100 transition cursor-pointer">
+                      <p className="text-sm font-medium text-gray-900 truncate">{run.jobName}</p>
+                      <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                        <span className={`inline-flex text-[10px] font-semibold rounded px-1.5 py-0.5 ${getJobTypeColor(run.jobType)}`}>
+                          {run.jobType}
+                        </span>
+                        <span className={`inline-flex text-[10px] font-semibold rounded px-1.5 py-0.5 ${getRunStatusColor(run.status)}`}>
+                          {run.status === "running" ? "Running" : "Scheduled"}
+                        </span>
+                        <span className="text-xs text-gray-500">{formatScheduledTime(run.scheduledTime)}</span>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))
+                ) : (
+                  <p className="text-xs text-gray-400 py-2 text-center">No upcoming runs</p>
+                )}
               </div>
             </div>
 
@@ -3699,28 +4918,31 @@ export default function UserHome() {
             <div className="space-y-2">
               <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wide">Recent Runs</h3>
               <div className="space-y-1.5">
-                {dashboardRuns.recentRuns.map((run) => (
-                  <button
-                    key={run.id}
-                    onClick={() => handleOpenTabInPane({ type: "job", name: run.jobName, id: run.jobName }, "primary")}
-                    className="w-full p-2 rounded-lg bg-gray-50 border border-gray-200 text-left hover:bg-gray-100 transition"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-gray-900 truncate">{run.jobName}</p>
-                        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                          <span className={`inline-flex text-[10px] font-semibold rounded px-1.5 py-0.5 ${getJobTypeColor(run.jobType)}`}>
-                            {run.jobType}
-                          </span>
-                          <span className={`inline-flex text-[10px] font-semibold rounded px-1.5 py-0.5 ${getRunStatusColor(run.status)}`}>
-                            {run.status === "completed" ? "✓ Completed" : run.status === "failed" ? "✗ Failed" : "..."}
-                          </span>
+                {filteredDashboardRuns.recentRuns.length > 0 ? (
+                  filteredDashboardRuns.recentRuns.map((run) => (
+                    <div
+                      key={run.id}
+                      className="w-full p-2 rounded-lg bg-gray-50 border border-gray-200 text-left"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-900 truncate">{run.jobName}</p>
+                          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                            <span className={`inline-flex text-[10px] font-semibold rounded px-1.5 py-0.5 ${getJobTypeColor(run.jobType)}`}>
+                              {run.jobType}
+                            </span>
+                            <span className={`inline-flex text-[10px] font-semibold rounded px-1.5 py-0.5 ${getRunStatusColor(run.status)}`}>
+                              {run.status === "completed" ? "✓ Completed" : run.status === "failed" ? "✗ Failed" : "..."}
+                            </span>
+                          </div>
                         </div>
+                        <span className="text-xs text-gray-500 whitespace-nowrap">{formatRunTime(run.completedTime || run.scheduledTime)}</span>
                       </div>
-                      <span className="text-xs text-gray-500 whitespace-nowrap">{formatRunTime(run.completedTime || new Date())}</span>
                     </div>
-                  </button>
-                ))}
+                  ))
+                ) : (
+                  <p className="text-xs text-gray-400 py-2 text-center">No recent runs</p>
+                )}
               </div>
             </div>
 
@@ -4318,133 +5540,12 @@ export default function UserHome() {
               <div className="flex-1 flex flex-col overflow-hidden min-h-0">
                 {/* CONTENT PANEL - Form or other workspace content */}
                 {activeTab?.type === "create-job" ? (
-                  <div className="flex-1 min-h-0 overflow-hidden p-4">
-                    <div className="h-full flex flex-col rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-                      {/* Form Content - Scrollable area inside panel */}
-                      <div 
-                        className={`flex-1 min-h-0 overflow-y-auto transition-all relative ${
-                          isDraggingOverWorkspace 
-                            ? isDraggingOverSplitZone === "left" 
-                              ? 'bg-purple-50'
-                              : isDraggingOverSplitZone === "right"
-                              ? 'bg-purple-50'
-                              : 'bg-blue-50'
-                            : ''
-                        }`}
-                        onDragOver={handleWorkspaceDragOver}
-                        onDragLeave={handleWorkspaceDragLeave}
-                        onDrop={handleWorkspaceDrop}
-                      >
-                        {/* Drag and Drop Hint */}
-                        {isDraggingOverWorkspace && (
-                          <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                            {isDraggingOverSplitZone === "left" ? (
-                              <div className="text-center">
-                                <p className="text-lg font-semibold text-purple-900">Drop here to create left split pane</p>
-                                <p className="text-sm text-purple-700 mt-1">This item opens on the left</p>
-                              </div>
-                            ) : isDraggingOverSplitZone === "right" ? (
-                              <div className="text-center">
-                                <p className="text-lg font-semibold text-purple-900">Drop here to create right split pane</p>
-                                <p className="text-sm text-purple-700 mt-1">This item opens on the right</p>
-                              </div>
-                            ) : (
-                              <div className="text-center bg-blue-50/80">
-                                <p className="text-lg font-semibold text-blue-900">Drop job here to open in workspace</p>
-                                <p className="text-sm text-blue-700 mt-1">Center = primary pane | Edges = split pane</p>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                        
-                        {/* Render form without footer */}
-                        <CreateJobForm
-                          hideFooter={true}
-                          draftData={jobDraft}
-                          onDraftDataChange={setJobDraft}
-                          onSubmit={(jobData) => {
-                            console.log("New job created:", jobData);
-                          }}
-                          onCancel={() => handleCloseTabInPane(activeTab.id, "primary")}
-                        />
-                      </div>
-
-                      {/* Form Panel Footer - Inside the bordered panel */}
-                      <div className="flex-shrink-0 border-t border-gray-200 bg-gray-50 px-4 py-4 flex gap-3">
-                        <div className="w-full flex gap-3">
-                          <Button
-                            variant="outline"
-                            onClick={() => handleCloseTabInPane(activeTab.id, "primary")}
-                            className="flex-1"
-                          >
-                            Cancel
-                          </Button>
-                          <Button
-                            onClick={() => {
-                              // Get current form data from jobDraft
-                              const currentTab = workspace.primary.tabs.find(t => t.id === activeTab.id);
-                              if (currentTab && jobDraft.job_type) {
-                                const payload: any = {
-                                  universal: {
-                                    job_name: jobDraft.job_name || "",
-                                    description: jobDraft.description || "",
-                                    owner: jobDraft.owner || "",
-                                    environment: jobDraft.environment || "dev",
-                                    schedule: jobDraft.schedule || "",
-                                    approval_required: jobDraft.approval_required || false,
-                                    tags: jobDraft.tags || [],
-                                    run_type: jobDraft.run_type || "manual",
-                                  },
-                                  job_type: jobDraft.job_type,
-                                  job_details: {},
-                                };
-                                
-                                // Map type-specific fields based on job type
-                                if (jobDraft.job_type === "Airflow") {
-                                  payload.job_details = {
-                                    dag_name: jobDraft.dag_name || "",
-                                    tasks: jobDraft.tasks || [],
-                                    dependencies_between_tasks: jobDraft.dependencies_between_tasks || "",
-                                    scripts_sql: jobDraft.scripts_sql || "",
-                                    data_sources: jobDraft.data_sources || "",
-                                    data_destinations: jobDraft.data_destinations || "",
-                                    retry_policy: jobDraft.retry_policy || "",
-                                    execution_timeout: jobDraft.execution_timeout || "",
-                                  };
-                                } else if (jobDraft.job_type === "Excel") {
-                                  payload.job_details = {
-                                    input_data_sources: jobDraft.input_data_sources || "",
-                                    transformations: jobDraft.transformations || "",
-                                    filters: jobDraft.filters || "",
-                                    pivot_tables: jobDraft.pivot_tables || false,
-                                    formulas: jobDraft.formulas || "",
-                                    output_file_name: jobDraft.output_file_name || "",
-                                    file_location: jobDraft.file_location || "",
-                                  };
-                                } else if (jobDraft.job_type === "PowerPoint") {
-                                  payload.job_details = {
-                                    data_source: jobDraft.data_source || "",
-                                    slide_template: jobDraft.slide_template || "",
-                                    metrics_to_include: jobDraft.metrics_to_include || "",
-                                    charts: jobDraft.charts || "",
-                                    text_summary_placeholder: jobDraft.text_summary || "[AI will generate text summary here]",
-                                    branding_theme: jobDraft.branding_theme || "",
-                                    output_location: jobDraft.output_location || "",
-                                  };
-                                }
-                                
-                                console.log("New job created:", payload);
-                                // Reset and close
-                                setJobDraft({});
-                                handleCloseTabInPane(activeTab.id, "primary");
-                              }
-                            }}
-                            className="flex-1 bg-[#ed0923] hover:bg-[#d10820] text-white"
-                          >
-                            Create Job
-                          </Button>
-                        </div>
-                      </div>
+                  <div className="flex-1 flex items-center justify-center p-8 text-center">
+                    <div className="max-w-sm">
+                      <p className="text-lg font-semibold text-gray-700">Use the AI Chat Assistant</p>
+                      <p className="mt-2 text-sm text-gray-500">
+                        Job creation is handled through the chat panel. Describe the SQL job you want to create and the assistant will guide you.
+                      </p>
                     </div>
                   </div>
                 ) : (
@@ -4525,20 +5626,23 @@ export default function UserHome() {
                       
                       {consoleHeight > 80 && (
                         <div className="flex items-center gap-1 border-l border-gray-300 pl-3">
-                          {["json", "logs", "events"].map((tab) => (
+                          {(["json", "logs", "events", "output"] as const).map((tab) => (
                             <button
                               key={tab}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setConsoleActiveTab(tab as any);
+                                setConsoleActiveTab(tab);
                               }}
-                              className={`px-2.5 py-1 text-xs font-medium rounded transition ${
+                              className={`px-2.5 py-1 text-xs font-medium rounded transition relative ${
                                 consoleActiveTab === tab
                                   ? "text-[#ed0923] bg-[#ed0923]/10"
                                   : "text-gray-600 hover:text-gray-900 hover:bg-gray-100"
                               }`}
                             >
                               {tab.toUpperCase()}
+                              {tab === "output" && getConsoleOutput() && (
+                                <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-green-500" />
+                              )}
                             </button>
                           ))}
                         </div>
@@ -4556,12 +5660,21 @@ export default function UserHome() {
                           </div>
                         )}
                         {consoleActiveTab === "logs" && (
-                          <div className="bg-white rounded border border-gray-200 p-3 space-y-1">
-                            {getConsoleLogs().map((log, idx) => (
-                              <div key={idx} className="text-gray-700 text-xs">
-                                <span className="text-gray-500">{log.time}</span> <span className="text-gray-800">{log.message}</span>
+                          <div className="bg-white rounded border border-gray-200 p-3 space-y-1 font-mono">
+                            {getConsoleLogs().length > 0 ? getConsoleLogs().map((log, idx) => (
+                              <div key={idx} className="flex gap-2 text-xs leading-relaxed">
+                                <span className="text-gray-400 shrink-0">{log.time}</span>
+                                <span className={`shrink-0 font-semibold w-16 ${
+                                  (log as any).level === "ERROR" ? "text-red-600" :
+                                  (log as any).level === "WARNING" ? "text-amber-600" :
+                                  (log as any).level === "DEBUG" ? "text-gray-400" :
+                                  "text-blue-600"
+                                }`}>{(log as any).level ?? "INFO"}</span>
+                                <span className="text-gray-800 break-all">{log.message}</span>
                               </div>
-                            ))}
+                            )) : (
+                              <p className="text-xs text-gray-400 py-2">No logs yet — run a job to see live output here.</p>
+                            )}
                           </div>
                         )}
                         {consoleActiveTab === "events" && (
@@ -4573,6 +5686,9 @@ export default function UserHome() {
                               </div>
                             ))}
                           </div>
+                        )}
+                        {consoleActiveTab === "output" && (
+                          <ConsoleOutputPanel output={getConsoleOutput()} runId={activeRunId} />
                         )}
                       </div>
                     )}
@@ -4857,20 +5973,23 @@ export default function UserHome() {
                       
                       {consoleHeight > 80 && (
                         <div className="flex items-center gap-1 border-l border-gray-300 pl-3">
-                          {["json", "logs", "events"].map((tab) => (
+                          {(["json", "logs", "events", "output"] as const).map((tab) => (
                             <button
                               key={tab}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setConsoleActiveTab(tab as any);
+                                setConsoleActiveTab(tab);
                               }}
-                              className={`px-2.5 py-1 text-xs font-medium rounded transition ${
+                              className={`px-2.5 py-1 text-xs font-medium rounded transition relative ${
                                 consoleActiveTab === tab
                                   ? "text-[#ed0923] bg-[#ed0923]/10"
                                   : "text-gray-600 hover:text-gray-900 hover:bg-gray-100"
                               }`}
                             >
                               {tab.toUpperCase()}
+                              {tab === "output" && getConsoleOutput() && (
+                                <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-green-500" />
+                              )}
                             </button>
                           ))}
                         </div>
@@ -4888,12 +6007,21 @@ export default function UserHome() {
                           </div>
                         )}
                         {consoleActiveTab === "logs" && (
-                          <div className="bg-white rounded border border-gray-200 p-3 space-y-1">
-                            {getConsoleLogs().map((log, idx) => (
-                              <div key={idx} className="text-gray-700 text-xs">
-                                <span className="text-gray-500">{log.time}</span> <span className="text-gray-800">{log.message}</span>
+                          <div className="bg-white rounded border border-gray-200 p-3 space-y-1 font-mono">
+                            {getConsoleLogs().length > 0 ? getConsoleLogs().map((log, idx) => (
+                              <div key={idx} className="flex gap-2 text-xs leading-relaxed">
+                                <span className="text-gray-400 shrink-0">{log.time}</span>
+                                <span className={`shrink-0 font-semibold w-16 ${
+                                  (log as any).level === "ERROR" ? "text-red-600" :
+                                  (log as any).level === "WARNING" ? "text-amber-600" :
+                                  (log as any).level === "DEBUG" ? "text-gray-400" :
+                                  "text-blue-600"
+                                }`}>{(log as any).level ?? "INFO"}</span>
+                                <span className="text-gray-800 break-all">{log.message}</span>
                               </div>
-                            ))}
+                            )) : (
+                              <p className="text-xs text-gray-400 py-2">No logs yet — run a job to see live output here.</p>
+                            )}
                           </div>
                         )}
                         {consoleActiveTab === "events" && (
@@ -4905,6 +6033,9 @@ export default function UserHome() {
                               </div>
                             ))}
                           </div>
+                        )}
+                        {consoleActiveTab === "output" && (
+                          <ConsoleOutputPanel output={getConsoleOutput()} runId={activeRunId} />
                         )}
                       </div>
                     )}
@@ -4927,16 +6058,31 @@ export default function UserHome() {
         {/* Chat Panel - Right Side (Part of Flex Layout) */}
         {isChatPanelOpen && (
           <div style={{ width: `${chatPanelWidth}px`, flexShrink: 0 }}>
-            <ChatPanel 
-              isOpen={isChatPanelOpen} 
-              onClose={() => setIsChatPanelOpen(false)} 
+            <ChatPanel
+              isOpen={isChatPanelOpen}
+              onClose={() => setIsChatPanelOpen(false)}
               onJobCreationIntent={() => {
                 handleOpenTabInPane({ type: "create-job", id: "create-job", name: "Create Job" }, "primary");
-                setJobDraft({});
+                setJobDraft((prev) => (Object.keys(prev).length > 0 ? prev : {}));
               }}
-              onFieldsExtracted={(fields) => setJobDraft((prev) => ({ ...prev, ...fields }))}
+              onFieldsExtracted={handleChatFieldsExtracted}
               currentDraftData={jobDraft}
+              assistantNotices={chatAssistantNotices}
               onConsoleEvent={emitConsoleEvent}
+              resources={jobs.map((r) => ({
+                id: r.id,
+                name: r.name,
+                type: r.type ?? "Custom",
+                connector: r.connector,
+                config: r.config ?? {},
+              }))}
+              onRunStarted={(runId) => {
+                setActiveRunId(runId);
+                setRunLogs([]);
+                setConsoleActiveTab("logs");
+                setConsoleHeight(300);
+                void refreshJobRuns();
+              }}
             />
           </div>
         )}
@@ -5009,6 +6155,187 @@ export default function UserHome() {
             </p>
           </div>
         </div>
+      )}
+
+      {runParamsJob && (
+        <RunParamsModal
+          job={runParamsJob}
+          onClose={() => setRunParamsJob(null)}
+          onSubmit={handleRunParamsSubmit}
+          isSubmitting={false}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Console Output Panel
+// ---------------------------------------------------------------------------
+
+interface OutputData {
+  final_text: string | null;
+  tool_executions: Array<{
+    framework_name?: string;
+    server_name?: string;
+    remote_name?: string;
+    arguments?: Record<string, unknown>;
+    parsed_result?: unknown;
+  }>;
+  result: unknown;
+  error: string | null;
+  status: string | null;
+}
+
+function tryParseRows(value: unknown): Array<Record<string, unknown>> | null {
+  if (Array.isArray(value) && value.length > 0 && typeof value[0] === "object") {
+    return value as Array<Record<string, unknown>>;
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === "object") {
+        return parsed as Array<Record<string, unknown>>;
+      }
+    } catch {
+      // not JSON
+    }
+  }
+  return null;
+}
+
+function ResultTable({ rows }: { rows: Array<Record<string, unknown>> }) {
+  const cols = Array.from(new Set(rows.flatMap((r) => Object.keys(r))));
+  return (
+    <div className="overflow-x-auto rounded border border-gray-200">
+      <table className="text-xs w-full border-collapse">
+        <thead>
+          <tr className="bg-gray-50">
+            {cols.map((c) => (
+              <th key={c} className="px-3 py-1.5 text-left font-semibold text-gray-700 border-b border-gray-200 whitespace-nowrap">
+                {c}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-gray-50"}>
+              {cols.map((c) => (
+                <td key={c} className="px-3 py-1.5 text-gray-800 border-b border-gray-100 whitespace-nowrap max-w-xs truncate">
+                  {row[c] === null || row[c] === undefined ? (
+                    <span className="text-gray-400 italic">null</span>
+                  ) : (
+                    String(row[c])
+                  )}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="px-3 py-1 text-xs text-gray-400 border-t border-gray-200 bg-gray-50">
+        {rows.length} row{rows.length !== 1 ? "s" : ""}
+      </div>
+    </div>
+  );
+}
+
+function ConsoleOutputPanel({ output, runId }: { output: OutputData | null; runId: string | null }) {
+  if (!output && !runId) {
+    return (
+      <p className="text-xs text-gray-400 py-2">No output yet — run a job to see results here.</p>
+    );
+  }
+  if (!output) {
+    return (
+      <p className="text-xs text-gray-400 py-2">Waiting for job to complete…</p>
+    );
+  }
+
+  const rows = tryParseRows(output.result);
+
+  return (
+    <div className="space-y-4 font-sans text-xs">
+      {/* Error */}
+      {output.error && (
+        <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-red-700">
+          <span className="font-semibold">Error: </span>{output.error}
+        </div>
+      )}
+
+      {/* Final text (agent summary) */}
+      {output.final_text && (
+        <div className="rounded border border-gray-200 bg-white px-3 py-2">
+          <p className="text-xs font-semibold text-gray-500 mb-1">Result</p>
+          <p className="whitespace-pre-wrap text-gray-900 leading-relaxed">{output.final_text}</p>
+        </div>
+      )}
+
+      {/* GitHub write result */}
+      {!output.final_text && rows === null && output.result && (
+        <div className="rounded border border-gray-200 bg-white px-3 py-2">
+          <p className="text-xs font-semibold text-gray-500 mb-1">Result</p>
+          <pre className="whitespace-pre-wrap text-gray-900">{JSON.stringify(output.result, null, 2)}</pre>
+        </div>
+      )}
+
+      {/* Direct result as table */}
+      {rows && (
+        <div>
+          <p className="text-xs font-semibold text-gray-500 mb-1">Query Results</p>
+          <ResultTable rows={rows} />
+        </div>
+      )}
+
+      {/* Tool executions */}
+      {output.tool_executions.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-gray-500">Tool Executions ({output.tool_executions.length})</p>
+          {output.tool_executions.map((te, i) => {
+            const teRows = tryParseRows(te.parsed_result);
+            return (
+              <div key={i} className="rounded border border-gray-200 bg-gray-50 px-3 py-2 space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-gray-700">{te.remote_name ?? te.framework_name ?? "tool"}</span>
+                  {te.server_name && (
+                    <span className="text-gray-400">({te.server_name})</span>
+                  )}
+                </div>
+                {te.arguments && Object.keys(te.arguments).length > 0 && (
+                  <div>
+                    <p className="text-gray-400 mb-0.5">Arguments</p>
+                    <pre className="bg-white rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 whitespace-pre-wrap overflow-x-auto">
+                      {JSON.stringify(te.arguments, null, 2)}
+                    </pre>
+                  </div>
+                )}
+                {teRows ? (
+                  <div>
+                    <p className="text-gray-400 mb-0.5">Result</p>
+                    <ResultTable rows={teRows} />
+                  </div>
+                ) : te.parsed_result !== undefined && te.parsed_result !== null ? (
+                  <div>
+                    <p className="text-gray-400 mb-0.5">Result</p>
+                    <pre className="bg-white rounded border border-gray-200 px-2 py-1 text-xs text-gray-700 whitespace-pre-wrap overflow-x-auto">
+                      {typeof te.parsed_result === "string"
+                        ? te.parsed_result
+                        : JSON.stringify(te.parsed_result, null, 2)}
+                    </pre>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Empty state when run succeeded but no output captured */}
+      {!output.error && !output.final_text && output.tool_executions.length === 0 && !output.result && (
+        <p className="text-xs text-gray-400 py-2">
+          Job completed but produced no captured output.
+        </p>
       )}
     </div>
   );
