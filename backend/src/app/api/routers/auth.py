@@ -16,7 +16,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     return {
         "access_token": user.id,
         "token_type": "bearer",
-        "user": user,
+        "user": user,  # User object includes role, domain, and name
     }
 
 

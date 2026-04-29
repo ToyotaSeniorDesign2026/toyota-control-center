@@ -1,7 +1,7 @@
 """add user settings fields for account preferences and profile customization
 
-Revision ID: 20260429_000005
-Revises: 20260328_000004
+Revision ID: 20260429_000007
+Revises: 20260425_000006
 Create Date: 2026-04-29 00:00:05
 """
 from __future__ import annotations
@@ -10,8 +10,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "20260429_000005"
-down_revision = "20260328_000004"
+revision = "20260429_000007"
+down_revision = "20260425_000006"
 branch_labels = None
 depends_on = None
 

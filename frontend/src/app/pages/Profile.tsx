@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { ArrowLeft, Upload, Check, Copy } from "lucide-react";
+import { ArrowLeft, Upload, Check } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { useNavigate } from "react-router";
 import { useUser } from "../contexts/UserContext";
@@ -43,10 +43,6 @@ export default function Profile() {
   const [manager, setManager] = useState(profile.manager);
   const [employeeId, setEmployeeId] = useState(profile.employeeId);
 
-  // CLI Token State
-  const [cliToken, setCliToken] = useState(profile.cliToken);
-  const [copiedCliToken, setCopiedCliToken] = useState(false);
-
   // UI State
   const [isSavingPicture, setIsSavingPicture] = useState(false);
   const [isSavingBasicInfo, setIsSavingBasicInfo] = useState(false);
@@ -70,7 +66,6 @@ export default function Profile() {
     setTeam(profile.team);
     setManager(profile.manager);
     setEmployeeId(profile.employeeId);
-    setCliToken(profile.cliToken);
   }, [profile]);
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -185,13 +180,7 @@ export default function Profile() {
     }
   };
 
-  const handleCopyCliToken = () => {
-    if (cliToken) {
-      navigator.clipboard.writeText(cliToken);
-      setCopiedCliToken(true);
-      setTimeout(() => setCopiedCliToken(false), 2000);
-    }
-  };
+
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -542,41 +531,55 @@ export default function Profile() {
           </div>
         </section>
 
-        {/* CLI Access Token Section */}
-        <section className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
+        {/* Control Center CLI Installation Section */}
+        <section className="rounded-lg border border-gray-700 bg-gray-900 p-6 shadow-sm">
           <div className="mb-6">
-            <h2 className="text-lg font-semibold text-gray-900">
-              CLI Access Token
+            <h2 className="text-lg font-semibold text-white">
+              Control Center CLI
             </h2>
-            <p className="mt-1 text-sm text-gray-600">
-              Use this token to authenticate with the command-line interface
+            <p className="mt-1 text-sm text-gray-400">
+              Install the Control Center CLI to manage jobs directly from your terminal.
             </p>
           </div>
 
-          <div className="space-y-4">
+          <div className="space-y-6">
+            {/* Installation Instructions */}
             <div>
-              <label className="text-sm font-semibold text-gray-900">
-                Your CLI Token
+              <label className="text-sm font-semibold text-white">
+                Installation
               </label>
-              <div className="mt-2 flex items-center gap-2">
-                <input
-                  type="text"
-                  value={cliToken || ""}
-                  disabled
-                  className="flex-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-500 cursor-not-allowed font-mono"
-                />
-                <button
-                  onClick={handleCopyCliToken}
-                  className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
-                  title="Copy to clipboard"
-                >
-                  <Copy className="h-4 w-4" />
-                  {copiedCliToken ? "Copied!" : "Copy"}
-                </button>
+              <p className="mt-2 text-sm text-gray-300">
+                Install the Control Center CLI to manage jobs from your terminal:
+              </p>
+              <div className="mt-3 rounded-lg bg-gray-800 p-4 border border-gray-700">
+                <code className="text-sm font-mono text-emerald-400">
+                  npm install -g @control-center/cli
+                </code>
               </div>
               <p className="mt-2 text-xs text-gray-500">
-                Keep this token secure. Use it to authenticate CLI commands by setting it in your environment or configuration file.
+                Works from any directory after installation. Run <code className="text-gray-300 font-mono">cc --help</code> to see available commands.
               </p>
+            </div>
+
+            {/* Getting Started */}
+            <div>
+              <label className="text-sm font-semibold text-white">
+                Getting Started
+              </label>
+              <p className="mt-2 text-sm text-gray-300">
+                After installing, run <code className="text-gray-300 font-mono">cc login</code> to connect your account. You'll be prompted for your email.
+              </p>
+            </div>
+
+            {/* Documentation Link */}
+            <div className="pt-2">
+              <a
+                href="#"
+                className="inline-flex items-center gap-2 rounded-lg bg-blue-600 hover:bg-blue-700 px-4 py-2 text-sm font-medium text-white transition-colors"
+              >
+                View CLI Documentation
+                <ArrowLeft className="h-4 w-4 rotate-180" />
+              </a>
             </div>
           </div>
         </section>

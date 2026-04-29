@@ -1,4 +1,4 @@
-import { X, Shield, Check, AlertCircle, Copy, Download, LogOut, ChevronDown, Globe, Bell, Moon, Settings, User, Key } from "lucide-react";
+import { X, Shield, Check, AlertCircle, Download, LogOut, ChevronDown, Globe, Bell, Moon, Settings, User, Key } from "lucide-react";
 import { Button } from "../ui/button";
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router";
@@ -29,7 +29,6 @@ export function UserProfilePanel({ isOpen, onClose }: UserProfilePanelProps) {
   const [timezone, setTimezone] = useState("UTC-8 (Pacific)");
   
   // UI state
-  const [copied, setCopied] = useState(false);
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -84,49 +83,6 @@ export function UserProfilePanel({ isOpen, onClose }: UserProfilePanelProps) {
     } finally {
       setIsSaving(false);
     }
-  };
-
-  const handleCopyToken = () => {
-    const token = profile.accessToken || "cc_prod_a7b3f9e2d4c8k1m5n6p8q9r2s4t7v8w1";
-    
-    // Try modern clipboard API first
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(token).catch(() => {
-        // Fallback to older method if clipboard API fails
-        fallbackCopyTextToClipboard(token);
-      });
-    } else {
-      // Use fallback for browsers that don't support clipboard API
-      fallbackCopyTextToClipboard(token);
-    }
-    
-    // Show copied notification
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  const fallbackCopyTextToClipboard = (text: string) => {
-    const textArea = document.createElement("textarea");
-    textArea.value = text;
-    textArea.style.position = "fixed";
-    textArea.style.top = "0";
-    textArea.style.left = "0";
-    textArea.style.width = "2em";
-    textArea.style.height = "2em";
-    textArea.style.padding = "0";
-    textArea.style.border = "none";
-    textArea.style.outline = "none";
-    textArea.style.boxShadow = "none";
-    textArea.style.background = "transparent";
-    document.body.appendChild(textArea);
-    textArea.focus();
-    textArea.select();
-    try {
-      document.execCommand("copy");
-    } catch (err) {
-      console.error("Failed to copy text: ", err);
-    }
-    document.body.removeChild(textArea);
   };
 
   const handleViewProfile = () => {
@@ -486,60 +442,45 @@ export function UserProfilePanel({ isOpen, onClose }: UserProfilePanelProps) {
 
           <div className="border-t border-gray-200" />
 
-          {/* CLI Access */}
+          {/* Control Center CLI Installation */}
           <section>
             <h4 className="text-sm font-semibold text-gray-900 mb-3">
-              CLI Access
+              Control Center CLI
             </h4>
             <div className="space-y-3">
-              {/* Token */}
-              <div>
-                <label className="text-xs font-medium text-gray-600 uppercase tracking-wider">
-                  Access Token
-                </label>
-                <div className="mt-1.5 flex items-center gap-2">
-                  <div className="flex-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
-                    <code className="text-xs font-mono text-gray-600">
-                      {profile.accessToken ? `${profile.accessToken.substring(0, 8)}...${profile.accessToken.substring(profile.accessToken.length - 8)}` : "cc_prod_a7b3f9e2d4c8..."}
-                    </code>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleCopyToken}
-                    className="h-9 gap-2"
-                  >
-                    <Copy className="h-3.5 w-3.5" />
-                    Copy
-                  </Button>
-                </div>
-                <p className="mt-1.5 text-xs text-gray-500">
-                  Use this token to authenticate CLI commands
-                </p>
-                {copied && (
-                  <p className="mt-1 text-xs text-green-600">
-                    Copied to clipboard!
-                  </p>
-                )}
-              </div>
-
               {/* CLI Install */}
-              <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
-                <div className="flex items-start gap-2">
-                  <Download className="h-4 w-4 text-blue-600 mt-0.5" />
-                  <div className="flex-1">
-                    <p className="text-sm font-medium text-blue-900">
-                      Install Control Center CLI
+              <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+                <div className="space-y-3">
+                  <div>
+                    <p className="text-xs font-medium text-gray-600 uppercase tracking-wider">
+                      Installation
                     </p>
-                    <p className="mt-1 text-xs text-blue-700">
-                      npm install -g @control-center/cli
+                    <p className="mt-2 text-xs text-gray-700">
+                      Install the Control Center CLI to manage jobs from your terminal:
                     </p>
-                    <a
-                      href="#"
-                      className="mt-2 inline-block text-xs font-medium text-[#ed0923] hover:text-[#b8071c]"
-                    >
-                      View documentation →
-                    </a>
+                    <div className="mt-2 rounded-lg bg-gray-100 p-3 border border-gray-200 font-mono">
+                      <code className="text-xs text-gray-800">
+                        npm install -g @control-center/cli
+                      </code>
+                    </div>
+                    <p className="mt-2 text-xs text-gray-600">
+                      Works from any directory after installation. Run <code className="text-gray-700 font-mono">cc --help</code> to see available commands.
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-xs font-medium text-gray-600 uppercase tracking-wider">
+                      Getting Started
+                    </p>
+                    <p className="mt-2 text-xs text-gray-700">
+                      After installing, run <code className="text-gray-700 font-mono">cc login</code> to connect your account.
+                    </p>
+                  </div>
+
+                  <div className="pt-1">
+                    <p className="text-xs text-gray-700">
+                      For more commands, run <code className="font-mono text-gray-800">cc --help</code> in your terminal.
+                    </p>
                   </div>
                 </div>
               </div>

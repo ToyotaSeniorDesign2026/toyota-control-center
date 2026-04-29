@@ -6,22 +6,68 @@ import {
   FileText,
   XCircle,
 } from "lucide-react";
+import { useState, useEffect } from "react";
 
 interface JobsSidebarProps {
   activeFilter: FilterType;
   onFilterChange: (filter: FilterType) => void;
 }
 
+interface Counts {
+  all: number;
+  high_risk: number;
+  failed: number;
+  needs_approval: number;
+  recently_updated: number;
+}
+
 export function JobsSidebar({
   activeFilter,
   onFilterChange,
 }: JobsSidebarProps) {
+  const [counts, setCounts] = useState<Counts>({
+    all: 0,
+    high_risk: 0,
+    failed: 0,
+    needs_approval: 0,
+    recently_updated: 0,
+  });
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchCounts = async () => {
+      try {
+        const token = typeof window !== "undefined" ? window.localStorage.getItem("control-center-auth-token") : null;
+        const headers: HeadersInit = {};
+        if (token) {
+          headers["Authorization"] = `Bearer ${token}`;
+        }
+        const response = await fetch(
+          "http://localhost:8000/analytics/jobs/counts",
+          {
+            headers,
+          }
+        );
+        if (!response.ok) {
+          throw new Error("Failed to fetch counts");
+        }
+        const data = await response.json();
+        setCounts(data);
+      } catch (err) {
+        console.error("Error fetching counts:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchCounts();
+  }, []);
+
   const filters = [
-    { id: "all" as FilterType, label: "All Jobs", icon: FileText, count: 148 },
-    { id: "high-risk" as FilterType, label: "High Risk", icon: AlertTriangle, count: 12 },
-    { id: "failed" as FilterType, label: "Failed", icon: XCircle, count: 3 },
-    { id: "needs-approval" as FilterType, label: "Needs Approval", icon: Clock, count: 7 },
-    { id: "recent" as FilterType, label: "Recently Updated", icon: FileText, count: 18 },
+    { id: "all" as FilterType, label: "All Jobs", icon: FileText, count: counts.all },
+    { id: "high-risk" as FilterType, label: "High Risk", icon: AlertTriangle, count: counts.high_risk },
+    { id: "failed" as FilterType, label: "Failed", icon: XCircle, count: counts.failed },
+    { id: "needs-approval" as FilterType, label: "Needs Approval", icon: Clock, count: counts.needs_approval },
+    { id: "recent" as FilterType, label: "Recently Updated", icon: FileText, count: counts.recently_updated },
   ];
 
   return (

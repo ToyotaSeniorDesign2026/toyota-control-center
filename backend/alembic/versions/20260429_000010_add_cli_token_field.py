@@ -1,7 +1,7 @@
 """Add CLI token field to users table.
 
-Revision ID: 20260429_000008
-Revises: 20260429_000007
+Revision ID: 20260429_000010
+Revises: 20260429_000009
 Create Date: 2026-04-29 00:00:00.000000
 
 """
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = "20260429_000008"
-down_revision = "20260429_000007"
+revision = "20260429_000010"
+down_revision = "20260429_000009"
 branch_labels = None
 depends_on = None
 

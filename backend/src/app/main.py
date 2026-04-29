@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 
 _logger = logging.getLogger(__name__)
 
-from app.api.routers import audit, auth, chat, connectors, integrations, job_types, jobs, policy, runs
+from app.api.routers import admin, audit, auth, chat, connectors, integrations, job_types, jobs, policy, runs
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.logging import setup_logging
@@ -47,6 +47,7 @@ def create_app() -> FastAPI:
     app.include_router(runs.router, prefix="/runs", tags=["run-orchestration"])
 
     app.include_router(policy.router, prefix="/policy", tags=["policy"])
+    app.include_router(admin.router)
     app.include_router(audit.router, prefix="/audit", tags=["audit"])
     app.include_router(integrations.router, prefix="/integrations", tags=["integrations"])
     app.include_router(chat.router, prefix="/api/chat", tags=["chat"])

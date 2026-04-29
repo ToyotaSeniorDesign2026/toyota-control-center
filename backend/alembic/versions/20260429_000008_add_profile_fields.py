@@ -1,7 +1,7 @@
 """add_profile_fields
 
-Revision ID: 20260429_000006
-Revises: 20260429_000005
+Revision ID: 20260429_000008
+Revises: 20260429_000007
 Create Date: 2026-04-29 00:00:00.000000
 
 """
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = "20260429_000006"
-down_revision = "20260429_000005"
+revision = "20260429_000008"
+down_revision = "20260429_000007"
 branch_labels = None
 depends_on = None
 

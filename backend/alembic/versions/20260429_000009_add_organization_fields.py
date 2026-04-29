@@ -1,7 +1,7 @@
 """Add organization and team information fields to users table.
 
-Revision ID: 20260429_000007
-Revises: 20260429_000006
+Revision ID: 20260429_000009
+Revises: 20260429_000008
 Create Date: 2026-04-29 00:00:00.000000
 
 """
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = "20260429_000007"
-down_revision = "20260429_000006"
+revision = "20260429_000009"
+down_revision = "20260429_000008"
 branch_labels = None
 depends_on = None
 
