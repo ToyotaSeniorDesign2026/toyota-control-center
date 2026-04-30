@@ -1754,10 +1754,26 @@ export default function UserHome() {
     handleCloseTabInPane(promotionId, "primary");
   };
 
+  const clearWorkspaceDragState = () => {
+    setIsDraggingOverWorkspace(false);
+    setIsDraggingOverSplitZone(false);
+    setIsDraggingOverPane(false);
+  };
+
   // Drag and drop handlers
-  const handleJobDragStart = (e: React.DragEvent<HTMLButtonElement>, jobName: string) => {
+  const setDragPayload = (
+    e: React.DragEvent<HTMLElement>,
+    payload: Record<string, unknown>,
+    fallbackLabel: string,
+  ) => {
     e.dataTransfer.effectAllowed = "copy";
-    e.dataTransfer.setData("application/json", JSON.stringify({ type: "job", id: jobName, name: jobName }));
+    e.dataTransfer.setData("application/json", JSON.stringify(payload));
+    e.dataTransfer.setData("text/plain", fallbackLabel);
+    e.dataTransfer.setData("text/x-control-center-item", JSON.stringify(payload));
+  };
+
+  const handleJobDragStart = (e: React.DragEvent<HTMLButtonElement>, jobName: string) => {
+    setDragPayload(e, { type: "job", id: jobName, name: jobName }, jobName);
   };
 
   const handleWorkspaceDragOver = (e: React.DragEvent<HTMLDivElement>) => {
@@ -1794,15 +1810,12 @@ export default function UserHome() {
 
   const handleWorkspaceDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
     if (e.currentTarget === e.target) {
-      setIsDraggingOverWorkspace(false);
-      setIsDraggingOverSplitZone(false);
-      setIsDraggingOverPane(false);
+      clearWorkspaceDragState();
     }
   };
 
   const handleRequiredActionDragStart = (e: React.DragEvent<HTMLButtonElement>, actionId: string, subject: string) => {
-    e.dataTransfer.effectAllowed = "copy";
-    e.dataTransfer.setData("application/json", JSON.stringify({ type: "required-action", id: actionId, name: subject }));
+    setDragPayload(e, { type: "required-action", id: actionId, name: subject }, subject);
   };
 
   const handleTemplateDragStart = (
@@ -1811,18 +1824,16 @@ export default function UserHome() {
     templateName: string,
     metadata?: Record<string, unknown>
   ) => {
-    e.dataTransfer.effectAllowed = "copy";
-    e.dataTransfer.setData(
-      "application/json",
-      JSON.stringify({ type: "template", id: templateId, name: templateName, ...metadata })
+    setDragPayload(
+      e,
+      { type: "template", id: templateId, name: templateName, ...metadata },
+      templateName
     );
   };
 
   const handleWorkspaceDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
-    setIsDraggingOverWorkspace(false);
-    setIsDraggingOverSplitZone(false);
-    setIsDraggingOverPane(false);
+    clearWorkspaceDragState();
 
     try {
       const data = e.dataTransfer.getData("application/json");
@@ -1877,9 +1888,24 @@ export default function UserHome() {
     }
   };
 
+  useEffect(() => {
+    const handleGlobalDragEnd = () => {
+      clearWorkspaceDragState();
+    };
+
+    window.addEventListener("dragend", handleGlobalDragEnd);
+    window.addEventListener("drop", handleGlobalDragEnd);
+
+    return () => {
+      window.removeEventListener("dragend", handleGlobalDragEnd);
+      window.removeEventListener("drop", handleGlobalDragEnd);
+    };
+  }, []);
+
   // Resize handlers
   const handleResizeMouseDown = (panelType: "jobs" | "workspace" | "chat") => (e: React.MouseEvent) => {
     e.preventDefault();
+    lastResizeX.current = e.clientX;
     setIsResizing(panelType);
   };
 
@@ -1893,7 +1919,16 @@ export default function UserHome() {
       if (isResizing === "jobs") {
         setJobsPanelWidth((prev) => Math.max(220, prev + delta));
       } else if (isResizing === "chat") {
-        setChatPanelWidth((prev) => Math.max(280, prev - delta));
+        setChatPanelWidth((prev) => {
+          const viewportWidth = window.innerWidth;
+          const leftPanelWidth = activePanelId ? jobsPanelWidth : 0;
+          const workspaceFloor = 120;
+          const maxAllowedWidth = Math.max(
+            280,
+            viewportWidth - ICON_RAIL_WIDTH - leftPanelWidth - RESIZE_HANDLE_WIDTH * 2 - workspaceFloor,
+          );
+          return Math.min(Math.max(280, prev - delta), maxAllowedWidth);
+        });
       } else if (isResizing === "workspace") {
         setWorkspacePaneAWidth((prev) => Math.max(350, prev + delta));
       }
@@ -1911,7 +1946,7 @@ export default function UserHome() {
       document.removeEventListener("mousemove", handleMouseMove);
       document.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [isResizing]);
+  }, [activePanelId, isResizing, jobsPanelWidth]);
 
   useEffect(() => {
     const syncResponsiveLayout = () => {
@@ -1921,13 +1956,13 @@ export default function UserHome() {
 
       const jobsFloor = viewportWidth < 1100 ? 180 : 220;
       const chatFloor = viewportWidth < 1100 ? 240 : 280;
-      const workspaceFloor = viewportWidth < 1100 ? 320 : viewportWidth < 1360 ? 420 : 560;
+      const workspaceFloor = 120;
 
       let nextJobsWidth = isLeftPanelOpen
         ? Math.min(Math.max(jobsPanelWidth, jobsFloor), Math.min(360, Math.floor(viewportWidth * 0.3)))
         : 0;
       let nextChatWidth = isChatOpen
-        ? Math.min(Math.max(chatPanelWidth, chatFloor), Math.min(420, Math.floor(viewportWidth * 0.34)))
+        ? Math.max(chatPanelWidth, chatFloor)
         : 0;
 
       const handleCount = (isLeftPanelOpen ? 1 : 0) + (isChatOpen ? 1 : 0);
@@ -3663,7 +3698,18 @@ export default function UserHome() {
         ) : tab.type === "template" && currentTemplate && currentTemplate.route === "/forms/new" ? (
           renderEmbeddedBlankFormChooser()
         ) : tab.type === "template" && currentTemplate && currentTemplate.route === "/excel-report" ? (
-          <div className="mx-auto max-w-[1600px] px-6 py-8">
+          <div
+            className="mx-auto max-w-[1600px] px-6 py-8 cursor-grab active:cursor-grabbing"
+            draggable
+            onDragStart={(e) =>
+              handleTemplateDragStart(e, currentTemplate.id, currentTemplate.name, {
+                category: currentTemplate.category,
+                description: currentTemplate.description,
+                origin: "embedded-form",
+                route: currentTemplate.route,
+              })
+            }
+          >
             <ExcelReportForm
               embedded
               initialData={"draft" in currentTemplate ? currentTemplate.draft : undefined}
@@ -3675,7 +3721,18 @@ export default function UserHome() {
             />
           </div>
         ) : tab.type === "template" && currentTemplate && currentTemplate.route === "/sql-job" ? (
-          <div className="mx-auto max-w-[1600px] px-6 py-8">
+          <div
+            className="mx-auto max-w-[1600px] px-6 py-8 cursor-grab active:cursor-grabbing"
+            draggable
+            onDragStart={(e) =>
+              handleTemplateDragStart(e, currentTemplate.id, currentTemplate.name, {
+                category: currentTemplate.category,
+                description: currentTemplate.description,
+                origin: "embedded-form",
+                route: currentTemplate.route,
+              })
+            }
+          >
             <SQLJobForm
               embedded
               initialData={"draft" in currentTemplate ? currentTemplate.draft : undefined}
@@ -3687,7 +3744,18 @@ export default function UserHome() {
             />
           </div>
         ) : tab.type === "template" && currentTemplate && currentTemplate.route === "/powerpoint" ? (
-          <div className="mx-auto max-w-[1600px] px-6 py-8">
+          <div
+            className="mx-auto max-w-[1600px] px-6 py-8 cursor-grab active:cursor-grabbing"
+            draggable
+            onDragStart={(e) =>
+              handleTemplateDragStart(e, currentTemplate.id, currentTemplate.name, {
+                category: currentTemplate.category,
+                description: currentTemplate.description,
+                origin: "embedded-form",
+                route: currentTemplate.route,
+              })
+            }
+          >
             <PowerPointForm
               embedded
               initialData={"draft" in currentTemplate ? currentTemplate.draft : undefined}
@@ -6061,6 +6129,7 @@ export default function UserHome() {
             <ChatPanel
               isOpen={isChatPanelOpen}
               onClose={() => setIsChatPanelOpen(false)}
+              onExternalDragEnter={clearWorkspaceDragState}
               onJobCreationIntent={() => {
                 handleOpenTabInPane({ type: "create-job", id: "create-job", name: "Create Job" }, "primary");
                 setJobDraft((prev) => (Object.keys(prev).length > 0 ? prev : {}));

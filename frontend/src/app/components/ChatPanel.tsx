@@ -89,6 +89,7 @@ interface ChatPanelProps {
   onFieldsExtracted?: (fields: Record<string, any>) => void;
   currentDraftData?: Record<string, any>;
   assistantNotices?: Array<{ id: string; content: string }>;
+  onExternalDragEnter?: () => void;
   onConsoleEvent?: (
     type: "intent_detected" | "draft_created" | "extracted_fields" | "draft_updated" | "missing_fields_identified",
     message: string,
@@ -198,7 +199,7 @@ const mockChatHistory: ChatThread[] = [
 ];
 
 
-export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtracted, currentDraftData, assistantNotices, onConsoleEvent, resources, onRunStarted }: ChatPanelProps) {
+export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtracted, currentDraftData, assistantNotices, onExternalDragEnter, onConsoleEvent, resources, onRunStarted }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [inputValue, setInputValue] = useState("");
   const [showHistory, setShowHistory] = useState(false);
@@ -651,6 +652,7 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
   const handleInputDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
+    onExternalDragEnter?.();
     setIsDragOverInput(true);
   };
 
@@ -663,13 +665,17 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
   const handleInputDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
+    onExternalDragEnter?.();
     setIsDragOverInput(false);
+
+    const serializedPayload =
+      e.dataTransfer.getData("application/json") ||
+      e.dataTransfer.getData("text/x-control-center-item");
 
     // Try to extract job or template data from the drag event
     try {
-      const jobData = e.dataTransfer.getData("application/json");
-      if (jobData) {
-        const parsed = JSON.parse(jobData);
+      if (serializedPayload) {
+        const parsed = JSON.parse(serializedPayload);
         const name = parsed.name || parsed.jobName || parsed.title;
         
         if (name) {
@@ -726,7 +732,12 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
 
   // Always render as a layout element with conditional width
   return (
-    <aside className="flex-shrink-0 bg-white border-l border-gray-200 flex flex-col overflow-hidden w-full h-full">
+    <aside
+      className="flex-shrink-0 bg-white border-l border-gray-200 flex flex-col overflow-hidden w-full h-full"
+      onDragOver={handleInputDragOver}
+      onDragLeave={handleInputDragLeave}
+      onDrop={handleInputDrop}
+    >
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-4 border-b-2 border-gray-100 bg-gradient-to-r from-gray-50 to-white flex-shrink-0">
         <div className="flex items-center gap-3">
