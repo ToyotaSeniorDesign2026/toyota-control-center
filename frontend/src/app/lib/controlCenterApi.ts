@@ -136,6 +136,61 @@ export interface MCPConnectionBundleListResponse {
   items: MCPConnectionBundleSummary[];
 }
 
+export interface UserRecord {
+  id: string;
+  email: string;
+  name?: string;
+  domain: string;
+  role: string;
+  active?: boolean;
+  is_active?: boolean;
+}
+
+export interface PolicyCheckResult {
+  id: string;
+  evaluation_id: string;
+  check_name: string;
+  category: string;
+  result: string;
+  reason: string;
+  severity: string;
+  weight: number;
+  threshold?: string | null;
+  actual_value?: string | null;
+}
+
+export interface PolicyEvaluation {
+  evaluation_id: string;
+  run_id: string;
+  policy_version: string;
+  overall_status: string;
+  risk_score: number;
+  risk_level: string;
+  requires_approval: boolean;
+  evaluated_at: string;
+  checks: PolicyCheckResult[];
+}
+
+export interface ApprovalRecord {
+  id: string;
+  run_id: string;
+  status: string;
+  requested_by: string;
+  reviewer_id?: string | null;
+  risk_level: string;
+  comment?: string | null;
+  created_at: string;
+  reviewed_at?: string | null;
+}
+
+export interface AuditEventRecord {
+  id: string;
+  actor_id?: string | null;
+  action: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8000";
 const AUTH_TOKEN_KEY = "control-center-auth-token";
 
@@ -251,6 +306,53 @@ export function listMcpServers(token?: string | null) {
 export function listMcpRepoBundles(environment = "dev", token?: string | null) {
   const query = new URLSearchParams({ environment });
   return request<MCPConnectionBundleListResponse>(`/integrations/mcp/repo-bundles?${query.toString()}`, {}, token);
+}
+
+export function getCurrentUser(token?: string | null) {
+  return request<UserRecord>("/auth/me", {}, token);
+}
+
+export function updateCurrentUser(payload: { name?: string; email?: string }, token?: string | null) {
+  return request<UserRecord>(
+    "/auth/me",
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
+    token,
+  );
+}
+
+export function getPolicyChecks(runId: string, token?: string | null) {
+  return request<PolicyEvaluation | null>(`/policy/runs/${runId}/checks`, {}, token);
+}
+
+export function listApprovals(status?: string, token?: string | null) {
+  const query = new URLSearchParams();
+  query.set("limit", "200");
+  if (status) {
+    query.set("status", status);
+  }
+  return request<ApprovalRecord[]>(`/policy/approvals?${query.toString()}`, {}, token);
+}
+
+export function approveApproval(approvalId: string, token?: string | null) {
+  return request<ApprovalRecord>(`/policy/approvals/${approvalId}/approve`, { method: "POST" }, token);
+}
+
+export function rejectApproval(approvalId: string, comment?: string, token?: string | null) {
+  return request<ApprovalRecord>(
+    `/policy/approvals/${approvalId}/reject`,
+    {
+      method: "POST",
+      body: JSON.stringify({ comment }),
+    },
+    token,
+  );
+}
+
+export function listAuditEvents(limit = 200, token?: string | null) {
+  return request<AuditEventRecord[]>(`/audit/events?limit=${limit}`, {}, token);
 }
 
 export interface RunLogEntry {

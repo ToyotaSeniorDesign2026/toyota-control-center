@@ -26,6 +26,7 @@ import RequiredActionForm from "./pages/RequiredActionForm";
 import RequiredActions from "./pages/RequiredActions";
 import CreateJob from "./pages/CreateJob";
 import Connectors from "./pages/Connectors";
+import Admin from "./pages/Admin";
 
 // Create the router with all routes
 export const router = createBrowserRouter([
@@ -147,12 +148,7 @@ export const router = createBrowserRouter([
       },
       {
         path: "admin",
-        Component: () => (
-          <div className="p-8">
-            <h1 className="text-2xl font-bold text-gray-900">Admin</h1>
-            <p className="mt-2 text-gray-600">Coming soon...</p>
-          </div>
-        ),
+        Component: Admin,
       },
     ],
   },

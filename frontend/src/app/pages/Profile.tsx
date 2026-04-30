@@ -3,6 +3,7 @@ import { ArrowLeft, Upload, Check } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { useNavigate } from "react-router";
 import { useUser } from "../contexts/UserContext";
+import { getCurrentUser, updateCurrentUser } from "../lib/controlCenterApi";
 
 const defaultAvatarColors = [
   { name: "Blue", color: "bg-blue-500" },
@@ -18,6 +19,8 @@ const defaultAvatarColors = [
 export default function Profile() {
   const navigate = useNavigate();
   const { profile, updateProfile } = useUser();
+  const [backendNotice, setBackendNotice] = useState<string | null>(null);
+  const [loadingBackendProfile, setLoadingBackendProfile] = useState(true);
   
   // Profile Picture State
   const [avatarType, setAvatarType] = useState<"color" | "upload">(profile.avatarType);
@@ -59,6 +62,48 @@ export default function Profile() {
     setEmployeeId(profile.employeeId);
   }, [profile]);
 
+  useEffect(() => {
+    let ignore = false;
+
+    const loadBackendProfile = async () => {
+      setLoadingBackendProfile(true);
+      try {
+        const currentUser = await getCurrentUser();
+        if (ignore) return;
+
+        const nameParts = currentUser.name.trim().split(/\s+/);
+        const derivedFirstName = nameParts[0] ?? profile.firstName;
+        const derivedLastName = nameParts.slice(1).join(" ") || profile.lastName;
+        const derivedInitials = `${derivedFirstName[0] ?? ""}${derivedLastName[0] ?? ""}`.toUpperCase() || profile.initials;
+
+        updateProfile({
+          firstName: derivedFirstName,
+          lastName: derivedLastName,
+          email: currentUser.email,
+          department: currentUser.domain,
+          employeeId: currentUser.id,
+          jobTitle: currentUser.role.replaceAll("_", " "),
+          initials: derivedInitials,
+        });
+        setBackendNotice("Identity fields are loading from the backend. Profile edits still require backend update endpoints before they can be saved permanently.");
+      } catch {
+        if (!ignore) {
+          setBackendNotice("Could not load backend profile details. Showing local profile defaults.");
+        }
+      } finally {
+        if (!ignore) {
+          setLoadingBackendProfile(false);
+        }
+      }
+    };
+
+    void loadBackendProfile();
+
+    return () => {
+      ignore = true;
+    };
+  }, []);
+
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -78,19 +123,39 @@ export default function Profile() {
       uploadedImage,
       initials,
     });
-    alert("Profile picture saved!");
+    setBackendNotice("Profile picture changes are currently local-only. Backend profile update endpoints are not implemented yet.");
   };
 
   const handleSaveBasicInfo = () => {
-    updateProfile({
-      firstName,
-      lastName,
-      email,
-      phone,
-      bio,
-      location,
-    });
-    alert("Basic information saved!");
+    const fullName = `${firstName} ${lastName}`.trim();
+    updateCurrentUser({
+      name: fullName || undefined,
+      email: email || undefined,
+    })
+      .then((updatedUser) => {
+        const nameParts = (updatedUser.name ?? fullName).trim().split(/\s+/).filter(Boolean);
+        const updatedFirstName = nameParts[0] || firstName;
+        const updatedLastName = nameParts.slice(1).join(" ") || lastName;
+        const updatedInitials = `${updatedFirstName[0] ?? ""}${updatedLastName[0] ?? ""}`.toUpperCase() || initials;
+
+        updateProfile({
+          firstName: updatedFirstName,
+          lastName: updatedLastName,
+          email: updatedUser.email ?? email,
+          phone,
+          bio,
+          location,
+          department: updatedUser.domain ?? department,
+          employeeId: updatedUser.id ?? employeeId,
+          jobTitle: (updatedUser.role ?? jobTitle).replaceAll("_", " "),
+          initials: updatedInitials,
+        });
+        setBackendNotice("Basic information saved to the backend for shared admin identity fields.");
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "Unable to save profile changes to the backend.";
+        setBackendNotice(message);
+      });
   };
 
   const handleSaveOrganization = () => {
@@ -100,7 +165,7 @@ export default function Profile() {
       team,
       manager,
     });
-    alert("Organization information saved!");
+    setBackendNotice("Organization changes are still local-only. The backend does not expose organization profile update fields yet.");
   };
 
   return (
@@ -126,6 +191,11 @@ export default function Profile() {
 
       {/* Content */}
       <div className="mx-auto max-w-5xl px-6 py-8 space-y-6">
+        {backendNotice && (
+          <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+            {loadingBackendProfile ? "Loading backend profile..." : backendNotice}
+          </div>
+        )}
         {/* Profile Picture Section */}
         <section className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
           <div className="mb-6">

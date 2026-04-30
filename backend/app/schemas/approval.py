@@ -13,3 +13,7 @@ class ApprovalOut(BaseModel):
     comment: str | None = None
     created_at: str
     reviewed_at: str | None = None
+
+
+class ApprovalRejectRequest(BaseModel):
+    comment: str | None = None

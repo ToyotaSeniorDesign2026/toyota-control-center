@@ -17,6 +17,11 @@ class LoginRequest(BaseModel):
     email: EmailStr
 
 
+class UserUpdateRequest(BaseModel):
+    name: str | None = None
+    email: EmailStr | None = None
+
+
 class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"

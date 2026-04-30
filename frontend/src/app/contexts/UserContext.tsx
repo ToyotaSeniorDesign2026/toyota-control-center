@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { getCurrentUser } from "../lib/controlCenterApi";
 
 const USER_ROLE_KEY = "control-center-user-role";
 
@@ -63,6 +64,52 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const updateProfile = (updates: Partial<UserProfile>) => {
     setProfile((prev) => ({ ...prev, ...updates }));
   };
+
+  useEffect(() => {
+    let ignore = false;
+
+    const loadBackendUser = async () => {
+      if (typeof window === "undefined") {
+        return;
+      }
+
+      const token = window.localStorage.getItem("control-center-auth-token");
+      if (!token) {
+        return;
+      }
+
+      try {
+        const currentUser = await getCurrentUser(token);
+        if (ignore) return;
+
+        const nameParts = (currentUser.name ?? "").trim().split(/\s+/).filter(Boolean);
+        const firstName = nameParts[0] || defaultProfile.firstName;
+        const lastName = nameParts.slice(1).join(" ") || defaultProfile.lastName;
+        const derivedInitials = `${firstName[0] ?? ""}${lastName[0] ?? ""}`.toUpperCase() || defaultProfile.initials;
+        const mappedRole: "admin" | "user" = currentUser.role === "user" ? "user" : "admin";
+
+        setProfile((prev) => ({
+          ...prev,
+          firstName,
+          lastName,
+          email: currentUser.email ?? prev.email,
+          department: currentUser.domain ?? prev.department,
+          employeeId: currentUser.id ?? prev.employeeId,
+          jobTitle: (currentUser.role ?? prev.jobTitle).replaceAll("_", " "),
+          initials: derivedInitials,
+          role: mappedRole,
+        }));
+      } catch {
+        // Keep local defaults when the backend is unavailable.
+      }
+    };
+
+    void loadBackendUser();
+
+    return () => {
+      ignore = true;
+    };
+  }, []);
 
   const setUserRole = (role: "admin" | "user") => {
     if (typeof window !== "undefined") {
