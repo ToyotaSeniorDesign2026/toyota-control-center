@@ -194,10 +194,10 @@ export function LoginPage() {
                 required
                 disabled={isLoading}
                 className="w-full px-4 py-3 rounded-lg border border-gray-300 bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-[#ed0923] focus:border-transparent transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                placeholder="analyst@toyota.dev"
+                placeholder="sarah.chen@toyota.dev"
               />
               <p className="mt-2 text-xs text-gray-500">
-                Demo users: analyst@toyota.dev, root@toyota.dev, collections.admin@toyota.dev
+                Demo users: sarah.chen@toyota.dev, root@toyota.dev, collections.admin@toyota.dev
               </p>
             </div>
 

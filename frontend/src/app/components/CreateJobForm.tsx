@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useUser } from "../contexts/UserContext";
 import { X, Plus, Trash2 } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -121,14 +122,17 @@ export function CreateJobForm({
   onDraftDataChange,
   hideFooter = false,
 }: CreateJobFormProps) {
+  const { profile } = useUser();
   const [jobType, setJobType] = useState<JobType>("Airflow");
   const [currentTag, setCurrentTag] = useState("");
+
+  const fullName = `${profile.firstName} ${profile.lastName}`.trim();
 
   // Universal Fields
   const [universal, setUniversal] = useState<UniversalFields>({
     job_name: "",
     description: "",
-    owner: "",
+    owner: fullName,
     target_environment: "dev",
     data_sensitivity: "low",
     schedule: "",
@@ -374,9 +378,6 @@ export function CreateJobForm({
     if (!universal.job_name.trim()) {
       newErrors.job_name = "Job name is required";
     }
-    if (!universal.owner.trim()) {
-      newErrors.owner = "Owner is required";
-    }
     if (universal.run_type === "scheduled" && !universal.schedule.trim()) {
       newErrors.schedule = "Schedule is required";
     }
@@ -597,21 +598,14 @@ export function CreateJobForm({
                   {/* Owner */}
                   <div className="space-y-2">
                     <Label htmlFor="owner" className="text-sm font-medium text-gray-700">
-                      Owner *
+                      Owner
                     </Label>
                     <Input
                       id="owner"
-                      required
-                      placeholder="e.g., John Doe"
+                      readOnly
                       value={universal.owner}
-                      onChange={(e) =>
-                        setUniversal({ ...universal, owner: e.target.value })
-                      }
-                      className={`w-full ${errors.owner ? "border-red-500" : ""}`}
+                      className="w-full bg-gray-50 text-gray-600 cursor-default"
                     />
-                    {errors.owner && (
-                      <p className="text-xs text-red-600">{errors.owner}</p>
-                    )}
                   </div>
 
                 </div>
