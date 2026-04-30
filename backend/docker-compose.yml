@@ -12,27 +12,12 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
-  sql-mcp:
-    image: mcr.microsoft.com/azure-databases/data-api-builder:latest
-    platform: linux/amd64
-    container_name: control_center_sql_mcp
-    restart: unless-stopped
-    depends_on:
-      - postgres
-    environment:
-      SQL_CONNECTION_STRING: Host=postgres;Port=5432;Database=control_center;Username=postgres;Password=postgres
-    ports:
-      - "5001:5000"
-    volumes:
-      - ./mcp_servers/sql-mcp-server/dab-config.json:/App/dab-config.json:ro
-
   api:
     build: .
     container_name: control_center_api
     restart: unless-stopped
     depends_on:
       - postgres
-      - sql-mcp
     env_file: .env
     environment:
       APP_NAME: Toyota Control Center API
@@ -43,13 +28,15 @@ services:
       DB_MAX_OVERFLOW: "20"
       DB_POOL_RECYCLE: "1800"
       DB_POOL_PRE_PING: "true"
-      SQL_MCP_SERVER_URL: http://sql-mcp:5000/mcp
-      SQL_MCP_SERVER_BEARER_TOKEN: local-dev-token
-      SQL_ANALYTICS_MCP_SERVER_URL: http://sql-mcp:5000/mcp
-      SQL_ANALYTICS_MCP_SERVER_BEARER_TOKEN: local-dev-token
+    volumes:
+      - ./mcp_servers/sql-mcp-server:/app/mcp_servers/sql-mcp-server
+      - ./mcp_servers/control-center-server:/app/mcp_servers/control-center-server
     ports:
       - "8000:8000"
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    command: >
+      sh -c "until pg_isready -h postgres -U postgres; do sleep 1; done &&
+             alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
 volumes:
   postgres_data:

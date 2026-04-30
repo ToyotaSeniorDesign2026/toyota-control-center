@@ -40,7 +40,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "../ui/tooltip";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 interface JobsTableProps {
   searchQuery: string;
@@ -53,7 +53,7 @@ interface JobsTableProps {
 interface Job {
   id: string;
   name: string;
-  type: "AI Agent" | "Airflow" | "dbt" | "SQL" | "BI" | "Excel" | "PowerPoint";
+  type: string;
   environment: string;
   lastRun: string;
   status: "healthy" | "warning" | "failed";
@@ -61,148 +61,58 @@ interface Job {
   schedule: string;
   owner: string;
   tags?: string[];
+  last_run_at?: string;
+  last_run_status?: string;
+  risk_level?: string;
+  owner_name?: string;
 }
 
-const mockJobs: Job[] = [
-  {
-    id: "1",
-    name: "customer_churn_predictor",
-    type: "AI Agent",
-    environment: "Prod",
-    lastRun: "5 min ago",
-    status: "healthy",
-    riskScore: 12,
-    schedule: "0 */6 * * *",
-    owner: "Sarah Chen",
-    tags: ["ml", "customer"],
-  },
-  {
-    id: "2",
-    name: "dbt_daily_model",
-    type: "dbt",
-    environment: "Semi-Prod",
-    lastRun: "1 hour ago",
-    status: "failed",
-    riskScore: 78,
-    schedule: "0 6 * * *",
-    owner: "Mike Johnson",
-    tags: ["data", "etl"],
-  },
-  {
-    id: "3",
-    name: "revenue_dashboard",
-    type: "BI",
-    environment: "Prod",
-    lastRun: "30 min ago",
-    status: "healthy",
-    riskScore: 8,
-    schedule: "0 */1 * * *",
-    owner: "Emily Davis",
-    tags: ["reporting"],
-  },
-  {
-    id: "4",
-    name: "airflow_etl_pipeline",
-    type: "Airflow",
-    environment: "Prod",
-    lastRun: "15 min ago",
-    status: "warning",
-    riskScore: 45,
-    schedule: "0 */2 * * *",
-    owner: "David Park",
-    tags: ["pipeline"],
-  },
-  {
-    id: "5",
-    name: "customer_summary_agent",
-    type: "AI Agent",
-    environment: "Dev",
-    lastRun: "2 hours ago",
-    status: "healthy",
-    riskScore: 15,
-    schedule: "0 */12 * * *",
-    owner: "Sarah Chen",
-    tags: ["ml", "summary"],
-  },
-  {
-    id: "6",
-    name: "sales_forecast_query",
-    type: "SQL",
-    environment: "Prod",
-    lastRun: "45 min ago",
-    status: "healthy",
-    riskScore: 22,
-    schedule: "0 8 * * *",
-    owner: "Mike Johnson",
-    tags: ["analytics"],
-  },
-  {
-    id: "7",
-    name: "inventory_optimizer",
-    type: "AI Agent",
-    environment: "Semi-Prod",
-    lastRun: "3 hours ago",
-    status: "warning",
-    riskScore: 52,
-    schedule: "0 */4 * * *",
-    owner: "Emily Davis",
-    tags: ["ml", "optimization"],
-  },
-  {
-    id: "8",
-    name: "quarterly_report_deck",
-    type: "PowerPoint",
-    environment: "Prod",
-    lastRun: "1 day ago",
-    status: "healthy",
-    riskScore: 5,
-    schedule: "0 9 1 */3 *",
-    owner: "David Park",
-    tags: ["reporting"],
-  },
-  {
-    id: "9",
-    name: "financial_model_spreadsheet",
-    type: "Excel",
-    environment: "Prod",
-    lastRun: "2 hours ago",
-    status: "healthy",
-    riskScore: 18,
-    schedule: "0 10 * * 1",
-    owner: "Sarah Chen",
-    tags: ["finance"],
-  },
-  {
-    id: "10",
-    name: "dbt_staging_models",
-    type: "dbt",
-    environment: "Dev",
-    lastRun: "10 min ago",
-    status: "healthy",
-    riskScore: 10,
-    schedule: "0 */3 * * *",
-    owner: "David Park",
-    tags: ["data", "staging"],
-  },
-];
+// Helper function to convert API response to UI Job format
+function mapApiJobToUIJob(apiJob: any): Job {
+  const riskScore = apiJob.risk_score ?? 0;
+  const riskLevel = riskScore < 30 ? "low" : riskScore < 60 ? "medium" : "high";
+  const status = 
+    apiJob.last_run_status?.toLowerCase() === "failed"
+      ? "failed"
+      : apiJob.last_run_status?.toLowerCase() === "succeeded"
+      ? "healthy"
+      : "warning";
 
-function getTypeIcon(type: Job["type"]) {
-  switch (type) {
-    case "AI Agent":
-      return <Bot className="h-4 w-4" />;
-    case "Airflow":
-      return <Workflow className="h-4 w-4" />;
-    case "dbt":
-      return <Database className="h-4 w-4" />;
-    case "SQL":
-      return <Code className="h-4 w-4" />;
-    case "BI":
-      return <BarChart3 className="h-4 w-4" />;
-    case "Excel":
-      return <FileSpreadsheet className="h-4 w-4" />;
-    case "PowerPoint":
-      return <Presentation className="h-4 w-4" />;
-  }
+  return {
+    id: apiJob.id,
+    name: apiJob.name,
+    type: apiJob.type,
+    environment: apiJob.environment,
+    lastRun: apiJob.last_run_at || "Never",
+    status,
+    riskScore,
+    schedule: "", // Not available from API
+    owner: apiJob.owner_name || "Unknown",
+    tags: apiJob.tags || [],
+    last_run_at: apiJob.last_run_at,
+    last_run_status: apiJob.last_run_status,
+    risk_level: riskLevel,
+    owner_name: apiJob.owner_name,
+  };
+}
+
+function getTypeIcon(type: string) {
+  const typeMap: Record<string, JSX.Element> = {
+    "ai-agent": <Bot className="h-4 w-4" />,
+    "AI Agent": <Bot className="h-4 w-4" />,
+    airflow: <Workflow className="h-4 w-4" />,
+    Airflow: <Workflow className="h-4 w-4" />,
+    dbt: <Database className="h-4 w-4" />,
+    sql: <Code className="h-4 w-4" />,
+    SQL: <Code className="h-4 w-4" />,
+    bi: <BarChart3 className="h-4 w-4" />,
+    BI: <BarChart3 className="h-4 w-4" />,
+    excel: <FileSpreadsheet className="h-4 w-4" />,
+    Excel: <FileSpreadsheet className="h-4 w-4" />,
+    powerpoint: <Presentation className="h-4 w-4" />,
+    PowerPoint: <Presentation className="h-4 w-4" />,
+  };
+  return typeMap[type] || <Code className="h-4 w-4" />;
 }
 
 function StatusBadge({ status }: { status: Job["status"] }) {
@@ -278,10 +188,41 @@ export function JobsTable({
   activeFilter,
 }: JobsTableProps) {
   const [currentPage, setCurrentPage] = useState(1);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const itemsPerPage = 10;
 
+  // Fetch jobs from API on component mount
+  useEffect(() => {
+    const fetchJobs = async () => {
+      try {
+        setLoading(true);
+        const token = typeof window !== "undefined" ? window.localStorage.getItem("control-center-auth-token") : null;
+        const headers: HeadersInit = {};
+        if (token) {
+          headers["Authorization"] = `Bearer ${token}`;
+        }
+        const response = await fetch("http://localhost:8000/jobs", {
+          headers,
+        });
+        if (!response.ok) {
+          throw new Error("Failed to fetch jobs");
+        }
+        const data = await response.json();
+        const uiJobs = data.items.map(mapApiJobToUIJob);
+        setJobs(uiJobs);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unknown error");
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchJobs();
+  }, []);
+
   // Filter jobs based on all criteria
-  const filteredJobs = mockJobs.filter((job) => {
+  const filteredJobs = jobs.filter((job) => {
     // Search filter
     if (
       searchQuery &&
@@ -319,6 +260,18 @@ export function JobsTable({
     // Sidebar filter
     if (activeFilter === "high-risk" && job.riskScore < 60) return false;
     if (activeFilter === "failed" && job.status !== "failed") return false;
+    if (activeFilter === "needs-approval") {
+      // This would require backend to return approval status at job level
+      // For now, this filter is prepared but needs Job model update
+    }
+    if (activeFilter === "recent") {
+      // Check if updated in last 24 hours
+      if (!job.last_run_at) return false;
+      const lastRunTime = new Date(job.last_run_at).getTime();
+      const now = new Date().getTime();
+      const twentyFourHoursMs = 24 * 60 * 60 * 1000;
+      if (now - lastRunTime > twentyFourHoursMs) return false;
+    }
 
     return true;
   });
@@ -332,6 +285,22 @@ export function JobsTable({
   // Reset to page 1 when filters change
   if (currentPage > totalPages && totalPages > 0) {
     setCurrentPage(1);
+  }
+
+  if (loading) {
+    return (
+      <div className="rounded-lg border border-gray-200 bg-white p-12 text-center shadow-sm">
+        <p className="text-gray-600">Loading jobs...</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-lg border border-red-200 bg-red-50 p-12 text-center shadow-sm">
+        <p className="text-red-600">Error loading jobs: {error}</p>
+      </div>
+    );
   }
 
   if (filteredJobs.length === 0 && searchQuery === "" && typeFilter === "All Types") {

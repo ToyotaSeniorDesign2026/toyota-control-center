@@ -1,69 +1,9 @@
-from .core import (
-    RiskEngine,
-    ConfigTypeDef,
-    EnvironmentDef,
-    ApprovedServerDef,
-    Registry,
-    RegistryManager,
-    MCPBase,
-    CapabilityKind,
-    BoundCapability,
-    JobSpec,
-    JobSpecList,
-    ToolAnnotations,
-    ToolSpec,
-    ExecutionError,
-    ExecutionResult,
-    MCPToolResult,
-)
-from .mcp import (
-    AgentResponse,
-    AgentToolExecution,
-    BaseAdapter,
-    BaseClient,
-    GoogleAdapter,
-    GoogleMCPAdapter,
-    LLMClient,
-    LLMProtocol,
-    MCPAgent,
-    ModelTurnResult,
-    RequestedToolCall,
-    build_agent,
-    build_agent_from_registry,
-    build_connector_selection_model,
-    select_registry_connectors,
-)
+"""Control Center domain library.
 
-__all__ = [
-    "RiskEngine",
-    "ConfigTypeDef",
-    "EnvironmentDef",
-    "ApprovedServerDef",
-    "Registry",
-    "RegistryManager",
-    "MCPBase",
-    "CapabilityKind",
-    "BoundCapability",
-    "JobSpec",
-    "JobSpecList",
-    "ToolAnnotations",
-    "ToolSpec",
-    "ExecutionError",
-    "ExecutionResult",
-    "MCPToolResult",
-    "AgentResponse",
-    "AgentToolExecution",
-    "BaseAdapter",
-    "BaseClient",
-    "GoogleAdapter",
-    "GoogleMCPAdapter",
-    "LLMClient",
-    "LLMProtocol",
-    "MCPAgent",
-    "ModelTurnResult",
-    "RequestedToolCall",
-    "build_agent",
-    "build_agent_from_registry",
-    "build_connector_selection_model",
-    "select_registry_connectors",
-]
+Subpackages:
+    agent     - LLM tool-calling orchestrator
+    mcp       - MCP transport + LLM provider adapters
+    policy    - risk scoring rules
+    registry  - approved-server catalog
+    specs     - shared dataclasses (JobSpec, ToolSpec, etc.)
+"""

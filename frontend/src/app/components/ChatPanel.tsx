@@ -82,6 +82,12 @@ interface ConfigRequest {
   repository_hints?: string[] | null;
 }
 
+interface DbTypeOption {
+  label: string;
+  value: string;
+  description?: string | null;
+}
+
 interface ChatPanelProps {
   isOpen: boolean;
   onClose: () => void;
@@ -215,6 +221,7 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
   const [pendingConfigRequest, setPendingConfigRequest] = useState<(ConfigRequest & { originalMessage: string }) | null>(null);
   const [configInputValues, setConfigInputValues] = useState<Record<string, string>>({});
   const [sessionEnv, setSessionEnv] = useState<Record<string, string>>({});
+  const [dbTypeOptions, setDbTypeOptions] = useState<DbTypeOption[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const seenNoticeIdsRef = useRef<Set<string>>(new Set());
 
@@ -449,6 +456,7 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
         setConfigInputValues({});
       }
       setRepositoryOptions(Array.isArray(data.repository_options) ? data.repository_options : []);
+      setDbTypeOptions(Array.isArray(data.db_type_options) ? data.db_type_options : []);
       
       updateActivityStep(2, "completed");
       updateActivityStep(3, "in-progress");
@@ -628,6 +636,15 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
     });
   };
 
+  const handleDbTypeOptionClick = async (option: DbTypeOption) => {
+    setDbTypeOptions([]);
+    await sendChatRequest({
+      requestMessage: option.value,
+      renderedMessage: option.label,
+      includeUserMessage: true,
+    });
+  };
+
   const handleNewChat = () => {
     setMessages(initialMessages);
     setInputValue("");
@@ -636,6 +653,7 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
     setPendingSecretRequest(null);
     setSecretInputValue("");
     setRepositoryOptions([]);
+    setDbTypeOptions([]);
     setPendingConfigRequest(null);
     setConfigInputValues({});
     setSessionEnv({});
@@ -792,7 +810,9 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto px-5 py-5 space-y-4 flex flex-col">
-          {messages.map((message) => (
+          {(() => {
+            const lastAssistantIdx = messages.reduce((last, m, i) => m.role === "assistant" ? i : last, -1);
+            return messages.map((message, index) => (
             <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
               {message.role === "activity" ? (
                 // Activity message with conditional rendering based on message type
@@ -876,10 +896,25 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
                       </ul>
                     </div>
                   )}
+                  {message.role === "assistant" && index === lastAssistantIdx && dbTypeOptions.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {dbTypeOptions.map((option) => (
+                        <button
+                          key={option.value}
+                          onClick={() => void handleDbTypeOptionClick(option)}
+                          disabled={isLoading}
+                          className="rounded-full border border-[#ed0923] px-3 py-1 text-[11px] font-medium text-[#ed0923] bg-white hover:bg-[#ed0923] hover:text-white transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
-          ))}
+          ));
+          })()}
         </div>
       )}
 

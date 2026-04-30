@@ -1,6 +1,7 @@
 import { X, Send, Sparkles } from "lucide-react";
 import { Button } from "./ui/button";
 import { useState } from "react";
+import { sendAgentMessage, type AgentChatMessage } from "../lib/controlCenterApi";
 
 interface AIChatPanelProps {
   isOpen: boolean;
@@ -16,32 +17,41 @@ const examplePrompts = [
 export function AIChatPanel({ isOpen, onClose }: AIChatPanelProps) {
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<Array<{ role: "user" | "ai"; content: string }>>([]);
+  const [isLoading, setIsLoading] = useState(false);
+
+  const sendMessage = async (text: string) => {
+    const updated = [...messages, { role: "user" as const, content: text }];
+    setMessages(updated);
+
+    const history: AgentChatMessage[] = messages.map((m) => ({
+      role: m.role === "user" ? "user" : "assistant",
+      content: m.content,
+    }));
+
+    setIsLoading(true);
+    try {
+      const result = await sendAgentMessage({ message: text, conversation_history: history });
+      setMessages((prev) => [...prev, { role: "ai", content: result.response }]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "ai", content: err instanceof Error ? err.message : "Something went wrong. Please try again." },
+      ]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const handleSend = () => {
-    if (message.trim()) {
-      setMessages([...messages, { role: "user", content: message }]);
+    if (message.trim() && !isLoading) {
+      const text = message.trim();
       setMessage("");
-      
-      // Simulate AI response
-      setTimeout(() => {
-        setMessages(prev => [...prev, { 
-          role: "ai", 
-          content: "I'm analyzing your request. This is a demo response from the AI assistant." 
-        }]);
-      }, 1000);
+      sendMessage(text);
     }
   };
 
   const handlePromptClick = (prompt: string) => {
-    setMessages([...messages, { role: "user", content: prompt }]);
-    
-    // Simulate AI response
-    setTimeout(() => {
-      setMessages(prev => [...prev, { 
-        role: "ai", 
-        content: `I'm processing your request: "${prompt}". This is a demo response.` 
-      }]);
-    }, 1000);
+    if (!isLoading) sendMessage(prompt);
   };
 
   if (!isOpen) return null;
@@ -113,6 +123,18 @@ export function AIChatPanel({ isOpen, onClose }: AIChatPanelProps) {
           ))}
         </div>
 
+        {/* Loading indicator */}
+        {isLoading && (
+          <div className="px-6 pb-2 flex items-center gap-2 text-xs text-gray-400">
+            <div className="flex gap-1">
+              <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+              <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+              <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+            </div>
+            CC Assistant is thinking…
+          </div>
+        )}
+
         {/* Input */}
         <div className="border-t border-gray-200 p-4 flex-shrink-0 w-full">
           <div className="flex gap-2 w-full">
@@ -122,11 +144,13 @@ export function AIChatPanel({ isOpen, onClose }: AIChatPanelProps) {
               onChange={(e) => setMessage(e.target.value)}
               onKeyPress={(e) => e.key === "Enter" && handleSend()}
               placeholder="Type your message..."
-              className="flex-1 rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm placeholder:text-gray-400 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923] min-w-0"
+              disabled={isLoading}
+              className="flex-1 rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm placeholder:text-gray-400 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923] min-w-0 disabled:opacity-60"
             />
             <Button
               onClick={handleSend}
-              className="h-auto rounded-lg bg-[#ed0923] px-4 py-3 hover:bg-[#d10820] flex-shrink-0"
+              disabled={!message.trim() || isLoading}
+              className="h-auto rounded-lg bg-[#ed0923] px-4 py-3 hover:bg-[#d10820] disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
             >
               <Send className="h-5 w-5" />
             </Button>

@@ -373,3 +373,29 @@ export interface RunLogsResponse {
 export function getRunLogs(runId: string, token?: string | null) {
   return request<RunLogsResponse>(`/runs/${runId}/logs?limit=500`, {}, token);
 }
+
+export interface AgentChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface AgentChatRequest {
+  message: string;
+  conversation_history?: AgentChatMessage[];
+  model?: string;
+}
+
+export interface AgentChatResponse {
+  response: string;
+}
+
+export function sendAgentMessage(payload: AgentChatRequest, token?: string | null) {
+  return request<AgentChatResponse>(
+    "/api/chat/agent",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+    token,
+  );
+}

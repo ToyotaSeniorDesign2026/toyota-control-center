@@ -6257,19 +6257,36 @@ interface OutputData {
 }
 
 function tryParseRows(value: unknown): Array<Record<string, unknown>> | null {
-  if (Array.isArray(value) && value.length > 0 && typeof value[0] === "object") {
-    return value as Array<Record<string, unknown>>;
-  }
+  // Parse JSON string wrapper if present
+  let parsed: unknown = value;
   if (typeof value === "string") {
-    try {
-      const parsed = JSON.parse(value);
-      if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === "object") {
-        return parsed as Array<Record<string, unknown>>;
-      }
-    } catch {
-      // not JSON
+    try { parsed = JSON.parse(value); } catch { return null; }
+  }
+
+  // Unwrap MCP ContentBlock envelope: [{type:"text", text:"{...}"}]
+  if (Array.isArray(parsed) && parsed.length > 0 && parsed[0] && typeof parsed[0] === "object" && "type" in parsed[0]) {
+    const block = (parsed as Array<Record<string, unknown>>).find((b) => b["type"] === "text" && typeof b["text"] === "string");
+    if (block) {
+      try { parsed = JSON.parse(block["text"] as string); } catch { return null; }
     }
   }
+
+  // {columns:[...], rows:[[...],...]} → array of objects
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const p = parsed as Record<string, unknown>;
+    if (Array.isArray(p["columns"]) && Array.isArray(p["rows"])) {
+      const cols = p["columns"] as string[];
+      return (p["rows"] as unknown[][]).map((row) =>
+        Object.fromEntries(cols.map((col, i) => [col, row[i]]))
+      );
+    }
+  }
+
+  // Already an array of objects
+  if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === "object") {
+    return parsed as Array<Record<string, unknown>>;
+  }
+
   return null;
 }
 
