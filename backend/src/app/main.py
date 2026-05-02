@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 
 _logger = logging.getLogger(__name__)
 
-from app.api.routers import audit, auth, chat, connectors, integrations, job_types, jobs, policy, runs
+from app.api.routers import admin, audit, auth, chat, connectors, integrations, job_types, jobs, policy, runs
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.logging import setup_logging

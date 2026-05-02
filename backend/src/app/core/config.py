@@ -39,7 +39,7 @@ class Settings:
     app_name: str = os.getenv("APP_NAME", "Toyota Control Center API")
     app_version: str = os.getenv("APP_VERSION", "0.1.0")
     auth_scheme: str = os.getenv("AUTH_SCHEME", "Bearer")
-    openai_api_key: str | None = os.getenv("OPENAI_API_KEY")
+    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     openai_timeout_seconds: int = _as_int(os.getenv("OPENAI_TIMEOUT_SECONDS"), default=30)
     sql_mcp_server_url: str | None = os.getenv("SQL_MCP_SERVER_URL")
@@ -59,10 +59,6 @@ class Settings:
     job_scheduler_enabled: bool = _as_bool(os.getenv("JOB_SCHEDULER_ENABLED"), default=True)
     job_scheduler_interval_seconds: int = _as_int(os.getenv("JOB_SCHEDULER_INTERVAL_SECONDS"), default=60)
     job_scheduler_timezone: str = os.getenv("JOB_SCHEDULER_TIMEZONE", "America/Chicago")
-
-    # OpenAI Configuration
-    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
-    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o")
 
     # Internal service token — used by the Control Center MCP server to call the API
     internal_service_token: str | None = os.getenv("CC_INTERNAL_SERVICE_TOKEN")

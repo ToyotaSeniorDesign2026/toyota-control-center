@@ -28,7 +28,6 @@ from app.services.chat_job_service import (
     update_sql_job_from_chat,
 )
 from app.services.job_service import delete_job as delete_job_service, list_jobs as list_jobs_service
-from app.services.chat_mcp_service import run_prompt_native_mcp, github_write_file
 from app.services.run_service import list_runs
 
 router = APIRouter()
