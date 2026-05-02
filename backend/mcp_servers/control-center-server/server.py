@@ -176,8 +176,6 @@ def trigger_run(
         raise ValueError(f"Failed to trigger run for job '{job_id}': {exc}") from exc
 
 
-<<<<<<< HEAD
-=======
 @mcp.tool()
 def request_db_type_selection() -> dict:
     """Signal that the user needs to select a database type.
@@ -286,6 +284,5 @@ def create_sql_job(
         raise ValueError(f"Failed to create SQL job '{name}': {exc}") from exc
 
 
->>>>>>> polishing-agent-chat
 if __name__ == "__main__":
     mcp.run(transport="stdio")

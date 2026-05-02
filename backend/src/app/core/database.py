@@ -1,24 +1,17 @@
 from __future__ import annotations
 
-<<<<<<< HEAD
 from datetime import datetime, timedelta, timezone
 import secrets
 import subprocess
-=======
->>>>>>> polishing-agent-chat
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import settings
 from app.models.base import Base
 from app.models.user import User
-<<<<<<< HEAD
 from app.models.job import Job
 from app.models.run import Run
 from app.core.db import now_iso, new_id
-=======
-from app.core.db import now_iso
->>>>>>> polishing-agent-chat
 
 
 def _build_engine_kwargs() -> dict:
@@ -57,7 +50,6 @@ def _seed_default_users(db: Session) -> None:
         return
 
     ts = now_iso()
-<<<<<<< HEAD
     
     # Demo users to seed
     demo_users = [
@@ -256,44 +248,10 @@ def _seed_default_users(db: Session) -> None:
     ]
     
     db.add_all(demo_users)
-=======
-    db.add_all(
-        [
-            User(
-                id="u_root",
-                email="root@toyota.dev",
-                name="Root Admin",
-                role="root",
-                domain="global",
-                is_active=True,
-                created_at=ts,
-            ),
-            User(
-                id="u_collections_admin",
-                email="collections.admin@toyota.dev",
-                name="Collections Admin",
-                role="domain_admin",
-                domain="collections",
-                is_active=True,
-                created_at=ts,
-            ),
-            User(
-                id="u_analyst",
-                email="analyst@toyota.dev",
-                name="Analyst User",
-                role="user",
-                domain="collections",
-                is_active=True,
-                created_at=ts,
-            ),
-        ]
-    )
->>>>>>> polishing-agent-chat
     db.commit()
     _SEEDED = True
 
 
-<<<<<<< HEAD
 def _seed_demo_jobs(db: Session) -> None:
     """Seed demo jobs and runs for all analyst users in the Collections department."""
     # Check if demo jobs already exist
@@ -478,8 +436,6 @@ def _seed_demo_jobs(db: Session) -> None:
 
 
 
-=======
->>>>>>> polishing-agent-chat
 def get_db_session():
     db = SessionLocal()
     try:
@@ -490,7 +446,6 @@ def get_db_session():
 
 
 def init_db() -> None:
-<<<<<<< HEAD
     # Run Alembic migrations to ensure schema is up-to-date
     try:
         subprocess.run(
@@ -513,7 +468,3 @@ def init_db() -> None:
         _seed_demo_jobs(db)
     finally:
         db.close()
-=======
-    # Convenience for local bootstrapping; Alembic is the source of truth for schema migrations.
-    Base.metadata.create_all(bind=engine)
->>>>>>> polishing-agent-chat

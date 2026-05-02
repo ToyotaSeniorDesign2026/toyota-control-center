@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-<<<<<<< HEAD
 from datetime import datetime
 from sqlalchemy import Boolean, String, Text, DateTime
-=======
-from sqlalchemy import Boolean, String
->>>>>>> polishing-agent-chat
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -14,23 +10,16 @@ from app.models.base import Base
 class User(Base):
     __tablename__ = "users"
 
-<<<<<<< HEAD
     # Core identity
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     first_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     last_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
-=======
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
-    name: Mapped[str] = mapped_column(String(120), nullable=False)
->>>>>>> polishing-agent-chat
     role: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     domain: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[str] = mapped_column(String(64), nullable=False)
-<<<<<<< HEAD
 
     # Profile customization
     avatar_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
@@ -61,5 +50,3 @@ class User(Base):
     theme: Mapped[str | None] = mapped_column(String(20), nullable=True)
     notifications: Mapped[str | None] = mapped_column(String(20), nullable=True)
     timezone: Mapped[str | None] = mapped_column(String(50), nullable=True)
-=======
->>>>>>> polishing-agent-chat

@@ -11,10 +11,7 @@ from app.models.run import Run
 from app.models.user import User
 from app.schemas.job import ImportGithubRequest, JobCreate, JobUpdate
 from app.services.audit_service import write_audit
-<<<<<<< HEAD
-=======
 from app.services.job_promotion_service import promote_job_via_github
->>>>>>> polishing-agent-chat
 from app.services.job_type_service import get_job_type_contract, validate_job_contract
 
 
@@ -183,16 +180,11 @@ def apply_job_action(db: Session, user, job_id: str, action: str):
     }
     if action_l not in status_map:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unsupported job action")
-<<<<<<< HEAD
     if action_l in {"deploy", "publish"} and job.kind != "artifact":
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Deploy/publish actions are only valid for artifact jobs",
         )
-=======
-    if action_l in {"deploy", "publish"}:
-        return _job_to_out(db, promote_job_via_github(db, user, job, action_l))
->>>>>>> polishing-agent-chat
 
     job.status = status_map[action_l]
     job.updated_at = now_iso()

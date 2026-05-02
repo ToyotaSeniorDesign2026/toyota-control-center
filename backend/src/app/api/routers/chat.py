@@ -2945,29 +2945,19 @@ class AgentChatRequest(BaseModel):
     conversation_history: Optional[list[ChatMessage]] = None
     model: Optional[str] = None
     server_env_overrides: Optional[dict[str, dict[str, str]]] = None
-<<<<<<< HEAD
-=======
     session_env: Optional[dict[str, str]] = None
->>>>>>> polishing-agent-chat
 
 
 class AgentChatResponse(BaseModel):
     response: str
-<<<<<<< HEAD
-=======
     config_request: Optional[dict[str, Any]] = None
     db_type_options: Optional[list[dict[str, Any]]] = None
     run_id: Optional[str] = None
->>>>>>> polishing-agent-chat
 
 
 @router.post("/agent", response_model=AgentChatResponse)
 async def agent_chat(request: AgentChatRequest, db=Depends(get_db)) -> AgentChatResponse:
-<<<<<<< HEAD
-    """Agent-driven chat endpoint using OpenAI function calling + MCP delegation."""
-=======
     """Agent-driven chat endpoint backed by the Control Center MCP server."""
->>>>>>> polishing-agent-chat
     from app.services.agent_chat_service import run_agent
     from app.services.chat_job_service import get_chat_actor
 
@@ -2980,21 +2970,13 @@ async def agent_chat(request: AgentChatRequest, db=Depends(get_db)) -> AgentChat
     for msg in (request.conversation_history or []):
         history.append({"role": msg.role, "content": msg.content})
 
-<<<<<<< HEAD
-    response = await run_agent(
-=======
     result = await run_agent(
->>>>>>> polishing-agent-chat
         message=request.message.strip(),
         conversation_history=history or None,
         db=db,
         user=user,
         model=request.model,
         server_env_overrides=request.server_env_overrides,
-<<<<<<< HEAD
-    )
-    return AgentChatResponse(response=response)
-=======
         session_env=request.session_env or None,
     )
     return AgentChatResponse(
@@ -3003,4 +2985,3 @@ async def agent_chat(request: AgentChatRequest, db=Depends(get_db)) -> AgentChat
         db_type_options=result.db_type_options,
         run_id=result.run_id,
     )
->>>>>>> polishing-agent-chat

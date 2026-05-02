@@ -132,11 +132,7 @@ export function CreateJobForm({
   const [universal, setUniversal] = useState<UniversalFields>({
     job_name: "",
     description: "",
-<<<<<<< HEAD
     owner: fullName,
-=======
-    owner: "",
->>>>>>> polishing-agent-chat
     target_environment: "dev",
     data_sensitivity: "low",
     schedule: "",
@@ -612,7 +608,6 @@ export function CreateJobForm({
                     />
                   </div>
 
-<<<<<<< HEAD
                 </div>
 
                 {/* Two-Column Responsive Layout: Target Environment & Data Sensitivity */}
@@ -635,8 +630,6 @@ export function CreateJobForm({
                     </SelectContent>
                     </Select>
                   </div>
-=======
->>>>>>> polishing-agent-chat
                 </div>
 
                 {/* Two-Column Responsive Layout: Target Environment & Data Sensitivity */}

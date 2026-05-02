@@ -2,13 +2,9 @@ from __future__ import annotations
 
 """Agent-driven chat: MCPAgent + Control Center MCP server."""
 
-<<<<<<< HEAD
-import logging
-=======
 import json
 import logging
 from dataclasses import dataclass, field
->>>>>>> polishing-agent-chat
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -17,29 +13,6 @@ from app.services.chat_mcp_service import run_prompt_native_mcp
 
 logger = logging.getLogger(__name__)
 
-<<<<<<< HEAD
-_SYSTEM_PROMPT = """\
-You are CC Assistant for the Toyota Control Center.
-You help users manage automated jobs and monitor run history.
-
-CAPABILITIES (tools available):
-- list_jobs        — see all registered jobs (filter by type or status)
-- get_job          — get full details for one job
-- list_runs        — see recent runs (optionally filtered by job)
-- get_run_status   — check the current status of a specific run
-- trigger_run      — kick off a new run for a job
-
-BEHAVIOR:
-- Be concise — one to three sentences unless more detail is clearly needed.
-- Always call a tool first when the user asks about jobs or runs.
-- After triggering a run, confirm the run ID and status.
-- If a tool returns an error, explain it plainly and suggest next steps.
-"""
-
-
-def _build_prompt(message: str, conversation_history: list[dict[str, Any]] | None) -> str:
-    parts = [_SYSTEM_PROMPT, ""]
-=======
 # ── Form specs ─────────────────────────────────────────────────────────────────
 
 _DB_TYPE_OPTIONS = [
@@ -165,7 +138,6 @@ def _build_full_prompt(
     system = _SYSTEM_PROMPT + ("\n\n" + env_block if env_block else "")
 
     parts = [system, ""]
->>>>>>> polishing-agent-chat
     for turn in conversation_history or []:
         role = turn.get("role", "")
         content = turn.get("content", "")
@@ -177,8 +149,6 @@ def _build_full_prompt(
     return "\n".join(parts)
 
 
-<<<<<<< HEAD
-=======
 # ── Tool-call inspection ───────────────────────────────────────────────────────
 
 def _extract_run_id(tool_executions: list[dict]) -> str | None:
@@ -232,7 +202,6 @@ def _parse_signal_tools(tool_executions: list[dict]) -> tuple[dict | None, list[
 
 # ── Public entry point ─────────────────────────────────────────────────────────
 
->>>>>>> polishing-agent-chat
 async def run_agent(
     *,
     message: str,
@@ -241,16 +210,10 @@ async def run_agent(
     user: Any,
     model: str | None = None,
     server_env_overrides: dict[str, dict[str, str]] | None = None,
-<<<<<<< HEAD
-) -> str:
-    """Run the control center agent for one user turn. Returns the final text reply."""
-    full_prompt = _build_prompt(message, conversation_history)
-=======
     session_env: dict[str, str] | None = None,
 ) -> AgentResult:
     """Run the control center agent for one user turn. Returns AgentResult."""
     full_prompt = _build_full_prompt(message, conversation_history, session_env)
->>>>>>> polishing-agent-chat
 
     try:
         result = await run_prompt_native_mcp(
@@ -259,12 +222,6 @@ async def run_agent(
             model=model,
             server_env_overrides=server_env_overrides,
         )
-<<<<<<< HEAD
-        return result.response or "Done."
-    except Exception as exc:
-        logger.error("Agent error: %s", exc)
-        return f"Sorry, something went wrong: {exc}"
-=======
 
         config_request, db_type_options = _parse_signal_tools(result.tool_executions)
         run_id = _extract_run_id(result.tool_executions)
@@ -279,4 +236,3 @@ async def run_agent(
     except Exception as exc:
         logger.error("Agent error: %s", exc)
         return AgentResult(response=f"Sorry, something went wrong: {exc}")
->>>>>>> polishing-agent-chat
