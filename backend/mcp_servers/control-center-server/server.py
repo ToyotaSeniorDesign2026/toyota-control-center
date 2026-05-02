@@ -176,5 +176,116 @@ def trigger_run(
         raise ValueError(f"Failed to trigger run for job '{job_id}': {exc}") from exc
 
 
+<<<<<<< HEAD
+=======
+@mcp.tool()
+def request_db_type_selection() -> dict:
+    """Signal that the user needs to select a database type.
+
+    Call this when the user wants to create or run a SQL job but has not yet specified
+    which database system they are connecting to (PostgreSQL, MySQL, SQLite, Snowflake).
+    The frontend will render a database type picker.
+
+    After calling this tool, reply with a short message such as
+    "Which database are you connecting to?" and end your turn — wait for the user's selection.
+    """
+    return {"signal": "db_type_selection", "status": "Database type selection form shown to user."}
+
+
+@mcp.tool()
+def request_db_connection_form(db_type: str, prompt: str = "") -> dict:
+    """Signal that the user needs to enter database connection credentials.
+
+    Call this when you know the database driver and need the user to supply
+    connection details (host, port, database name, username, password).
+
+    Args:
+        db_type: The database driver string.
+                 Valid values: 'postgresql+psycopg', 'mysql+pymysql', 'sqlite', 'snowflake'.
+        prompt:  Optional message to display above the form. Leave blank for a sensible default.
+
+    After calling this tool, say something like "Please fill in your connection details below."
+    Then stop — the user will submit the form and the details will appear in the next turn's context.
+    """
+    return {
+        "signal": "connection_form",
+        "db_type": db_type,
+        "prompt": prompt or f"Enter your connection details for {db_type.split('+')[0].title()}.",
+        "status": "Connection credentials form shown to user.",
+    }
+
+
+@mcp.tool()
+def create_sql_job(
+    name: str,
+    query: str,
+    db_driver: str,
+    host: str = "",
+    port: str = "",
+    database: str = "",
+    username: str = "",
+    password: str = "",
+    schedule: str = "",
+    environment: str = "dev",
+) -> dict:
+    """Create a new SQL job in the Control Center.
+
+    Only call this tool once you have ALL required fields from the user.
+    Required fields vary by driver:
+      - postgresql+psycopg / mysql+pymysql: host, port, database, username, password
+      - sqlite:                             database (file path or ':memory:')
+      - snowflake:                          host (account identifier), database, username, password
+
+    Args:
+        name:        Unique, descriptive job name.
+        query:       The SQL query to execute (translate plain English to SQL if needed).
+        db_driver:   Database driver string (e.g. 'postgresql+psycopg', 'sqlite', 'snowflake').
+        host:        Database host or Snowflake account identifier (empty for SQLite).
+        port:        Database port as a string (empty for SQLite and Snowflake).
+        database:    Database name, file path, or Snowflake DATABASE/SCHEMA.
+        username:    Database username (empty for SQLite).
+        password:    Database password (empty for SQLite).
+        schedule:    Optional cron expression (e.g. '0 9 * * 1'). Omit for manual runs.
+        environment: Target environment — 'dev', 'semi-prod', or 'prod'. Default 'dev'.
+
+    Returns the created job object including its ID.
+    """
+    config: dict[str, Any] = {"query": query, "db_driver": db_driver}
+    if host:
+        config["host"] = host
+    if port:
+        config["port"] = port
+    if database:
+        config["database"] = database
+    if username:
+        config["username"] = username
+    if password:
+        config["password"] = password
+    if schedule:
+        config["schedule"] = schedule
+
+    payload = {
+        "name": name,
+        "kind": "runtime",
+        "type": "sql",
+        "connector": "sql-mcp",
+        "environment": environment,
+        "config": config,
+        "data_sensitivity": "low",
+        "tags": [],
+    }
+    try:
+        result = _post("/jobs", payload)
+        return {
+            "id": result.get("id"),
+            "name": result.get("name"),
+            "status": result.get("status"),
+            "message": f"SQL job '{name}' created successfully.",
+        }
+    except Exception as exc:
+        raise ValueError(f"Failed to create SQL job '{name}': {exc}") from exc
+
+
+>>>>>>> polishing-agent-chat
 if __name__ == "__main__":
     mcp.run(transport="stdio")

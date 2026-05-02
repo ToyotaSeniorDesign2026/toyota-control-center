@@ -5,9 +5,9 @@ from pydantic import BaseModel, Field
 
 class GithubActionsWebhookPayload(BaseModel):
     event: str = Field(default="workflow_update")
-    status: str = Field(description="queued|in_progress|success|failed|cancelled")
+    status: str = Field(description="queued|in_progress|completed|success|failed|cancelled")
     run_id: str | None = None
-    resource_id: str | None = None
+    job_id: str | None = None
     workflow_run_id: str | None = None
     workflow_url: str | None = None
     conclusion: str | None = None

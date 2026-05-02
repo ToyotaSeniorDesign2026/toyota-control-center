@@ -4,13 +4,14 @@ from sqlalchemy.orm import Session
 
 from app.core.db import new_id, now_iso
 from app.models.audit_event import WorkflowEvent
+from app.models.job import Job
 from app.models.run import Run
 from app.schemas.integrations import GithubActionsWebhookPayload
 from app.services.audit_service import write_audit
 from app.services.log_service import append_run_log, sync_run_execution_status
 
 
-_ALLOWED_STATUSES = {"queued", "in_progress", "success", "failed", "cancelled"}
+_ALLOWED_STATUSES = {"queued", "in_progress", "completed", "success", "failed", "cancelled"}
 
 
 def _map_status_to_promotion(status: str, conclusion: str | None) -> str:
@@ -20,7 +21,7 @@ def _map_status_to_promotion(status: str, conclusion: str | None) -> str:
         return "success"
     if status in {"failed", "cancelled"}:
         return "failed"
-    if conclusion and conclusion.lower() in {"success", "failure", "cancelled"}:
+    if status == "completed" and conclusion and conclusion.lower() in {"success", "failure", "cancelled"}:
         return "success" if conclusion.lower() == "success" else "failed"
     return "unknown"
 
@@ -31,10 +32,10 @@ def _match_run(db: Session, payload: GithubActionsWebhookPayload) -> Run | None:
         if run:
             return run
 
-    if payload.resource_id:
+    if payload.job_id:
         return (
             db.query(Run)
-            .filter(Run.resource_id == payload.resource_id)
+            .filter(Run.job_id == payload.job_id)
             .order_by(Run.updated_at.desc())
             .first()
         )
@@ -80,6 +81,16 @@ def handle_github_actions_webhook(db: Session, payload: GithubActionsWebhookPayl
         matched_run.status = "promotion_in_progress"
 
     db.add(matched_run)
+    job = db.get(Job, matched_run.job_id)
+    if job:
+        if promotion_status == "success":
+            job.status = "published" if matched_run.action == "publish" else "deployed"
+        elif promotion_status == "failed":
+            job.status = "promotion_failed"
+        elif promotion_status in {"queued", "in_progress"}:
+            job.status = "promotion_in_progress"
+        job.updated_at = now_iso()
+        db.add(job)
     db.commit()
     sync_run_execution_status(db, matched_run)
 

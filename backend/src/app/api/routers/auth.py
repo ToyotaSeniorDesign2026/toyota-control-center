@@ -3,7 +3,11 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db
 from app.models.user import User
+<<<<<<< HEAD
 from app.schemas.user import LoginRequest, TokenOut, UserOut, UserUpdate
+=======
+from app.schemas.user import LoginRequest, TokenOut, UserOut
+>>>>>>> polishing-agent-chat
 
 router = APIRouter()
 
@@ -16,13 +20,18 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     return {
         "access_token": user.id,
         "token_type": "bearer",
+<<<<<<< HEAD
         "user": user,  # User object includes role, domain, and name
+=======
+        "user": user,
+>>>>>>> polishing-agent-chat
     }
 
 
 @router.get("/me", response_model=UserOut)
 def me(user=Depends(get_current_user)):
     return user
+<<<<<<< HEAD
 
 
 @router.put("/me", response_model=UserOut)
@@ -78,3 +87,5 @@ def update_me(payload: UserUpdate, user=Depends(get_current_user), db: Session =
     db.refresh(user)
     
     return user
+=======
+>>>>>>> polishing-agent-chat

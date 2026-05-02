@@ -26,7 +26,10 @@ import RequiredActionForm from "./pages/RequiredActionForm";
 import RequiredActions from "./pages/RequiredActions";
 import CreateJob from "./pages/CreateJob";
 import Connectors from "./pages/Connectors";
+<<<<<<< HEAD
 import Admin from "./pages/Admin";
+=======
+>>>>>>> polishing-agent-chat
 
 // Create the router with all routes
 export const router = createBrowserRouter([

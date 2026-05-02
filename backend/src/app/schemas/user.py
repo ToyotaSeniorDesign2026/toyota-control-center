@@ -1,11 +1,17 @@
+<<<<<<< HEAD
 from datetime import datetime
+=======
+>>>>>>> polishing-agent-chat
 from pydantic import BaseModel, ConfigDict, EmailStr
 
 
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+<<<<<<< HEAD
     # Core identity (read-only)
+=======
+>>>>>>> polishing-agent-chat
     id: str
     email: EmailStr
     name: str
@@ -14,6 +20,7 @@ class UserOut(BaseModel):
     is_active: bool = True
     created_at: str
 
+<<<<<<< HEAD
     # Profile fields
     first_name: str | None = None
     last_name: str | None = None
@@ -68,6 +75,8 @@ class UserUpdate(BaseModel):
     notifications: str | None = None
     timezone: str | None = None
 
+=======
+>>>>>>> polishing-agent-chat
 
 class LoginRequest(BaseModel):
     email: EmailStr
