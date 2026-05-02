@@ -14,8 +14,10 @@ from app.core.config import settings
 from app.core.db import new_id, now_iso
 from app.models.job import Job
 from app.models.run import Run
+from control_center.mcp import call_tool_once
+from control_center.registry import RegistryManager
+
 from app.services.audit_service import write_audit
-from app.services.chat_mcp_service import github_write_file
 from app.services.log_service import append_run_log, sync_run_execution_status
 
 
@@ -102,18 +104,33 @@ def _write_job_yaml(
     content: str,
     github_token: str,
 ) -> dict[str, Any]:
-    return asyncio.run(
-        github_write_file(
-            owner=owner,
-            repo=repo,
-            path=path,
-            content=content,
-            commit_message=f"Promote Control Center job {path}",
-            branch=branch,
-            github_token=github_token,
-            environment="dev",
+    async def _do_write() -> dict[str, Any]:
+        manager = RegistryManager(environment="dev")
+        server_configs = manager.get_server_configs(["github"])
+        server_config = {
+            **server_configs["github"],
+            "env": {
+                **server_configs["github"].get("env", {}),
+                "GITHUB_PERSONAL_ACCESS_TOKEN": github_token,
+            },
+        }
+        arguments: dict[str, Any] = {
+            "owner": owner,
+            "repo": repo,
+            "path": path,
+            "message": f"Promote Control Center job {path}",
+            "content": content,
+            "branch": branch or "main",
+        }
+        result = await call_tool_once(
+            server_name="github",
+            tool_name="create_or_update_file",
+            arguments=arguments,
+            server_config=server_config,
         )
-    )
+        return {"success": True, "result": str(result)}
+
+    return asyncio.run(_do_write())
 
 
 def promote_job_via_github(db: Session, user, job: Job, action: str) -> Job:

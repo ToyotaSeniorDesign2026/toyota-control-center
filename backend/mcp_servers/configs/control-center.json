@@ -4,6 +4,8 @@
   "type": "stdio",
   "env": {
     "CC_API_BASE_URL": "${CC_API_BASE_URL}",
-    "CC_SERVICE_TOKEN": "${CC_INTERNAL_SERVICE_TOKEN}"
+    "CC_SERVICE_TOKEN": "${CC_INTERNAL_SERVICE_TOKEN}",
+    "OPENAI_API_KEY": "${OPENAI_API_KEY}",
+    "OPENAI_MODEL": "${OPENAI_MODEL}"
   }
 }

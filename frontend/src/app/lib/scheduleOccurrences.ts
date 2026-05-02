@@ -79,6 +79,18 @@ function isDailySchedule(schedule: string): boolean {
   );
 }
 
+function isWeekdayRangeSchedule(schedule: string): boolean {
+  // Cron "minute hour * * N-M" where N-M is a day-of-week range like 1-5
+  const cronParts = schedule.trim().split(/\s+/);
+  if (cronParts.length === 5 && cronParts[2] === "*" && cronParts[3] === "*") {
+    return /^\d-\d$/.test(cronParts[4]);
+  }
+  return (
+    /every\s+weekday/i.test(schedule) ||
+    /monday\s*(through|to|-)\s*friday/i.test(schedule)
+  );
+}
+
 function isWeeklySchedule(schedule: string): boolean {
   const normalized = schedule.toLowerCase();
   // Cron "minute hour * * day_of_week"
@@ -119,7 +131,34 @@ export function createScheduledRunProjections(
     const endDate = parseEndDate(schedule);
     const cutoff = endDate ?? new Date(now.getTime() + daysAhead * 24 * 60 * 60 * 1000);
 
-    if (isDailySchedule(schedule)) {
+    if (isWeekdayRangeSchedule(schedule)) {
+      // Parse day-of-week range from cron (e.g. "1-5") or default Mon-Fri
+      const cronParts = schedule.trim().split(/\s+/);
+      let startDow = 1;
+      let endDow = 5;
+      if (cronParts.length === 5 && /^\d-\d$/.test(cronParts[4])) {
+        [startDow, endDow] = cronParts[4].split("-").map(Number);
+      }
+
+      const cursor = new Date(now);
+      cursor.setHours(parsedTime.hour, parsedTime.minute, 0, 0);
+      if (cursor <= now) cursor.setDate(cursor.getDate() + 1);
+
+      while (cursor <= cutoff) {
+        const dow = cursor.getDay();
+        if (dow >= startDow && dow <= endDow) {
+          const scheduledTime = new Date(cursor);
+          occurrences.push({
+            id: `schedule-${job.id}-${dateKey(scheduledTime)}`,
+            jobId: job.id,
+            jobName: job.name,
+            jobType: job.type.toUpperCase(),
+            scheduledTime,
+          });
+        }
+        cursor.setDate(cursor.getDate() + 1);
+      }
+    } else if (isDailySchedule(schedule)) {
       const first = new Date(now);
       first.setHours(parsedTime.hour, parsedTime.minute, 0, 0);
       if (first <= now) first.setDate(first.getDate() + 1);

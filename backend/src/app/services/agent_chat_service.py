@@ -9,7 +9,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.services.chat_mcp_service import run_prompt_native_mcp
+from control_center.agent import build_agent_from_registry
 
 logger = logging.getLogger(__name__)
 
@@ -64,59 +64,11 @@ class AgentResult:
 # ── System prompt ──────────────────────────────────────────────────────────────
 
 _SYSTEM_PROMPT = """\
-You are CC Assistant for the Toyota Control Center.
-You help users manage automated jobs, monitor run history, and create new jobs.
+You are CC Assistant for the Toyota Control Center — a platform for managing, scheduling, and running automated data jobs.
 
-AVAILABLE TOOLS:
-- list_jobs                  — list all registered jobs (filter by type or status)
-- get_job                    — get full details for a specific job
-- list_runs                  — see recent run history
-- get_run_status             — check the status of a specific run
-- trigger_run                — kick off an existing job by its ID
-- request_db_type_selection  — show the user a database type picker (use when DB type is unknown)
-- request_db_connection_form — show the user a credentials form (use when DB type is known)
-- create_sql_job             — create a new SQL job (only once ALL required fields are known)
+Be concise. Always use your available tools to answer questions about jobs and runs; never guess at IDs or status.
 
-GENERAL BEHAVIOR:
-- Be concise — one to three sentences unless more detail is clearly needed.
-- Always call a tool first when the user asks about existing jobs or runs.
-- After triggering a run, confirm the run ID and status in your reply.
-- If a tool returns an error, explain it plainly and suggest next steps.
-- If the user asks to run an existing job by name, call list_jobs first to get the ID, then call trigger_run.
-
-SQL JOB CREATION WORKFLOW — follow these steps in order, do not skip ahead:
-
-  STEP 1 — Understand the request:
-    Ask for (or confirm) the job name and what the SQL query should do.
-    A plain-English description is fine; you will convert it to SQL internally.
-
-  STEP 2 — Determine the database type:
-    • If the user has already told you the database type → go to STEP 3.
-    • Otherwise → call request_db_type_selection() and say "Which database are you connecting to?"
-      Then STOP and wait for the user to select a type before proceeding.
-
-  STEP 3 — Collect connection credentials:
-    Call request_db_connection_form(db_type=<the driver string>) and say
-    "Please fill in the connection details below."
-    Then STOP and wait for the user to submit the form before proceeding.
-
-  STEP 4 — Create the job:
-    Once the SESSION CONNECTION DETAILS section below is populated, call create_sql_job() using:
-      • name        — from the conversation
-      • query       — the SQL query (translate plain English if needed)
-      • db_driver   — the driver you used in request_db_connection_form
-      • host        — SQL_DB_HOST from session (empty string for SQLite)
-      • port        — SQL_DB_PORT from session (empty string for SQLite/Snowflake)
-      • database    — SQL_DB_DATABASE from session
-      • username    — SQL_DB_USERNAME from session (empty string for SQLite)
-      • password    — SQL_DB_PASSWORD from session (empty string for SQLite)
-    After creation, confirm the job name and offer to trigger it.
-
-IMPORTANT:
-- Never invent or assume connection credentials.
-- Do not call create_sql_job() unless SESSION CONNECTION DETAILS is populated below.
-- When the user sends a raw driver string (e.g. "postgresql+psycopg") as their entire message,
-  it means they selected that database type from the picker — proceed immediately to STEP 3.
+CRITICAL — job creation rule: before calling any create_*_job tool, you MUST present a confirmation summary to the user that lists every field you are about to submit (name, type, schedule, environment, query, connector, etc.) and explicitly ask them to confirm. Only proceed with creation after the user says yes or approves. Never skip this step.
 """
 
 
@@ -169,8 +121,15 @@ def _extract_run_id(tool_executions: list[dict]) -> str | None:
     return None
 
 
-def _build_config_request(db_type: str, prompt: str) -> dict:
-    fields = _CONNECTION_FIELDS.get(db_type, _DEFAULT_CONNECTION_FIELDS)
+def _build_config_request(db_type: str, prompt: str, prefill: dict | None = None) -> dict:
+    base_fields = _CONNECTION_FIELDS.get(db_type, _DEFAULT_CONNECTION_FIELDS)
+    if prefill:
+        fields = [
+            {**f, "default_value": prefill[f["key"]]} if f["key"] in prefill else f
+            for f in base_fields
+        ]
+    else:
+        fields = base_fields
     db_label = db_type.split("+")[0].title()
     return {
         "kind": "sql_session_env",
@@ -195,9 +154,45 @@ def _parse_signal_tools(tool_executions: list[dict]) -> tuple[dict | None, list[
         elif name == "request_db_connection_form":
             db_type = args.get("db_type", "") if isinstance(args, dict) else ""
             prompt = args.get("prompt", "") if isinstance(args, dict) else ""
-            config_request = _build_config_request(db_type, prompt)
+            prefill = args.get("prefill") if isinstance(args, dict) else None
+            config_request = _build_config_request(db_type, prompt, prefill)
 
     return config_request, db_type_options
+
+
+# ── Server resolution ──────────────────────────────────────────────────────────
+
+def _resolve_servers(
+    session_env: dict[str, str] | None,
+    server_env_overrides: dict[str, dict[str, str]] | None,
+) -> tuple[list[str], dict[str, dict[str, str]]]:
+    """Determine which MCP servers to connect to based on available credentials.
+
+    Always includes "control-center". Adds "sql-mcp" when session_env contains
+    any key starting with SQL_DB_, and adds "github" when server_env_overrides
+    already contains a github entry with a GITHUB_PERSONAL_ACCESS_TOKEN.
+
+    Returns (servers, overrides) where overrides is a merged dict ready to pass
+    to build_agent_from_registry.
+    """
+    servers: list[str] = ["control-center"]
+    overrides: dict[str, dict[str, str]] = dict(server_env_overrides or {})
+
+    # Include sql-mcp if SQL connection details are available in session
+    if session_env:
+        sql_vars = {k: v for k, v in session_env.items() if k.startswith("SQL_DB_")}
+        if sql_vars:
+            servers.append("sql-mcp")
+            existing_sql = dict(overrides.get("sql-mcp", {}))
+            existing_sql.update(sql_vars)
+            overrides["sql-mcp"] = existing_sql
+
+    # Include github if a token is already in overrides
+    github_overrides = overrides.get("github", {})
+    if github_overrides.get("GITHUB_PERSONAL_ACCESS_TOKEN"):
+        servers.append("github")
+
+    return servers, overrides
 
 
 # ── Public entry point ─────────────────────────────────────────────────────────
@@ -215,19 +210,44 @@ async def run_agent(
     """Run the control center agent for one user turn. Returns AgentResult."""
     full_prompt = _build_full_prompt(message, conversation_history, session_env)
 
-    try:
-        result = await run_prompt_native_mcp(
-            message=full_prompt,
-            server_names=["control-center"],
-            model=model,
-            server_env_overrides=server_env_overrides,
-        )
+    # Inject the real user's token so CC MCP server creates jobs owned by that user.
+    merged_overrides = dict(server_env_overrides or {})
+    cc_overrides = dict(merged_overrides.get("control-center", {}))
+    cc_overrides["CC_USER_TOKEN"] = str(user.id)
+    merged_overrides["control-center"] = cc_overrides
 
-        config_request, db_type_options = _parse_signal_tools(result.tool_executions)
-        run_id = _extract_run_id(result.tool_executions)
+    servers, overrides = _resolve_servers(session_env, merged_overrides)
+
+    try:
+        agent = await build_agent_from_registry(
+            environment="dev",
+            server_names=servers,
+            selection_prompt=None,
+            model=model,
+            server_env_overrides=overrides if overrides else None,
+            max_tool_rounds=20,
+            verbose=False,
+        )
+        try:
+            response = await agent.run(full_prompt)
+            tool_executions = [
+                {
+                    "framework_name": item.framework_name,
+                    "server_name": item.server_name,
+                    "remote_name": item.remote_name,
+                    "arguments": item.arguments,
+                    "parsed_result": item.parsed_result,
+                }
+                for item in response.tool_executions
+            ]
+        finally:
+            await agent.cleanup()
+
+        config_request, db_type_options = _parse_signal_tools(tool_executions)
+        run_id = _extract_run_id(tool_executions)
 
         return AgentResult(
-            response=result.response or "Done.",
+            response=response.final_text or "Done.",
             config_request=config_request,
             db_type_options=db_type_options,
             run_id=run_id,

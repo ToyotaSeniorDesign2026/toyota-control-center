@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { formatSchedule } from "../../lib/formatSchedule";
 import { X, CheckCircle, XCircle, AlertTriangle, ArrowRight, User, Calendar, Shield, MessageSquare } from "lucide-react";
 import { Button } from "../ui/button";
 import { Approval } from "./ApprovalsTable";
@@ -308,8 +309,8 @@ export function ApprovalDetailDrawer({
                           <div className="text-xs font-medium text-gray-500 mb-1">
                             Schedule
                           </div>
-                          <div className="text-sm font-mono text-gray-900">
-                            {specDiff.before.schedule}
+                          <div className="text-sm text-gray-900">
+                            {formatSchedule(specDiff.before.schedule)}
                           </div>
                         </div>
                         <div>
@@ -362,8 +363,8 @@ export function ApprovalDetailDrawer({
                           <div className="text-xs font-medium text-gray-700 mb-1">
                             Schedule
                           </div>
-                          <div className="text-sm font-mono text-green-700 font-semibold">
-                            {specDiff.after.schedule}
+                          <div className="text-sm text-green-700 font-semibold">
+                            {formatSchedule(specDiff.after.schedule)}
                           </div>
                         </div>
                         <div>

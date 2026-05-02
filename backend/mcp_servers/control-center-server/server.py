@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -20,14 +21,19 @@ from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
 
-_BASE_URL = os.environ.get("CC_API_BASE_URL", "http://localhost:8000").rstrip("/")
+_BASE_URL = (os.environ.get("CC_API_BASE_URL") or "http://localhost:8000").rstrip("/")
 _TOKEN = os.environ.get("CC_SERVICE_TOKEN", "")
+_USER_TOKEN = os.environ.get("CC_USER_TOKEN", "")
 
 mcp = FastMCP("control-center")
 
 
-def _headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {_TOKEN}", "Content-Type": "application/json"}
+def _headers(token: str | None = None) -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    tok = token or _TOKEN
+    if tok:
+        headers["Authorization"] = f"Bearer {tok}"
+    return headers
 
 
 def _get(path: str, params: dict | None = None) -> Any:
@@ -38,10 +44,10 @@ def _get(path: str, params: dict | None = None) -> Any:
         return resp.json()
 
 
-def _post(path: str, body: dict) -> Any:
+def _post(path: str, body: dict, token: str | None = None) -> Any:
     url = f"{_BASE_URL}{path}"
     with httpx.Client(timeout=30) as client:
-        resp = client.post(url, headers=_headers(), content=json.dumps(body))
+        resp = client.post(url, headers=_headers(token), content=json.dumps(body))
         resp.raise_for_status()
         return resp.json()
 
@@ -178,36 +184,50 @@ def trigger_run(
 
 @mcp.tool()
 def request_db_type_selection() -> dict:
-    """Signal that the user needs to select a database type.
+    """Render a database type picker in the user's browser.
 
-    Call this when the user wants to create or run a SQL job but has not yet specified
-    which database system they are connecting to (PostgreSQL, MySQL, SQLite, Snowflake).
-    The frontend will render a database type picker.
+    YOU MUST CALL THIS TOOL — do not describe the options in plain text.
+    Calling this tool is what physically renders the picker UI. Without it,
+    the user has no way to select a database type.
 
-    After calling this tool, reply with a short message such as
-    "Which database are you connecting to?" and end your turn — wait for the user's selection.
+    Call this whenever the user wants to create a SQL job and has not yet
+    specified which database system they are connecting to.
+
+    After calling this tool, ask "Which database are you connecting to?" and stop.
+    Wait for the user's selection before proceeding.
     """
     return {"signal": "db_type_selection", "status": "Database type selection form shown to user."}
 
 
 @mcp.tool()
-def request_db_connection_form(db_type: str, prompt: str = "") -> dict:
-    """Signal that the user needs to enter database connection credentials.
+def request_db_connection_form(db_type: str, prompt: str = "", prefill: dict | None = None) -> dict:
+    """Render a database credentials form in the user's browser.
 
-    Call this when you know the database driver and need the user to supply
-    connection details (host, port, database name, username, password).
+    YOU MUST CALL THIS TOOL — do not ask for credentials in plain text.
+    Calling this tool is what physically renders the input form. Without it,
+    the user has no way to enter their connection details.
+
+    Call this as soon as the database type is known and credentials are needed.
 
     Args:
-        db_type: The database driver string.
-                 Valid values: 'postgresql+psycopg', 'mysql+pymysql', 'sqlite', 'snowflake'.
-        prompt:  Optional message to display above the form. Leave blank for a sensible default.
+        db_type:  The database driver string.
+                  Valid values: 'postgresql+psycopg', 'mysql+pymysql', 'sqlite', 'snowflake'.
+        prompt:   Optional message to display above the form.
+        prefill:  Optional dict of SQL_DB_* keys to pre-populate from values already known.
+                  Mapping from extract_job_fields output → prefill key:
+                    database  → SQL_DB_DATABASE
+                    host      → SQL_DB_HOST
+                    port      → SQL_DB_PORT
+                    username  → SQL_DB_USERNAME
+                  Example: {"SQL_DB_DATABASE": "customer_accounts", "SQL_DB_HOST": "db.example.com"}
 
-    After calling this tool, say something like "Please fill in your connection details below."
-    Then stop — the user will submit the form and the details will appear in the next turn's context.
+    After calling this tool, say "Please fill in your connection details below." and stop.
+    Wait for the user to submit the form — credentials will appear in the next turn's context.
     """
     return {
         "signal": "connection_form",
         "db_type": db_type,
+        "prefill": prefill or {},
         "prompt": prompt or f"Enter your connection details for {db_type.split('+')[0].title()}.",
         "status": "Connection credentials form shown to user.",
     }
@@ -223,12 +243,15 @@ def create_sql_job(
     database: str = "",
     username: str = "",
     password: str = "",
+    run_type: str = "manual",
     schedule: str = "",
     environment: str = "dev",
 ) -> dict:
     """Create a new SQL job in the Control Center.
 
-    Only call this tool once you have ALL required fields from the user.
+    Only call this after completing the full workflow in extract_job_fields:
+    extract fields → get db type → get connection form → discover schema → write query → confirm.
+
     Required fields vary by driver:
       - postgresql+psycopg / mysql+pymysql: host, port, database, username, password
       - sqlite:                             database (file path or ':memory:')
@@ -236,19 +259,24 @@ def create_sql_job(
 
     Args:
         name:        Unique, descriptive job name.
-        query:       The SQL query to execute (translate plain English to SQL if needed).
+        query:       The SQL query to execute. Use actual table names discovered via list_tables.
         db_driver:   Database driver string (e.g. 'postgresql+psycopg', 'sqlite', 'snowflake').
         host:        Database host or Snowflake account identifier (empty for SQLite).
         port:        Database port as a string (empty for SQLite and Snowflake).
         database:    Database name, file path, or Snowflake DATABASE/SCHEMA.
         username:    Database username (empty for SQLite).
         password:    Database password (empty for SQLite).
-        schedule:    Optional cron expression (e.g. '0 9 * * 1'). Omit for manual runs.
+        run_type:    'manual' for one-off runs or 'scheduled' for recurring runs. Default 'manual'.
+        schedule:    Cron expression — required when run_type is 'scheduled' (e.g. '0 8 * * 1-5').
+                     Translate natural language schedules: "every weekday at 8 AM" → '0 8 * * 1-5'.
         environment: Target environment — 'dev', 'semi-prod', or 'prod'. Default 'dev'.
 
     Returns the created job object including its ID.
     """
-    config: dict[str, Any] = {"query": query, "db_driver": db_driver}
+    _ENV_ALIASES = {"development": "dev", "production": "prod", "staging": "semi-prod"}
+    environment = _ENV_ALIASES.get(environment.lower(), environment.lower())
+
+    config: dict[str, Any] = {"query": query, "db_driver": db_driver, "run_type": run_type}
     if host:
         config["host"] = host
     if port:
@@ -273,7 +301,7 @@ def create_sql_job(
         "tags": [],
     }
     try:
-        result = _post("/jobs", payload)
+        result = _post("/jobs", payload, token=_USER_TOKEN or None)
         return {
             "id": result.get("id"),
             "name": result.get("name"),
@@ -282,6 +310,223 @@ def create_sql_job(
         }
     except Exception as exc:
         raise ValueError(f"Failed to create SQL job '{name}': {exc}") from exc
+
+
+_REGISTRY_PATH = Path(
+    os.environ.get("CC_REGISTRY_PATH", "")
+    or str(Path(__file__).parent.parent.parent / "src" / "control_center" / "registry" / "registry.json")
+)
+
+
+def _load_registry() -> dict[str, Any]:
+    try:
+        with open(_REGISTRY_PATH) as f:
+            return json.load(f)
+    except Exception as exc:
+        logger.warning("Could not load registry from %s: %s", _REGISTRY_PATH, exc)
+        return {}
+
+
+@mcp.tool()
+def get_job_type_schema(job_type: str | None = None, driver: str | None = None) -> dict:
+    """Return required and optional fields for a job type, sourced from the registry.
+
+    Call this before creating a job to know exactly which fields to collect from the user.
+
+    Args:
+        job_type: The job type to look up — e.g. 'sql', 'repo_connection', 'mcp'.
+                  Omit (or pass None) to list all available job types.
+        driver:   For SQL jobs only, the database driver to get driver-specific field
+                  requirements — e.g. 'sqlite', 'postgresql', 'snowflake'.
+
+    Returns a dict with:
+        universal_required    Fields every job must have (job_name, owner, run_type)
+        universal_optional    Fields any job may optionally have
+        job_required          Fields required for this specific job type
+        job_optional          Fields optionally used by this job type
+        driver_required       (SQL + driver only) additional required fields for the driver
+        driver_optional       (SQL + driver only) optional fields for the driver
+        driver_notes          (SQL + driver only) usage notes for the driver
+        db_driver_value       (SQL + driver only) exact db_driver string to pass to create_sql_job
+        available_job_types   (no job_type given) list of {job_type, display_name, description}
+    """
+    registry = _load_registry()
+    universal = registry.get("universal_job_fields", {})
+    approved = registry.get("approved_servers", {})
+
+    if not job_type:
+        seen: set[str] = set()
+        types: list[dict[str, Any]] = []
+        for server_key, srv in approved.items():
+            jt = srv.get("job_type")
+            if not jt or jt in seen:
+                continue
+            seen.add(jt)
+            types.append({
+                "job_type": jt,
+                "display_name": srv.get("display_name", server_key),
+                "description": srv.get("description", ""),
+            })
+        return {
+            "universal_required": universal.get("required", []),
+            "universal_optional": universal.get("optional", []),
+            "available_job_types": types,
+        }
+
+    matched: dict[str, Any] = {}
+    for srv in approved.values():
+        if srv.get("job_type") == job_type:
+            matched = srv
+            break
+
+    result: dict[str, Any] = {
+        "universal_required": universal.get("required", []),
+        "universal_optional": universal.get("optional", []),
+        "job_required": matched.get("required_fields", []),
+        "job_optional": matched.get("optional_fields", []),
+    }
+
+    if driver and matched.get("drivers"):
+        driver_info: dict[str, Any] = matched["drivers"].get(driver, {})
+        result["driver_required"] = driver_info.get("required_fields", [])
+        result["driver_optional"] = driver_info.get("optional_fields", [])
+        if driver_info.get("notes"):
+            result["driver_notes"] = driver_info["notes"]
+        if driver_info.get("db_driver_value"):
+            result["db_driver_value"] = driver_info["db_driver_value"]
+
+    return result
+
+
+@mcp.tool()
+def extract_job_fields(message: str, job_type: str, driver: str | None = None) -> dict:
+    """Extract structured job field values from a natural language user message.
+
+    For SQL jobs, use this tool only for scheduling/config fields — NOT for the query.
+    The query must be written after connecting to the database and inspecting real schema
+    via list_tables and get_table_columns. Generating a query before schema discovery
+    produces wrong table/column names.
+
+    SQL job workflow — follow this exact order:
+    1. Call this tool to extract: job_name, run_type, schedule, environment, database (hint only).
+    2. Ask which database type to use (or call request_db_type_selection).
+    3. Call request_db_connection_form, passing a prefill dict that maps every extracted value:
+         extracted["database"] → prefill["SQL_DB_DATABASE"]
+         extracted["host"]     → prefill["SQL_DB_HOST"]
+         extracted["port"]     → prefill["SQL_DB_PORT"]
+         extracted["username"] → prefill["SQL_DB_USERNAME"]
+       Always include SQL_DB_DATABASE in prefill if the database name was extracted — even as a hint.
+    4. After the user submits credentials, call test_connection first to verify connectivity.
+       If it fails, show the exact error to the user and ask them to correct the details.
+    5. Call list_tables then get_table_columns on the relevant table(s) to learn real schema.
+    6. Write the SQL query using actual table and column names.
+    7. Show a full summary (including the query) and ask for confirmation.
+    8. Call create_sql_job only after the user confirms.
+
+    Args:
+        message:  The user's full request (can be a complete paragraph).
+        job_type: The job type to create — e.g. 'sql'. Call get_job_type_schema
+                  first if you are not sure which type the user wants.
+        driver:   For SQL jobs, the database driver if already known
+                  ('sqlite', 'postgresql', 'snowflake', 'mysql'). Omit otherwise.
+
+    Returns:
+        extracted:        {field_name: value} for every non-query field found in the message.
+                          Note: if 'database' is extracted, it is a description hint only —
+                          the user must confirm the actual database name on their server.
+        missing_required: Required fields not present in the message (query is always deferred).
+        summary:          Human-readable summary of what was extracted so far.
+    """
+    registry = _load_registry()
+    universal = registry.get("universal_job_fields", {})
+    approved = registry.get("approved_servers", {})
+
+    # owner: always set from authenticated user — never ask the user for it
+    # query: must be written after schema discovery (list_tables + get_table_columns)
+    _SKIP_FIELDS = {"owner", "query"}
+
+    required: list[str] = [f for f in universal.get("required", []) if f not in _SKIP_FIELDS]
+    optional: list[str] = [f for f in universal.get("optional", []) if f not in _SKIP_FIELDS]
+
+    for srv in approved.values():
+        if srv.get("job_type") != job_type:
+            continue
+        required += srv.get("required_fields", [])
+        optional += srv.get("optional_fields", [])
+        if driver:
+            driver_info: dict[str, Any] = srv.get("drivers", {}).get(driver, {})
+            required += driver_info.get("required_fields", [])
+            optional += driver_info.get("optional_fields", [])
+        break
+
+    seen: set[str] = set()
+    unique_required: list[str] = []
+    for f in required:
+        if f not in seen:
+            seen.add(f)
+            unique_required.append(f)
+    all_fields = unique_required + [f for f in optional if f not in seen]
+
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        return {
+            "extracted": {},
+            "missing_required": unique_required,
+            "summary": "Field extraction unavailable — OPENAI_API_KEY not configured.",
+        }
+
+    try:
+        from openai import OpenAI as _OpenAI
+        client = _OpenAI(api_key=api_key)
+
+        system_prompt = (
+            f"Extract job configuration field values from the user message.\n"
+            f"Job type: {job_type}\n"
+            f"Fields to extract: {all_fields}\n\n"
+            "Rules:\n"
+            "- Only extract a value if it is explicitly stated or unambiguously implied.\n"
+            "- 'run_type': output 'scheduled' if any recurring schedule or frequency is mentioned, "
+            "otherwise 'manual'.\n"
+            "- 'schedule': translate natural language to a cron expression. Examples:\n"
+            "    'every weekday at 8 AM'  → '0 8 * * 1-5'\n"
+            "    'every day at midnight'  → '0 0 * * *'\n"
+            "    'every Monday at 9 AM'   → '0 9 * * 1'\n"
+            "    'hourly'                 → '0 * * * *'\n"
+            "- 'environment': one of 'dev', 'semi-prod', 'prod'. Use 'dev' if not stated.\n"
+            "- 'job_name': use the exact name if stated (e.g. 'Name the job X' → X).\n"
+            "- For SQL 'database': infer a snake_case name from context when possible "
+            "(e.g. 'customer accounts database' → 'customer_accounts').\n"
+            "- Return a flat JSON object with only the fields you found. Omit fields you are unsure about."
+        )
+
+        resp = client.chat.completions.create(
+            model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": message},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0,
+            max_tokens=400,
+        )
+
+        raw: dict[str, Any] = json.loads(resp.choices[0].message.content or "{}")
+        extracted = {k: v for k, v in raw.items() if k in all_fields and v not in (None, "", [])}
+        missing = [f for f in unique_required if f not in extracted]
+
+        parts = [f"{k}: {v}" for k, v in extracted.items()]
+        summary = ("Extracted from your message — " + ", ".join(parts) + ".") if parts else "No fields could be extracted from the message."
+        if missing:
+            summary += f" Still needed: {', '.join(missing)}."
+
+        return {"extracted": extracted, "missing_required": missing, "summary": summary}
+
+    except Exception as exc:
+        return {
+            "extracted": {},
+            "missing_required": unique_required,
+            "summary": f"Extraction failed: {exc}",
+        }
 
 
 if __name__ == "__main__":

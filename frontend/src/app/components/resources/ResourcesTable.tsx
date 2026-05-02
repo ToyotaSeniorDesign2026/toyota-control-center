@@ -1,4 +1,5 @@
 import { FilterType } from "../../pages/Jobs";
+import { formatSchedule } from "../../lib/formatSchedule";
 import {
   MoreVertical,
   Play,
@@ -375,8 +376,8 @@ export function JobsTable({
                 <TableCell>
                   <RiskScore score={job.riskScore} />
                 </TableCell>
-                <TableCell className="font-mono text-xs text-gray-600">
-                  {job.schedule}
+                <TableCell className="text-xs text-gray-600">
+                  {formatSchedule(job.schedule)}
                 </TableCell>
                 <TableCell className="text-gray-600">{job.owner}</TableCell>
                 <TableCell>

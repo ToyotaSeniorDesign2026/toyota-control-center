@@ -1,4 +1,5 @@
 import { FilterType } from "../../pages/Jobs";
+import { formatSchedule } from "../../lib/formatSchedule";
 import {
   MoreVertical,
   Play,
@@ -335,7 +336,7 @@ export function JobsCards({
               {/* Schedule & Last Run */}
               <div className="mt-4 space-y-1 border-t border-gray-100 pt-4">
                 <p className="text-xs text-gray-600">
-                  <span className="font-medium">Schedule:</span> {job.schedule}
+                  <span className="font-medium">Schedule:</span> {formatSchedule(job.schedule)}
                 </p>
                 <p className="text-xs text-gray-600">
                   <span className="font-medium">Last run:</span> {job.lastRun}

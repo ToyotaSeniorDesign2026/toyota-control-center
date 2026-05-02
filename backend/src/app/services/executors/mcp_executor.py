@@ -158,8 +158,6 @@ class MCPJobExecutor(BaseJobExecutor):
 
     async def _execute_github_write(self, execution_request: ExecutionRequest) -> MCPToolResult:
         """Write a SQL script to GitHub. Token comes from run params."""
-        from app.services.chat_mcp_service import github_write_file
-
         run_spec = execution_request.run_spec
         assert isinstance(run_spec, DirectToolCall)
 
@@ -175,17 +173,30 @@ class MCPJobExecutor(BaseJobExecutor):
             return MCPToolResult.failure(code="incomplete_args", message="Incomplete GitHub write arguments.")
 
         try:
-            result = await github_write_file(
-                owner=args["owner"],
-                repo=args["repo"],
-                path=args.get("path", ""),
-                content=args["content"],
-                commit_message=args.get("message", f"Add file {args.get('path', '')}"),
-                branch=args.get("branch", "main"),
-                github_token=github_token,
-                environment=execution_request.target_environment,
+            manager = RegistryManager(environment=execution_request.target_environment)
+            server_configs = manager.get_server_configs(["github"])
+            server_config = {
+                **server_configs["github"],
+                "env": {
+                    **server_configs["github"].get("env", {}),
+                    "GITHUB_PERSONAL_ACCESS_TOKEN": github_token,
+                },
+            }
+            arguments = {
+                "owner": args["owner"],
+                "repo": args["repo"],
+                "path": args.get("path", ""),
+                "message": args.get("message", f"Add file {args.get('path', '')}"),
+                "content": args["content"],
+                "branch": args.get("branch", "main"),
+            }
+            result = await call_tool_once(
+                server_name="github",
+                tool_name="create_or_update_file",
+                arguments=arguments,
+                server_config=server_config,
             )
-            return MCPToolResult.success(data=result)
+            return MCPToolResult.success(data={"success": True, "result": str(result)})
         except Exception as exc:
             return MCPToolResult.failure(code="github_write_error", message=str(exc))
 

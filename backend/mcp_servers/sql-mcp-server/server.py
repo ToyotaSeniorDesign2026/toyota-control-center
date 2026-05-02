@@ -47,12 +47,18 @@ _CONNECT_TIMEOUT = int(os.environ.get("SQL_CONNECT_TIMEOUT", "15"))
 _QUERY_TIMEOUT = int(os.environ.get("SQL_QUERY_TIMEOUT", "30"))
 
 
+def _resolved(key: str, default: str = "") -> str:
+    """Get env var, treating unexpanded ${...} templates as unset."""
+    val = os.environ.get(key, default).strip()
+    return default if (val.startswith("${") and val.endswith("}")) else val
+
+
 def _build_sqlalchemy_url() -> str:
-    driver = (os.environ.get("SQL_DB_DRIVER") or "postgresql+psycopg").strip().lower()
+    driver = (_resolved("SQL_DB_DRIVER") or "postgresql+psycopg").lower()
 
     # SQLite — only needs a file path
     if driver == "sqlite":
-        database = os.environ.get("SQL_DB_DATABASE", "").strip()
+        database = _resolved("SQL_DB_DATABASE")
         if not database:
             raise RuntimeError(
                 "SQLite requires SQL_DB_DATABASE set to a file path or ':memory:'."
@@ -60,7 +66,7 @@ def _build_sqlalchemy_url() -> str:
         return f"sqlite:///{database}" if database != ":memory:" else "sqlite://"
 
     # All other drivers — try ADO.NET string first, then individual vars
-    raw = os.environ.get("SQL_CONNECTION_STRING", "")
+    raw = _resolved("SQL_CONNECTION_STRING")
     m = _ADOINET_RE.search(raw)
     if m:
         host = m.group("host")
@@ -69,11 +75,11 @@ def _build_sqlalchemy_url() -> str:
         username = m.group("username")
         password = m.group("password")
     else:
-        host = os.environ.get("SQL_DB_HOST", "")
-        port = os.environ.get("SQL_DB_PORT", "5432")
-        database = os.environ.get("SQL_DB_DATABASE", "")
-        username = os.environ.get("SQL_DB_USERNAME", "")
-        password = os.environ.get("SQL_DB_PASSWORD", "")
+        host = _resolved("SQL_DB_HOST")
+        port = _resolved("SQL_DB_PORT", "5432")
+        database = _resolved("SQL_DB_DATABASE")
+        username = _resolved("SQL_DB_USERNAME")
+        password = _resolved("SQL_DB_PASSWORD")
 
     if not all([host, database, username, password]):
         raise RuntimeError(
@@ -86,7 +92,7 @@ def _build_sqlalchemy_url() -> str:
     if driver in ("snowflake", "snowflake+snowflake-sqlalchemy"):
         from urllib.parse import quote_plus, urlencode
         account = re.sub(r"\.snowflakecomputing\.com$", "", host, flags=re.IGNORECASE)
-        warehouse = os.environ.get("SQL_DB_WAREHOUSE", "").strip()
+        warehouse = _resolved("SQL_DB_WAREHOUSE")
         qs = ("?" + urlencode({"warehouse": warehouse})) if warehouse else ""
         return (
             f"snowflake://"
@@ -99,13 +105,13 @@ def _build_sqlalchemy_url() -> str:
 
 def _make_engine():
     url = _build_sqlalchemy_url()
-    driver = (os.environ.get("SQL_DB_DRIVER") or "postgresql+psycopg").strip().lower()
+    driver = (_resolved("SQL_DB_DRIVER") or "postgresql+psycopg").lower()
     connect_args = {} if driver == "sqlite" else {"connect_timeout": _CONNECT_TIMEOUT}
     return create_engine(url, connect_args=connect_args)
 
 
 def _list_tables_query() -> str:
-    driver = (os.environ.get("SQL_DB_DRIVER") or "postgresql+psycopg").strip().lower()
+    driver = (_resolved("SQL_DB_DRIVER") or "postgresql+psycopg").lower()
     if driver == "sqlite":
         return "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
     # Snowflake and PostgreSQL both support information_schema
@@ -120,19 +126,93 @@ mcp = FastMCP("sql-mcp-server")
 
 
 @mcp.tool()
-def list_tables() -> list[str]:
-    """Return the names of all user tables in the connected database."""
+def test_connection() -> dict[str, Any]:
+    """Verify that the current connection settings can reach the database.
+
+    Call this first whenever sql-mcp becomes available (after the user submits
+    connection credentials) to confirm the connection works before calling
+    list_tables or execute_sql.
+
+    Returns:
+        On success: {"ok": true, "driver": "<driver>", "database": "<db>", "host": "<host>"}
+        On failure: {"ok": false, "error": "<message>"}
+          Common errors:
+            "database does not exist"  — wrong database name, ask user to correct it
+            "connection refused"       — wrong host/port
+            "authentication failed"    — wrong username/password
+    """
+    try:
+        url = _build_sqlalchemy_url()
+        driver = (_resolved("SQL_DB_DRIVER") or "postgresql+psycopg").lower()
+        connect_args = {} if driver == "sqlite" else {"connect_timeout": _CONNECT_TIMEOUT}
+        engine = create_engine(url, connect_args=connect_args)
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {
+            "ok": True,
+            "driver": driver,
+            "database": _resolved("SQL_DB_DATABASE"),
+            "host": _resolved("SQL_DB_HOST"),
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@mcp.tool()
+def list_tables() -> dict[str, Any]:
+    """Return the names of all user tables in the connected database.
+
+    If the connection fails (e.g. wrong database name, bad credentials), returns an
+    error dict instead of raising. Tell the user the specific error and ask them to
+    correct the connection details — do not retry with the same values.
+
+    Returns {"tables": [...]} on success or {"error": "<message>"} on failure.
+    """
     try:
         engine = _make_engine()
         with engine.connect() as conn:
             result = conn.execute(text(_list_tables_query()))
-            return [row[0] for row in result]
+            return {"tables": [row[0] for row in result]}
     except Exception as exc:
-        raise ValueError(f"Failed to list tables: {exc}") from exc
+        return {"error": str(exc)}
 
 
 @mcp.tool()
-def execute_query(query: str) -> dict[str, Any]:
+def get_table_columns(table_name: str) -> dict[str, Any]:
+    """Return column names and data types for a table in the connected database.
+
+    Call this after list_tables to inspect a table's schema before writing a query.
+
+    Args:
+        table_name: Exact table name as returned by list_tables.
+
+    Returns {"columns": [{name, type}, ...]} on success or {"error": "<message>"} on failure.
+    """
+    driver = (_resolved("SQL_DB_DRIVER") or "postgresql+psycopg").lower()
+    try:
+        engine = _make_engine()
+        with engine.connect() as conn:
+            if driver == "sqlite":
+                result = conn.execute(text(f"PRAGMA table_info({table_name})"))
+                columns = [{"name": row[1], "type": row[2]} for row in result]
+            else:
+                result = conn.execute(
+                    text(
+                        "SELECT column_name, data_type "
+                        "FROM information_schema.columns "
+                        "WHERE table_name = :t "
+                        "ORDER BY ordinal_position"
+                    ),
+                    {"t": table_name},
+                )
+                columns = [{"name": row[0], "type": row[1]} for row in result]
+        return {"columns": columns}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+def execute_sql(query: str) -> dict[str, Any]:
     """Execute a SQL statement and return up to 500 rows when rows are produced.
 
     Args:
@@ -174,9 +254,33 @@ def execute_query(query: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def execute_sql(query: str, connection_id: str | None = None) -> dict[str, Any]:
-    """Compatibility alias for Control Center direct-tool SQL execution."""
-    return execute_query(query)
+def validate_sql_syntax(query: str) -> dict[str, Any]:
+    """Check whether a SQL statement is syntactically valid without executing it.
+
+    Uses the database driver's EXPLAIN / query-plan mechanism to parse the query.
+    Returns {"valid": true} on success or {"valid": false, "error": "<message>"} on failure.
+
+    Args:
+        query: The SQL statement to validate.
+    """
+    if not query or not query.strip():
+        return {"valid": False, "error": "Query is empty."}
+    try:
+        driver = (_resolved("SQL_DB_DRIVER") or "postgresql+psycopg").lower()
+        engine = _make_engine()
+        with engine.connect() as conn:
+            if driver == "sqlite":
+                # SQLite supports EXPLAIN; it raises on syntax errors.
+                conn.execute(text(f"EXPLAIN {query}"))
+            elif driver in ("snowflake", "snowflake+snowflake-sqlalchemy"):
+                # Snowflake supports EXPLAIN USING TABULAR.
+                conn.execute(text(f"EXPLAIN USING TABULAR {query}"))
+            else:
+                # PostgreSQL and MySQL both support EXPLAIN.
+                conn.execute(text(f"EXPLAIN {query}"))
+        return {"valid": True}
+    except Exception as exc:
+        return {"valid": False, "error": str(exc)}
 
 
 if __name__ == "__main__":

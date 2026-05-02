@@ -49,6 +49,7 @@ import {
   type RunRecord,
 } from "../lib/controlCenterApi";
 import { createScheduledRunProjections, type ScheduledOccurrence } from "../lib/scheduleOccurrences";
+import { formatSchedule } from "../lib/formatSchedule";
 import {
   createJobFromForm,
   getDraftForms,
@@ -3285,7 +3286,7 @@ export default function UserHome() {
                   <h1 className="text-3xl font-bold text-gray-900">{currentJobSpec.name}</h1>
                   <div className="flex items-center gap-3 mt-3">
                     <span className="rounded-lg bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700">{currentJobSpec.type}</span>
-                    <span className="text-sm text-gray-600">Schedule: {currentJobSpec.schedule}</span>
+                    <span className="text-sm text-gray-600">Schedule: {formatSchedule(currentJobSpec.schedule)}</span>
                     <span
                       className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
                         currentJobSpec.status === "Healthy"
@@ -3371,7 +3372,7 @@ export default function UserHome() {
                       </div>
                       <div>
                         <p className="text-xs font-semibold text-gray-500 uppercase">Schedule</p>
-                        <p className="text-sm text-gray-900 mt-1">{currentJobSpec.schedule}</p>
+                        <p className="text-sm text-gray-900 mt-1">{formatSchedule(currentJobSpec.schedule)}</p>
                       </div>
                       <div>
                         <p className="text-xs font-semibold text-gray-500 uppercase">Status</p>
@@ -3530,7 +3531,7 @@ export default function UserHome() {
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                     <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
                       <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Schedule</p>
-                      <p className="mt-2 text-sm text-gray-900">{currentJobSpec.schedule}</p>
+                      <p className="mt-2 text-sm text-gray-900">{formatSchedule(currentJobSpec.schedule)}</p>
                     </div>
                     <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
                       <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Status</p>
@@ -4180,7 +4181,7 @@ export default function UserHome() {
                         <p className="font-medium text-gray-900">{job.name}</p>
                         <div className="flex items-center gap-2 mt-2">
                           <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded">{job.type}</span>
-                          <span className="text-xs text-gray-500">Schedule: {job.schedule}</span>
+                          <span className="text-xs text-gray-500">Schedule: {formatSchedule(job.schedule)}</span>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -4325,7 +4326,7 @@ export default function UserHome() {
                         <p className="font-medium text-gray-900">{job.name}</p>
                         <div className="flex items-center gap-2 mt-2">
                           <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded">{job.type}</span>
-                          <span className="text-xs text-gray-500">Schedule: {job.schedule}</span>
+                          <span className="text-xs text-gray-500">Schedule: {formatSchedule(job.schedule)}</span>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">

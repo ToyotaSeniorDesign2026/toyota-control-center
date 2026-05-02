@@ -72,6 +72,7 @@ interface ConfigRequestField {
   secret: boolean;
   required: boolean;
   group?: string | null;
+  default_value?: string | null;
 }
 
 interface ConfigRequest {
@@ -403,10 +404,14 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
       updateActivityStep(2, "in-progress");
 
       const activeSessionEnv = sessionEnvOverride ?? sessionEnv;
+      const authToken = typeof window !== "undefined"
+        ? window.localStorage.getItem("control-center-auth-token")
+        : null;
       const response = await fetch("/api/chat/agent", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
         },
         body: JSON.stringify({
           message: requestMessage,
@@ -442,6 +447,7 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
             const existingValue =
               previous[field.key] ??
               (sessionEnvOverride ?? sessionEnv)[field.key] ??
+              field.default_value ??
               "";
             if (existingValue) {
               next[field.key] = existingValue;
