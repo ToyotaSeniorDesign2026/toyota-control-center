@@ -1,4 +1,4 @@
 {
   "command": "npx",
-  "args": ["-y", "--quiet", "@modelcontextprotocol/server-filesystem", "."]
+  "args": ["-y", "--quiet", "@modelcontextprotocol/server-filesystem", "${BACKEND_ROOT}/.local/fs-sandbox"]
 }

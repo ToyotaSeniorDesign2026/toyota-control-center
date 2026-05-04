@@ -14,7 +14,7 @@
       "parser": "fastmcp_config_loader.py"
     },
     "sandbox": {
-      "description": "Configuration file for , adding execution isolation, environment constraints, and related runtime settings.",
+      "description": "Configuration file for sandboxed MCP server, adding execution isolation, environment constraints, and related runtime settings.",
       "parser": "sandbox_config_loader.py"
     }
   },
@@ -32,6 +32,7 @@
   },
 
   "approved_servers": {
+
     "filesystem": {
       "description": "Local filesystem MCP server used for reading and interacting with files in the current working directory.",
       "allowed_environments": ["dev", "semi-prod"],
@@ -46,27 +47,31 @@
         "semi-prod": { "timeout": 30 }
       }
     },
+
     "arxiv-research": {
       "description": "Custom arXiv research MCP server to grab topical papers in research-oriented workflows.",
       "allowed_environments": ["dev", "semi-prod", "prod"],
       "config_path": "configs/arxiv-research.json",
       "active": true
     },
+
     "fetch": {
       "description": "Fetch MCP server used for retrieving and processing remote web content or other fetchable resources.",
       "allowed_environments": ["dev", "semi-prod"],
       "config_path": "configs/fetch.json",
       "active": true
     },
+
     "fastmcp-docs": {
       "description": "Custom FastMCP documentation server used for querying and navigating FastMCP documentation and examples.",
       "allowed_environments": ["*"],
       "config_path": "configs/fastmcp-docs.json",
       "active": true
     },
+
     "github": {
       "description": "GitHub MCP server for repository, branch, issue, and pull request workflows.",
-      "display_name": "GitHub Repositories",
+      "display_name": "GitHub",
       "allowed_environments": ["dev", "semi-prod", "prod"],
       "config_path": "configs/github.json",
       "version": "1.0",
@@ -76,12 +81,7 @@
       "required_fields": ["repo"],
       "optional_fields": ["ref", "path", "provider"]
     },
-    "wordsmith-mcp": {
-      "description": "Query and inspect English words using tools tailored to writers.",
-      "allowed_environments": ["dev", "semi-prod", "prod"],
-      "config_path": "configs/wordsmith-mcp.json",
-      "active": true
-    },
+
     "control-center": {
       "description": "Internal Control Center MCP server — exposes jobs, runs, and trigger capabilities so MCPAgent can orchestrate workflows without an OpenAI function-calling loop.",
       "display_name": "Control Center",
@@ -93,6 +93,7 @@
       "active": true,
       "job_type": "mcp"
     },
+
     "sql-mcp": {
       "description": "Custom FastMCP SQL server that connects to any user-supplied database (PostgreSQL, SQLite, Snowflake). Connection details are provided at job creation time; the driver is selected via SQL_DB_DRIVER.",
       "display_name": "SQL Database",
@@ -126,6 +127,7 @@
         }
       }
     }
+
   }
 
 }

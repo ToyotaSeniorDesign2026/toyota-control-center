@@ -1,4 +1,0 @@
-{
-  "command": "uv",
-  "args": ["--directory", "/Users/noahbarnard/PycharmProjects/Lyrically/Wordsmith", "run", "wordsmith-mcp"]
-}

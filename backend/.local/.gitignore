@@ -1,0 +1,9 @@
+# Ignore all contents — these are machine-local runtime files.
+# Keep the directory structure (README, .gitkeep markers) tracked so
+# subdirs exist after clone for MCP servers to point at.
+
+*
+!.gitignore
+!README.md
+!*/
+!*/.gitkeep

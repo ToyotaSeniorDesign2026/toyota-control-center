@@ -269,13 +269,34 @@ class RegistryManager:
 
     @staticmethod
     def _expand_env_vars(value: Any) -> Any:
+
         if isinstance(value, str):
-            expanded = os.path.expandvars(value)
-            return re.sub(r"\$\{([^}]+)\}", lambda match: os.getenv(match.group(1), match.group(0)), expanded)
+            backend_root = str(Path(__file__).resolve().parents[3])
+            repo_root = str(Path(__file__).resolve().parents[4])
+            expanded = (
+                value  # Inject special placeholders for important paths, allowing configs to be portable across envs
+                .replace("${BACKEND_ROOT}", backend_root)
+                .replace("${REPO_ROOT}", repo_root)
+            )
+            expanded = os.path.expandvars(expanded)  # Standard OS env var expansion ($VAR and ${VAR})
+            expanded = re.sub(
+                r"\$\{([^}]+)\}",  # Catch any ${VAR} that os.path.expandvars missed
+                lambda match: os.getenv(match.group(1), match.group(0)),
+                expanded,
+            )
+            if "${" in expanded:  # Fail loud on unresolved placeholders, which likely indicates a missing env var
+                raise ValueError(
+                    f"unresolved env var in registry config: {expanded!r}. "
+                    f"Set the variable in the environment or add it to .env."
+                )
+            return expanded
+
         if isinstance(value, list):
             return [RegistryManager._expand_env_vars(item) for item in value]
+
         if isinstance(value, dict):
             return {key: RegistryManager._expand_env_vars(item) for key, item in value.items()}
+
         return value
 
     def _resolve_config_path(self, config_path: str) -> Path:
