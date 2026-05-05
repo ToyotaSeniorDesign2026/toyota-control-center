@@ -90,6 +90,8 @@ class MCPAgent:
         last_model_result: ModelTurnResult | None = None
 
         for round_index in range(self._max_tool_rounds):
+            import sys
+            print(f"\n[ROUND {round_index}] tool_results_in={len(tool_results_for_model or [])}", file=sys.stderr)
             model_result = await self._generate_turn(
                 message=user_message,
                 tool_results=tool_results_for_model,
@@ -113,13 +115,40 @@ class MCPAgent:
                 serialized_arguments = json.dumps(requested_call.arguments, default=str, sort_keys=True)
                 self._log(f"(Calling {requested_call.name} with {serialized_arguments})")
 
-                binding = self._adapter.get_binding(requested_call.name)
-                raw_result = await self._adapter.invoke(
-                    self._client,
-                    framework_name=requested_call.name,
-                    arguments=requested_call.arguments,
-                )
-                parsed_result = self._adapter.parse_result(raw_result)
+                # Look up the binding. If the model hallucinated a tool name,
+                # feed the error back so it can pick a real tool next round.
+                try:
+                    binding = self._adapter.get_binding(requested_call.name)
+                except Exception as exc:
+                    error_text = f"[ERROR] Unknown tool {requested_call.name!r}: {exc}"
+                    self._log(f"(Tool error: {error_text})")
+                    new_tool_results.append(
+                        {
+                            "name": requested_call.name,
+                            "arguments": requested_call.arguments,
+                            "result": error_text,
+                        }
+                    )
+                    continue
+
+                # Invoke the tool. Catch exceptions and return them as the
+                # tool's "result" so the model can react instead of crashing.
+                raw_result: Any = None
+                try:
+                    raw_result = await self._adapter.invoke(
+                        self._client,
+                        framework_name=requested_call.name,
+                        arguments=requested_call.arguments,
+                    )
+                    parsed_result = self._adapter.parse_result(raw_result)
+                except Exception as exc:
+                    parsed_result = (
+                        f"[ERROR] Tool {requested_call.name!r} raised: {exc}. "
+                        f"Try different arguments, a different tool, or stop "
+                        f"calling tools and answer with what you have."
+                    )
+                    self._log(f"(Tool error: {parsed_result})")
+
                 self._log(f"(Tool result from {requested_call.name}: {parsed_result})")
 
                 tool_executions.append(

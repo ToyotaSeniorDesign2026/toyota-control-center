@@ -202,6 +202,11 @@ class OpenAIAdapter(BaseAdapter[dict[str, Any]]):
             request["tools"] = tools
             request["tool_choice"] = "auto"
 
+        import sys
+        print(f"\n[REQ] msgs={len(request['messages'])} content_len={len(request['messages'][0]['content'])}",
+              file=sys.stderr)
+        print(f"[REQ] preview={request['messages'][0]['content'][:400]!r}", file=sys.stderr)
+
         response = await self.client.chat.completions.create(**request)
 
         requested_tools: list[RequestedToolCall] = []
