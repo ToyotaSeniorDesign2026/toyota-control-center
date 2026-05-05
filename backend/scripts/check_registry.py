@@ -101,7 +101,10 @@ def show_config(name: str, config: dict[str, Any]) -> None:
 
 # ── MCP connection probe (optional) ───────────────────────────────────────────
 
-async def probe_mcp_connection(name: str, config: dict[str, Any]) -> bool:
+DEFAULT_TOOL_CAP = 15
+
+
+async def probe_mcp_connection(name: str, config: dict[str, Any], *, full_tool_list: bool) -> bool:
     """Connect to the MCP server and list its tools. Verifies the server actually starts."""
     try:
         from control_center.mcp import LLMClient
@@ -115,11 +118,13 @@ async def probe_mcp_connection(name: str, config: dict[str, Any]) -> bool:
         await client.connect_to_server(name, config)
         tools = await client.list_tools(name)
         ok(f"{name}: connected, {len(tools)} tools exposed")
-        for tool in tools[:10]:
+
+        cap = len(tools) if full_tool_list else DEFAULT_TOOL_CAP
+        for tool in tools[:cap]:
             tool_name = getattr(tool, "name", str(tool))
             print(f"    - {tool_name}")
-        if len(tools) > 10:
-            info(f"    ... and {len(tools) - 10} more")
+        if len(tools) > cap:
+            info(f"    ... and {len(tools) - cap} more (use --full-tool-list to see all)")
         return True
     except Exception as exc:
         fail(f"{name}: connection failed: {exc}")
@@ -155,6 +160,10 @@ def main() -> int:
         "--connect", action="store_true",
         help="Actually start each MCP server and list its tools (slower).",
     )
+    parser.add_argument(
+        "--full-tool-list", action="store_true",
+        help=f"List every tool exposed by each server (default: cap at {DEFAULT_TOOL_CAP}).",
+    )
     args = parser.parse_args()
 
     manager = load_registry(args.environment)
@@ -185,7 +194,7 @@ def main() -> int:
 
     # Optional connection probe
     if args.connect and resolved:
-        results = asyncio.run(_probe_all(resolved))
+        results = asyncio.run(_probe_all(resolved, full_tool_list=args.full_tool_list))
         failed += sum(1 for ok_ in results if not ok_)
 
     # Summary
@@ -199,8 +208,15 @@ def main() -> int:
     return 1
 
 
-async def _probe_all(resolved: dict[str, dict[str, Any]]) -> list[bool]:
-    return [await probe_mcp_connection(name, cfg) for name, cfg in resolved.items()]
+async def _probe_all(
+    resolved: dict[str, dict[str, Any]],
+    *,
+    full_tool_list: bool,
+) -> list[bool]:
+    return [
+        await probe_mcp_connection(name, cfg, full_tool_list=full_tool_list)
+        for name, cfg in resolved.items()
+    ]
 
 
 if __name__ == "__main__":

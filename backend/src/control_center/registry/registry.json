@@ -62,6 +62,13 @@
       "active": true
     },
 
+    "playwright": {
+      "description": "Playwright MCP server used for automating an isolated browser to navigate, interact with, and extract content from web pages.",
+      "allowed_environments": ["dev", "semi-prod"],
+      "config_path": "configs/playwright.json",
+      "active": true
+    },
+
     "fastmcp-docs": {
       "description": "Custom FastMCP documentation server used for querying and navigating FastMCP documentation and examples.",
       "allowed_environments": ["*"],
