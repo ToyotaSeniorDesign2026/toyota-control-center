@@ -180,23 +180,13 @@ class OpenAIAdapter(BaseAdapter[dict[str, Any]]):
         self,
         *,
         model: str,
-        message: str,
+        messages: list[Any],
         tools: list[dict[str, Any]],
-        tool_results: list[dict[str, Any]] | None = None,
     ) -> ModelTurnResult:
-        prompt = message
-        if tool_results:
-            serialized_results = json.dumps(tool_results, default=str, indent=2)
-            prompt = (
-                f"{message}\n\n"
-                "Tool results are available below as JSON. Use them to continue reasoning. "
-                "If the task is complete, answer directly. Otherwise request another tool.\n"
-                f"{serialized_results}"
-            )
 
         request: dict[str, Any] = {
             "model": model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
         }
         if tools:
             request["tools"] = tools
@@ -229,7 +219,7 @@ class OpenAIAdapter(BaseAdapter[dict[str, Any]]):
 
                 if name:
                     requested_tools.append(
-                        RequestedToolCall(name=name, arguments=arguments)
+                        RequestedToolCall(name=name, arguments=arguments, id=getattr(tool_call, "id", None))
                     )
 
         final_text = "\n".join(fragment for fragment in text_fragments if fragment) or None

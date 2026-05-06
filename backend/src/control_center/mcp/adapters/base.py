@@ -220,9 +220,8 @@ class BaseAdapter(Generic[T], ABC):
         self,
         *,
         model: str,
-        message: str,
+        messages: list[Any],
         tools: list[T],
-        tool_results: list[dict[str, Any]] | None = None,
     ) -> ModelTurnResult:
         raise NotImplementedError(
             f"{type(self).__name__} does not implement model generation for '{model}'."

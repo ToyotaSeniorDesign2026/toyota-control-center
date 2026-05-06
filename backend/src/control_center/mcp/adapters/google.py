@@ -180,25 +180,25 @@ class GoogleAdapter(BaseAdapter[dict[str, Any]]):
             parameters_schema=parameters_schema,
         )
 
+    # TODO: Refactor generate to properly handle messages logic in Google's API schema
     async def generate(
         self,
         *,
         model: str,
-        message: str,
+        messages: list[Any],
         tools: list[dict[str, Any]],
-        tool_results: list[dict[str, Any]] | None = None,
     ) -> ModelTurnResult:
         _, types = _require_google_genai()
 
-        prompt = message
-        if tool_results:
-            serialized_results = json.dumps(tool_results, default=str, indent=2)
-            prompt = (
-                f"{message}\n\n"
-                "Tool results are available below as JSON. Use them to continue reasoning. "
-                "If the task is complete, answer directly. Otherwise request another tool.\n"
-                f"{serialized_results}"
-            )
+        # prompt = message
+        # if tool_results:
+        #     serialized_results = json.dumps(tool_results, default=str, indent=2)
+        #     prompt = (
+        #         f"{message}\n\n"
+        #         "Tool results are available below as JSON. Use them to continue reasoning. "
+        #         "If the task is complete, answer directly. Otherwise request another tool.\n"
+        #         f"{serialized_results}"
+        #     )
 
         function_declarations = [
             types.FunctionDeclaration(
@@ -218,7 +218,7 @@ class GoogleAdapter(BaseAdapter[dict[str, Any]]):
         response = await asyncio.to_thread(
             self.client.models.generate_content,
             model=model,
-            contents=prompt,
+            contents=messages,
             config=config,
         )
 

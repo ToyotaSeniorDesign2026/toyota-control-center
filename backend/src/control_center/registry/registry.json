@@ -69,6 +69,13 @@
       "active": true
     },
 
+    "memory-graph": {
+      "description": "A basic implementation of persistent memory using a local knowledge graph. This lets agents remember information about the user across chats.",
+      "allowed_environments": ["dev", "semi-prod"],
+      "config_path": "configs/memory-graph.json",
+      "active": true
+    },
+
     "fastmcp-docs": {
       "description": "Custom FastMCP documentation server used for querying and navigating FastMCP documentation and examples.",
       "allowed_environments": ["*"],

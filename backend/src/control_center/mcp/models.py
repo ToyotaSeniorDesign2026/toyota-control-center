@@ -17,6 +17,7 @@ class RequestedToolCall:
 
     name: str
     arguments: dict[str, Any] = field(default_factory=dict)
+    id: str | None = None  # provider-assigned (OpenAI tool_call.id, etc., or none if not issued by provider)
 
 
 @dataclass(frozen=True)
@@ -47,8 +48,7 @@ class LLMProtocol(Protocol):
     async def generate(
         self,
         *,
-        message: str,
+        messages: list[Any],
         tools: list[Any],
-        tool_results: list[dict[str, Any]] | None = None,
     ) -> ModelTurnResult:
         ...

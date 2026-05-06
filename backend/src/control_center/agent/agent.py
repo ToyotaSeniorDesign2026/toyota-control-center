@@ -65,53 +65,69 @@ class MCPAgent:
     async def _generate_turn(
         self,
         *,
-        message: str,
-        tool_results: list[dict[str, Any]] | None,
+        messages: list[dict[str, Any]],
     ) -> ModelTurnResult:
         if isinstance(self._model, str):
             return await self._adapter.generate(
                 model=self._model,
-                message=message,
+                messages=messages,
                 tools=self._adapter.all_capabilities,
-                tool_results=tool_results,
             )
 
         return await self._model.generate(
-            message=message,
+            messages=messages,
             tools=self._adapter.all_capabilities,
-            tool_results=tool_results,
         )
 
     async def run(self, user_message: str) -> AgentResponse:
         await self.refresh_capabilities()
 
         tool_executions: list[AgentToolExecution] = []
-        tool_results_for_model: list[dict[str, Any]] | None = None
+        messages: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
         last_model_result: ModelTurnResult | None = None
 
         for round_index in range(self._max_tool_rounds):
-            import sys
-            print(f"\n[ROUND {round_index}] tool_results_in={len(tool_results_for_model or [])}", file=sys.stderr)
-            model_result = await self._generate_turn(
-                message=user_message,
-                tool_results=tool_results_for_model,
-            )
+            model_result = await self._generate_turn(messages=messages)
             last_model_result = model_result
             self._log(f"(Round {round_index + 1}/{self._max_tool_rounds})")
 
             if model_result.text:
                 self._log(f"(Model output: {model_result.text})")
 
-            if not model_result.tool_calls:
+            # Pair each call with a stable id so OpenAI assistant/tool messages match up.
+            # Providers that don't issue ids (e.g. Google) get a synthesized one.
+            calls_with_ids: list[tuple[Any, str]] = [
+                (tc, tc.id or f"call_{round_index}_{i}")
+                for i, tc in enumerate(model_result.tool_calls)
+            ]
+
+            # Record the assistant turn so the next round sees full history.
+            assistant_msg: dict[str, Any] = {
+                "role": "assistant",
+                "content": model_result.text,
+            }
+            if calls_with_ids:
+                assistant_msg["tool_calls"] = [
+                    {
+                        "id": cid,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": json.dumps(tc.arguments, default=str),
+                        },
+                    }
+                    for tc, cid in calls_with_ids
+                ]
+            messages.append(assistant_msg)
+
+            if not calls_with_ids:
                 return AgentResponse(
                     final_text=model_result.text or "",
                     tool_executions=tool_executions,
                     raw_model_response=model_result.raw,
                 )
 
-            new_tool_results: list[dict[str, Any]] = []
-
-            for requested_call in model_result.tool_calls:
+            for requested_call, tool_call_id in calls_with_ids:
                 serialized_arguments = json.dumps(requested_call.arguments, default=str, sort_keys=True)
                 self._log(f"(Calling {requested_call.name} with {serialized_arguments})")
 
@@ -122,13 +138,11 @@ class MCPAgent:
                 except Exception as exc:
                     error_text = f"[ERROR] Unknown tool {requested_call.name!r}: {exc}"
                     self._log(f"(Tool error: {error_text})")
-                    new_tool_results.append(
-                        {
-                            "name": requested_call.name,
-                            "arguments": requested_call.arguments,
-                            "result": error_text,
-                        }
-                    )
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": error_text,
+                    })
                     continue
 
                 # Invoke the tool. Catch exceptions and return them as the
@@ -162,15 +176,11 @@ class MCPAgent:
                     )
                 )
 
-                new_tool_results.append(
-                    {
-                        "name": requested_call.name,
-                        "arguments": requested_call.arguments,
-                        "result": parsed_result,
-                    }
-                )
-
-            tool_results_for_model = new_tool_results
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": parsed_result,
+                })
 
         final_text = (
             last_model_result.text
