@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, create_model, field_validator
 
 from control_center.registry import RegistryManager
 from control_center.mcp.adapters import BaseAdapter
-from control_center.mcp.adapters import GoogleAdapter
+# from control_center.mcp.adapters import GoogleAdapter
 from control_center.mcp.adapters import OpenAIAdapter
 from control_center.agent import MCPAgent
 from control_center.mcp import BaseClient, LLMClient
@@ -116,8 +116,8 @@ def _default_instructor_model() -> str:
 
 def make_adapter_for_model(model: str) -> BaseAdapter[Any]:
     normalized = model.lower()
-    if normalized.startswith("google/") or normalized.startswith("gemini"):
-        return GoogleAdapter()
+    # if normalized.startswith("google/") or normalized.startswith("gemini"):
+        # return GoogleAdapter()
     return OpenAIAdapter()
 
 

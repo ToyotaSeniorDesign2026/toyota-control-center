@@ -3,6 +3,7 @@
   "args": [
     "-y", "@playwright/mcp@latest",
     "--browser", "chromium",
-    "--output-dir", "${BACKEND_ROOT}/.local/playwright-mcp"
+    "--caps", "storage",
+    "--output-mode", "stdout"
   ]
 }

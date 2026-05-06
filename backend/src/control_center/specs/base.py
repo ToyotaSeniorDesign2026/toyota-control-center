@@ -5,5 +5,5 @@ from pydantic.alias_generators import to_camel
 
 
 class MCPBase(BaseModel):
-    """Base class for all MCP-facing models."""
+    """Base class for MCP-facing models."""
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)

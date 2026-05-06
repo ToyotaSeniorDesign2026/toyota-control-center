@@ -65,17 +65,17 @@ class MCPAgent:
     async def _generate_turn(
         self,
         *,
-        messages: list[dict[str, Any]],
+        inputs: list[dict[str, Any]],
     ) -> ModelTurnResult:
         if isinstance(self._model, str):
             return await self._adapter.generate(
                 model=self._model,
-                messages=messages,
+                inputs=inputs,
                 tools=self._adapter.all_capabilities,
             )
 
         return await self._model.generate(
-            messages=messages,
+            inputs=inputs,
             tools=self._adapter.all_capabilities,
         )
 
@@ -83,18 +83,18 @@ class MCPAgent:
         await self.refresh_capabilities()
 
         tool_executions: list[AgentToolExecution] = []
-        messages: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
+        inputs: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
         last_model_result: ModelTurnResult | None = None
 
         for round_index in range(self._max_tool_rounds):
-            model_result = await self._generate_turn(messages=messages)
+            model_result = await self._generate_turn(inputs=inputs)
             last_model_result = model_result
             self._log(f"(Round {round_index + 1}/{self._max_tool_rounds})")
 
             if model_result.text:
                 self._log(f"(Model output: {model_result.text})")
 
-            # Pair each call with a stable id so OpenAI assistant/tool messages match up.
+            # Pair each call with a stable id so OpenAI assistant/tool input messages match up.
             # Providers that don't issue ids (e.g. Google) get a synthesized one.
             calls_with_ids: list[tuple[Any, str]] = [
                 (tc, tc.id or f"call_{round_index}_{i}")
@@ -118,7 +118,7 @@ class MCPAgent:
                     }
                     for tc, cid in calls_with_ids
                 ]
-            messages.append(assistant_msg)
+            inputs.append(assistant_msg)
 
             if not calls_with_ids:
                 return AgentResponse(
@@ -138,7 +138,7 @@ class MCPAgent:
                 except Exception as exc:
                     error_text = f"[ERROR] Unknown tool {requested_call.name!r}: {exc}"
                     self._log(f"(Tool error: {error_text})")
-                    messages.append({
+                    inputs.append({
                         "role": "tool",
                         "tool_call_id": tool_call_id,
                         "content": error_text,
@@ -151,7 +151,7 @@ class MCPAgent:
                 try:
                     raw_result = await self._adapter.invoke(
                         self._client,
-                        framework_name=requested_call.name,
+                        exposed_name=requested_call.name,
                         arguments=requested_call.arguments,
                     )
                     parsed_result = self._adapter.parse_result(raw_result)
@@ -167,16 +167,16 @@ class MCPAgent:
 
                 tool_executions.append(
                     AgentToolExecution(
-                        framework_name=requested_call.name,
+                        exposed_name=requested_call.name,
                         server_name=binding.server_name,
-                        remote_name=binding.remote_name,
+                        source_id=binding.source_id,
                         arguments=requested_call.arguments,
                         raw_result=raw_result,
                         parsed_result=parsed_result,
                     )
                 )
 
-                messages.append({
+                inputs.append({
                     "role": "tool",
                     "tool_call_id": tool_call_id,
                     "content": parsed_result,

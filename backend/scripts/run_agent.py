@@ -44,6 +44,7 @@ from typing import Any
 from control_center.agent import MCPAgent, build_agent_from_registry
 from control_center.registry import RegistryManager
 
+HARDCODED_PROMPT = "Go to Toyota Financial, find all of the special deals they have in the local Dallas area, take a screenshot of them, and return a summary of the best ones."
 
 # ── Output helpers ────────────────────────────────────────────────────────────
 
@@ -93,16 +94,16 @@ def patch_agent_logging(agent: MCPAgent, *, full_output: bool = False) -> None:
     args_cap = None if full_output else 300
     result_cap = None if full_output else 500
 
-    async def traced_invoke(client, *, framework_name: str, arguments: dict[str, Any]):
+    async def traced_invoke(client, *, exposed_name: str, arguments: dict[str, Any]):
         args_preview = _truncate(json.dumps(arguments, default=str), args_cap)
-        print(f"\n  {BLUE}→ {framework_name}{RESET} {DIM}{args_preview}{RESET}")
+        print(f"\n  {BLUE}→ {exposed_name}{RESET} {DIM}{args_preview}{RESET}")
         try:
-            result = await original_invoke(client, framework_name=framework_name, arguments=arguments)
+            result = await original_invoke(client, exposed_name=exposed_name, arguments=arguments)
         except Exception as exc:
-            print(f"  {RED}✗ {framework_name} failed: {exc}{RESET}")
+            print(f"  {RED}✗ {exposed_name} failed: {exc}{RESET}")
             raise
         result_preview = _truncate(str(result), result_cap)
-        print(f"  {GREEN}← {framework_name}{RESET} {DIM}{result_preview}{RESET}")
+        print(f"  {GREEN}← {exposed_name}{RESET} {DIM}{result_preview}{RESET}")
         return result
 
     agent._adapter.invoke = traced_invoke
@@ -175,7 +176,7 @@ async def discover_filesystem_roots(agent: MCPAgent) -> list[str]:
     try:
         result = await agent._adapter.invoke(
             agent._client,
-            framework_name=binding_name,
+            exposed_name=binding_name,
             arguments={},
         )
     except Exception as exc:
@@ -201,7 +202,7 @@ async def discover_filesystem_roots(agent: MCPAgent) -> list[str]:
 def _find_binding(agent: MCPAgent, suffix: str) -> str | None:
     """Find a bound tool whose framework name ends with the given suffix.
 
-    Iterates `_bindings` (the source of truth for framework_name → BoundCapability).
+    Iterates `_bindings` (the source of truth for exposed_name → BoundPrimitive).
     `all_capabilities` returns framework-specific shapes (OpenAI dicts, Google
     objects) that don't have a uniform `.name` attribute.
     """
@@ -209,9 +210,9 @@ def _find_binding(agent: MCPAgent, suffix: str) -> str | None:
         bindings = agent._adapter._bindings
     except Exception:
         return None
-    for framework_name in bindings:
-        if framework_name.endswith(suffix):
-            return framework_name
+    for exposed_name in bindings:
+        if exposed_name.endswith(suffix):
+            return exposed_name
     return None
 
 
@@ -242,6 +243,17 @@ def prepend_filesystem_context(prompt: str, roots: list[str]) -> str:
         f"do not use relative paths.]\n\n"
     )
     return preface + prompt
+
+
+def has_server(agent: MCPAgent, server_prefix: str) -> bool:
+    """Return True if any binding starts with the given server-prefix."""
+    try:
+        return any(
+            name.startswith(server_prefix + "_")
+            for name in agent._adapter._bindings
+        )
+    except Exception:
+        return False
 
 
 # ── Agent build ───────────────────────────────────────────────────────────────
@@ -337,7 +349,7 @@ async def run_one_shot(
     hr("Summary")
     info(f"{len(response.tool_executions)} tool execution(s)")
     for ex in response.tool_executions:
-        info(f"  - {ex.framework_name} (server={ex.server_name})")
+        info(f"  - {ex.exposed_name} (server={ex.server_name})")
     return 0
 
 
@@ -420,8 +432,8 @@ def main() -> int:
         help="Override the model used for connector selection.",
     )
     parser.add_argument(
-        "--max-rounds", type=int, default=10,
-        help="Maximum tool-calling rounds the agent can take (default: 10).",
+        "--max-rounds", type=int, default=20,
+        help="Maximum tool-calling rounds the agent can take (default: 20).",
     )
     parser.add_argument(
         "--interactive", "-i", action="store_true",
@@ -459,6 +471,8 @@ def main() -> int:
     else:
         prompt = args.prompt
 
+    if not args.interactive and not prompt:
+        prompt = HARDCODED_PROMPT
     if not args.interactive and not prompt:
         fail("provide a prompt or use --interactive / --stdin")
         return 1

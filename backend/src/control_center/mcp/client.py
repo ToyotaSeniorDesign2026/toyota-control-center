@@ -85,6 +85,9 @@ class LLMClient(BaseClient):
         )
         self._exit_stack = AsyncExitStack()
         self._sessions: dict[str, ClientSession] = {}
+        # InitializeResult per server (serverInfo, capabilities, instructions, protocolVersion).
+        # Captured during connect_to_server; available via get_server_info().
+        self._init_results: dict[str, Any] = {}
 
     async def __aenter__(self) -> LLMClient:
         return self
@@ -102,15 +105,15 @@ class LLMClient(BaseClient):
             raise RuntimeError(f"Server '{server_name}' is not connected.")
         return session
 
-    async def _connect_stdio(self, server_config: JSONPayload) -> ClientSession:
+    async def _connect_stdio(self, server_config: JSONPayload) -> tuple[ClientSession, Any]:
         server_params = StdioServerParameters(**server_config)
         transport = await self._exit_stack.enter_async_context(stdio_client(server_params))
         read, write = transport
         session = await self._exit_stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-        return session
+        init_result = await session.initialize()
+        return session, init_result
 
-    async def _connect_sse(self, server_config: JSONPayload) -> ClientSession:
+    async def _connect_sse(self, server_config: JSONPayload) -> tuple[ClientSession, Any]:
         url = str(server_config.get("url") or "").strip()
         if not url:
             raise RuntimeError("Remote SSE transport requires config.url.")
@@ -126,10 +129,10 @@ class LLMClient(BaseClient):
         )
         read, write = transport
         session = await self._exit_stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-        return session
+        init_result = await session.initialize()
+        return session, init_result
 
-    async def _connect_streamable_http(self, server_config: JSONPayload) -> ClientSession:
+    async def _connect_streamable_http(self, server_config: JSONPayload) -> tuple[ClientSession, Any]:
         import httpx
 
         url = str(server_config.get("url") or "").strip()
@@ -151,28 +154,34 @@ class LLMClient(BaseClient):
         session = await self._exit_stack.enter_async_context(
             ClientSession(read, write, read_timeout_seconds=dt.timedelta(seconds=timeout))
         )
-        await session.initialize()
-        return session
+        init_result = await session.initialize()
+        return session, init_result
 
     async def connect_to_server(self, server_name: str, server_config: JSONPayload) -> None:
         try:
             transport_type = str(server_config.get("type") or "stdio").strip().lower()
             if transport_type == "stdio":
-                session = await self._connect_stdio(server_config)
+                session, init_result = await self._connect_stdio(server_config)
             elif transport_type == "sse":
-                session = await self._connect_sse(server_config)
+                session, init_result = await self._connect_sse(server_config)
             elif transport_type in {"http", "streamable-http"}:
-                session = await self._connect_streamable_http(server_config)
+                session, init_result = await self._connect_streamable_http(server_config)
             else:
                 raise RuntimeError(
                     f"Unsupported MCP transport '{transport_type}'. Supported: stdio, sse, http, streamable-http."
                 )
             self._sessions[server_name] = session
+            self._init_results[server_name] = init_result
         except Exception as exc:
             raise RuntimeError(f"Failed to connect to server '{server_name}': {exc}") from exc
 
+    def get_server_info(self, server_name: str) -> Any | None:
+        """InitializeResult captured at connect time. None if not connected."""
+        return self._init_results.get(server_name)
+
     async def disconnect_server(self, server_name: str) -> None:
         self._sessions.pop(server_name, None)
+        self._init_results.pop(server_name, None)
 
     async def list_tools(self, server_name: str) -> list[Any]:
         session = self._require_session(server_name)
@@ -227,4 +236,5 @@ class LLMClient(BaseClient):
 
     async def cleanup(self) -> None:
         self._sessions.clear()
+        self._init_results.clear()
         await self._exit_stack.aclose()

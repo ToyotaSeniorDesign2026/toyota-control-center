@@ -1,0 +1,10 @@
+{
+    "command": "npx",
+    "args": [
+      "-y",
+      "@modelcontextprotocol/server-memory"
+    ],
+    "env": {
+      "MEMORY_FILE_PATH": "${BACKEND_ROOT}/.local/memory-graph/memory.jsonl"
+    }
+}

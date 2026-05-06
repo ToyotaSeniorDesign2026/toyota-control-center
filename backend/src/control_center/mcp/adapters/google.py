@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+"""
 import asyncio
 import json
 import re
@@ -16,7 +17,7 @@ __all__ = ["GoogleAdapter"]
 
 
 def _sanitize_for_tool_name(name: str) -> str:
-    """Google function names allow letters, digits, and underscores up to 64 chars."""
+    # Google function names allow letters, digits, and underscores up to 64 chars.
 
     return re.sub(r"[^a-zA-Z0-9_]+", "_", name).strip("_")[:64]
 
@@ -250,3 +251,4 @@ class GoogleAdapter(BaseAdapter[dict[str, Any]]):
 
         final_text = "\n".join(fragment for fragment in text_fragments if fragment) or None
         return ModelTurnResult(text=final_text, tool_calls=requested_tools, raw=response)
+"""

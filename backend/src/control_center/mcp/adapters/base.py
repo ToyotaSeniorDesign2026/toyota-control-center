@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from typing import Any, Generic, TypeVar
 
 from mcp.types import Prompt, Resource, Tool
-from control_center.specs import BoundCapability
+from control_center.specs import BoundPrimitive, PrimitiveKind
 from control_center.mcp import BaseClient, ModelTurnResult
 T = TypeVar("T")
 
@@ -16,25 +17,34 @@ class BaseAdapter(Generic[T], ABC):
     This adapter is aligned to BaseClient, not connector/session internals.
     """
 
-    framework: str = "unknown"
+    framework: str = "unknown"  # Provider/framework identifier, e.g. 'openai', 'anthropic', or 'google'.
 
     def __init__(
         self,
-        disallowed_tools: list[str] | None = None,
-        banned_schema_keys: set[str] | None = None,
+        disallowed_tools: Iterable[str] | None = None,
+        unsupported_schema_keys: set[str] | None = None,
     ) -> None:
         self.disallowed_tools = set(disallowed_tools or [])
-        self.banned_schema_keys = set(banned_schema_keys or [])
+        self.unsupported_schema_keys = set(unsupported_schema_keys or [])
 
-        self._server_tool_map: dict[str, list[T]] = {}
-        self._server_resource_map: dict[str, list[T]] = {}
-        self._server_prompt_map: dict[str, list[T]] = {}
+        self._server_tool_cache: dict[str, list[T]] = {}
+        self._server_resource_cache: dict[str, list[T]] = {}
+        self._server_prompt_cache: dict[str, list[T]] = {}
 
-        self._bindings: dict[str, BoundCapability] = {}
+        self._bindings: dict[str, BoundPrimitive] = {}
 
         self.tools: list[T] = []
         self.resources: list[T] = []
         self.prompts: list[T] = []
+
+    @property
+    def all_capabilities(self) -> list[T]:
+        return [*self.tools, *self.resources, *self.prompts]
+
+    # ── Cache & Refresh ───────────────────────────────────────────────────────────
+    # ── Creation of MCP Primitives ────────────────────────────────────────────────
+    # ── Binding ───────────────────────────────────────────────────────────────────
+    # ── Schema Helpers ─────────────────────────────────────────────────────
 
     def parse_result(self, result: Any) -> str:
         """Normalize MCP operation results into text per the MCP spec."""
@@ -97,7 +107,7 @@ class BaseAdapter(Generic[T], ABC):
             return {
                 key: self.sanitize_schema(value)
                 for key, value in schema.items()
-                if key not in self.banned_schema_keys
+                if key not in self.unsupported_schema_keys
             }
 
         if isinstance(schema, list):
@@ -105,29 +115,25 @@ class BaseAdapter(Generic[T], ABC):
 
         return schema
 
-    @property
-    def all_capabilities(self) -> list[T]:
-        return [*self.tools, *self.resources, *self.prompts]
-
     def clear_cache(self) -> None:
-        self._server_tool_map.clear()
-        self._server_resource_map.clear()
-        self._server_prompt_map.clear()
+        self._server_tool_cache.clear()
+        self._server_resource_cache.clear()
+        self._server_prompt_cache.clear()
         self._bindings.clear()
         self.tools = []
         self.resources = []
         self.prompts = []
 
-    def _register_binding(self, binding: BoundCapability) -> None:
-        if binding.framework_name in self._bindings:
-            raise ValueError(f"Duplicate framework capability name: {binding.framework_name}")
-        self._bindings[binding.framework_name] = binding
+    def _register_binding(self, binding: BoundPrimitive) -> None:
+        if binding.exposed_name in self._bindings:
+            raise ValueError(f"Duplicate framework capability name: {binding.exposed_name}")
+        self._bindings[binding.exposed_name] = binding
 
-    def get_binding(self, framework_name: str) -> BoundCapability:
+    def get_binding(self, exposed_name: str) -> BoundPrimitive:
         try:
-            return self._bindings[framework_name]
+            return self._bindings[exposed_name]
         except KeyError as exc:
-            raise KeyError(f"No bound capability found for '{framework_name}'.") from exc
+            raise KeyError(f"No bound capability found for '{exposed_name}'.") from exc
 
     async def create_all(self, client: BaseClient) -> None:
         await self.create_tools(client)
@@ -164,8 +170,8 @@ class BaseAdapter(Generic[T], ABC):
         return self.prompts
 
     async def load_tools_for_server(self, client: BaseClient, server_name: str) -> list[T]:
-        if server_name in self._server_tool_map:
-            return list(self._server_tool_map[server_name])
+        if server_name in self._server_tool_cache:
+            return list(self._server_tool_cache[server_name])
 
         converted: list[T] = []
         for tool in await client.list_tools(server_name):
@@ -173,12 +179,12 @@ class BaseAdapter(Generic[T], ABC):
             if item is not None:
                 converted.append(item)
 
-        self._server_tool_map[server_name] = converted
+        self._server_tool_cache[server_name] = converted
         return list(converted)
 
     async def load_resources_for_server(self, client: BaseClient, server_name: str) -> list[T]:
-        if server_name in self._server_resource_map:
-            return list(self._server_resource_map[server_name])
+        if server_name in self._server_resource_cache:
+            return list(self._server_resource_cache[server_name])
 
         converted: list[T] = []
         for resource in await client.list_resources(server_name) or []:
@@ -186,12 +192,12 @@ class BaseAdapter(Generic[T], ABC):
             if item is not None:
                 converted.append(item)
 
-        self._server_resource_map[server_name] = converted
+        self._server_resource_cache[server_name] = converted
         return list(converted)
 
     async def load_prompts_for_server(self, client: BaseClient, server_name: str) -> list[T]:
-        if server_name in self._server_prompt_map:
-            return list(self._server_prompt_map[server_name])
+        if server_name in self._server_prompt_cache:
+            return list(self._server_prompt_cache[server_name])
 
         converted: list[T] = []
         for prompt in await client.list_prompts(server_name) or []:
@@ -199,20 +205,20 @@ class BaseAdapter(Generic[T], ABC):
             if item is not None:
                 converted.append(item)
 
-        self._server_prompt_map[server_name] = converted
+        self._server_prompt_cache[server_name] = converted
         return list(converted)
 
-    async def invoke(self, client: BaseClient, framework_name: str, arguments: dict[str, Any]) -> Any:
-        binding = self.get_binding(framework_name)
+    async def invoke(self, client: BaseClient, exposed_name: str, arguments: dict[str, Any]) -> Any:
+        binding = self.get_binding(exposed_name)
 
         if binding.kind == "tool":
-            return await client.call_tool(binding.server_name, binding.remote_name, arguments)
+            return await client.call_tool(binding.server_name, binding.source_id, arguments)
 
         if binding.kind == "prompt":
-            return await client.get_prompt(binding.server_name, binding.remote_name, arguments)
+            return await client.get_prompt(binding.server_name, binding.source_id, arguments)
 
         if binding.kind == "resource":
-            return await client.read_resource(binding.server_name, binding.remote_name)
+            return await client.read_resource(binding.server_name, binding.source_id)
 
         raise ValueError(f"Unsupported capability kind: {binding.kind}")
 
@@ -220,8 +226,15 @@ class BaseAdapter(Generic[T], ABC):
         self,
         *,
         model: str,
-        messages: list[Any],
-        tools: list[T],
+        inputs: Any,
+        tools: list[T] | None = None,
+        system_prompt: str | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        tool_choice: Any | None = None,
+        max_retries: int | None = None,
+        output_config: Any | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> ModelTurnResult:
         raise NotImplementedError(
             f"{type(self).__name__} does not implement model generation for '{model}'."
@@ -248,3 +261,12 @@ class BaseAdapter(Generic[T], ABC):
         server_name: str,
     ) -> T | None:
         ...
+
+
+# --- Helpers ---
+def _to_string_set(values: Iterable[str] | None) -> set[str]:
+    if values is None:
+        return set()
+    if isinstance(values, str):
+        raise TypeError("Expected an iterable of strings, not a single string.")
+    return set(values)

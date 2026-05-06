@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 from mcp.types import Prompt, Resource, Tool
-from control_center.specs import BoundCapability
+from control_center.specs import BoundPrimitive
 from control_center.mcp import BaseClient, ModelTurnResult, RequestedToolCall
 
 from .base import BaseAdapter
@@ -30,8 +30,10 @@ def _require_openai() -> Any:
 
 
 class OpenAIAdapter(BaseAdapter[dict[str, Any]]):
+
     framework: str = "openai"
-    _DEFAULT_BANNED_SCHEMA_KEYS = {
+
+    _DEFAULT_UNSUPPORTED_SCHEMA_KEYS = {
         "$schema",
         "$id",
         "$defs",
@@ -47,7 +49,7 @@ class OpenAIAdapter(BaseAdapter[dict[str, Any]]):
     ) -> None:
         super().__init__(
             disallowed_tools=disallowed_tools,
-            banned_schema_keys=self._DEFAULT_BANNED_SCHEMA_KEYS,
+            unsupported_schema_keys=self._DEFAULT_UNSUPPORTED_SCHEMA_KEYS,
         )
         self._openai_client = client
 
@@ -58,23 +60,21 @@ class OpenAIAdapter(BaseAdapter[dict[str, Any]]):
             self._openai_client = async_openai()
         return self._openai_client
 
-    def _make_framework_name(self, server_name: str, raw_name: str) -> str:
+    def _make_exposed_name(self, server_name: str, raw_name: str) -> str:
         return _sanitize_for_tool_name(f"{server_name}_{raw_name}")
 
     def _function_tool(
         self,
         *,
-        framework_name: str,
+        exposed_name: str,
         description: str | None,
         parameters_schema: dict[str, Any],
     ) -> dict[str, Any]:
         return {
             "type": "function",
-            "function": {
-                "name": framework_name,
-                "description": description or "",
-                "parameters": parameters_schema,
-            },
+            "name": exposed_name,
+            "description": description or "",
+            "parameters": parameters_schema,
         }
 
     def _convert_tool(
@@ -84,23 +84,23 @@ class OpenAIAdapter(BaseAdapter[dict[str, Any]]):
         server_name: str,
     ) -> dict[str, Any] | None:
         del client
-        framework_name = self._make_framework_name(server_name, mcp_tool.name)
+        exposed_name = self._make_exposed_name(server_name, mcp_tool.name)
 
-        if framework_name in self.disallowed_tools or mcp_tool.name in self.disallowed_tools:
+        if exposed_name in self.disallowed_tools or mcp_tool.name in self.disallowed_tools:
             return None
 
         self._register_binding(
-            BoundCapability(
-                framework_name=framework_name,
+            BoundPrimitive(
+                exposed_name=exposed_name,
                 server_name=server_name,
-                remote_name=mcp_tool.name,
+                source_id=mcp_tool.name,
                 kind="tool",
                 description=mcp_tool.description,
             )
         )
 
         return self._function_tool(
-            framework_name=framework_name,
+            exposed_name=exposed_name,
             description=mcp_tool.description,
             parameters_schema=self.fix_schema(self.sanitize_schema(mcp_tool.inputSchema)),
         )
@@ -112,23 +112,23 @@ class OpenAIAdapter(BaseAdapter[dict[str, Any]]):
         server_name: str,
     ) -> dict[str, Any] | None:
         del client
-        framework_name = self._make_framework_name(server_name, f"resource_{mcp_resource.name}")
+        exposed_name = self._make_exposed_name(server_name, f"resource_{mcp_resource.name}")
 
-        if framework_name in self.disallowed_tools:
+        if exposed_name in self.disallowed_tools:
             return None
 
         self._register_binding(
-            BoundCapability(
-                framework_name=framework_name,
+            BoundPrimitive(
+                exposed_name=exposed_name,
                 server_name=server_name,
-                remote_name=str(mcp_resource.uri),
+                source_id=str(mcp_resource.uri),
                 kind="resource",
                 description=mcp_resource.description,
             )
         )
 
         return self._function_tool(
-            framework_name=framework_name,
+            exposed_name=exposed_name,
             description=mcp_resource.description or f"Read resource '{mcp_resource.name}'",
             parameters_schema={"type": "object", "properties": {}},
         )
@@ -140,16 +140,16 @@ class OpenAIAdapter(BaseAdapter[dict[str, Any]]):
         server_name: str,
     ) -> dict[str, Any] | None:
         del client
-        framework_name = self._make_framework_name(server_name, mcp_prompt.name)
+        exposed_name = self._make_exposed_name(server_name, mcp_prompt.name)
 
-        if framework_name in self.disallowed_tools or mcp_prompt.name in self.disallowed_tools:
+        if exposed_name in self.disallowed_tools or mcp_prompt.name in self.disallowed_tools:
             return None
 
         self._register_binding(
-            BoundCapability(
-                framework_name=framework_name,
+            BoundPrimitive(
+                exposed_name=exposed_name,
                 server_name=server_name,
-                remote_name=mcp_prompt.name,
+                source_id=mcp_prompt.name,
                 kind="prompt",
                 description=mcp_prompt.description,
             )
@@ -171,56 +171,137 @@ class OpenAIAdapter(BaseAdapter[dict[str, Any]]):
             parameters_schema["required"] = required
 
         return self._function_tool(
-            framework_name=framework_name,
+            exposed_name=exposed_name,
             description=mcp_prompt.description,
             parameters_schema=parameters_schema,
         )
+
+    @staticmethod
+    def _to_responses_input(inputs: Any) -> Any:
+        """Translate generic chat-style messages into Responses API items.
+
+        Responses API rejects assistant messages with `tool_calls` arrays and
+        `role: "tool"` messages — they must be `function_call` /
+        `function_call_output` items instead.
+        """
+        if not isinstance(inputs, list):
+            return inputs
+
+        converted: list[dict[str, Any]] = []
+        for msg in inputs:
+            if not isinstance(msg, dict):
+                converted.append(msg)
+                continue
+
+            role = msg.get("role")
+
+            if role == "tool":
+                converted.append({
+                    "type": "function_call_output",
+                    "call_id": msg.get("tool_call_id"),
+                    "output": str(msg.get("content") or ""),
+                })
+                continue
+
+            if role == "assistant":
+                text = msg.get("content")
+                tool_calls = msg.get("tool_calls") or []
+
+                if text:
+                    converted.append({
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": text}],
+                    })
+
+                for tc in tool_calls:
+                    fn = tc.get("function") or {}
+                    arguments = fn.get("arguments")
+                    if not isinstance(arguments, str):
+                        arguments = json.dumps(arguments or {}, default=str)
+                    converted.append({
+                        "type": "function_call",
+                        "call_id": tc.get("id"),
+                        "name": fn.get("name"),
+                        "arguments": arguments,
+                    })
+                continue
+
+            converted.append(msg)
+
+        return converted
 
     async def generate(
         self,
         *,
         model: str,
-        messages: list[Any],
-        tools: list[dict[str, Any]],
+        inputs: Any,
+        tools: list[dict[str, Any]] | None = None,
+        system_prompt: str | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        tool_choice: Any | None = None,
+        max_retries: int | None = None,
+        output_config: Any | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> ModelTurnResult:
 
         request: dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "input": self._to_responses_input(inputs),
         }
+
+        if system_prompt:
+            request["instructions"] = system_prompt
+
         if tools:
             request["tools"] = tools
-            request["tool_choice"] = "auto"
+            request["tool_choice"] = tool_choice or "auto"
 
-        import sys
-        print(f"\n[REQ] msgs={len(request['messages'])} content_len={len(request['messages'][0]['content'])}",
-              file=sys.stderr)
-        print(f"[REQ] preview={request['messages'][0]['content'][:400]!r}", file=sys.stderr)
+        if max_tokens is not None:
+            request["max_output_tokens"] = max_tokens
 
-        response = await self.client.chat.completions.create(**request)
+        if temperature is not None:
+            request["temperature"] = temperature
+
+        if output_config is not None:
+            # Responses API structured outputs use text.format,
+            # not chat.completions response_format.
+            request["text"] = output_config
+
+        if extra:
+            request.update(extra)
+
+        request["reasoning"] = {"effort": "medium"}
+
+        response = await self.client.responses.create(**request)
 
         requested_tools: list[RequestedToolCall] = []
-        text_fragments: list[str] = []
 
-        for choice in getattr(response, "choices", None) or []:
-            response_message = getattr(choice, "message", None)
-            content = getattr(response_message, "content", None)
-            if isinstance(content, str) and content.strip():
-                text_fragments.append(content.strip())
+        for item in getattr(response, "output", None) or []:
+            if getattr(item, "type", None) != "function_call":
+                continue
 
-            for tool_call in getattr(response_message, "tool_calls", None) or []:
-                function_call = getattr(tool_call, "function", None)
-                name = getattr(function_call, "name", None)
-                raw_args = getattr(function_call, "arguments", None) or "{}"
-                try:
-                    arguments = json.loads(raw_args) if isinstance(raw_args, str) else {}
-                except json.JSONDecodeError:
-                    arguments = {}
+            name = getattr(item, "name", None)
+            raw_args = getattr(item, "arguments", None) or "{}"
 
-                if name:
-                    requested_tools.append(
-                        RequestedToolCall(name=name, arguments=arguments, id=getattr(tool_call, "id", None))
+            try:
+                arguments = json.loads(raw_args) if isinstance(raw_args, str) else {}
+            except json.JSONDecodeError:
+                arguments = {}
+
+            if name:
+                requested_tools.append(
+                    RequestedToolCall(
+                        name=name,
+                        arguments=arguments,
+                        id=getattr(item, "call_id", None) or getattr(item, "id", None),
                     )
+                )
 
-        final_text = "\n".join(fragment for fragment in text_fragments if fragment) or None
-        return ModelTurnResult(text=final_text, tool_calls=requested_tools, raw=response)
+        final_text = getattr(response, "output_text", None) or None
+
+        return ModelTurnResult(
+            text=final_text,
+            tool_calls=requested_tools,
+            raw=response,
+        )
