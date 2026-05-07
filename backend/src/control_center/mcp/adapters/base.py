@@ -4,23 +4,23 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from typing import Any, Generic, TypeVar
 
-from mcp.types import Prompt, Resource, Tool
-from control_center.specs import BoundPrimitive, PrimitiveKind
+from mcp.types import Tool, Resource, Prompt
+from control_center.specs import BoundPrimitive
 from control_center.mcp import BaseClient, ModelTurnResult
 T = TypeVar("T")
 
 
 class BaseAdapter(Generic[T], ABC):
-    """Bridge between MCP primitives and an LLM provider's tool format.
+    """
+    Bridge between MCP primitives and an LLM provider's tool format.
 
     Each adapter:
       - lists primitives from connected MCP servers and converts them into
-        the provider's native tool/prompt/resource shape (`T`)
+        the provider's native tool/resource/prompt shape (`T`)
       - maintains a binding registry (`exposed_name -> BoundPrimitive`)
         so `invoke()` can dispatch a model-issued tool call back to the
         right MCP server + source_id
-      - sanitizes JSON Schemas for provider quirks (`fix_schema`,
-        `sanitize_schema`)
+      - sanitizes JSON Schemas for provider quirks (`fix_schema`)
       - drives the provider's model-generation endpoint via `generate()`
         to produce one model turn (text + requested tool calls). Endpoint
         differs per provider:
@@ -34,11 +34,42 @@ class BaseAdapter(Generic[T], ABC):
     nothing about transport, sessions, or orchestration — only about the
     shape mismatch between MCP and the LLM provider it targets.
 
-    Subclasses implement `_convert_tool`, `_convert_prompt`, `_convert_resource`, and `generate`.
-
     ──────────────────────────────────────────────────────────────────────
     Building a new provider adapter
     ──────────────────────────────────────────────────────────────────────
+
+    Override surface
+    ────────────────
+
+    Required (enforced by `@abstractmethod` — instantiation fails until all four are overridden):
+      - `_convert_tool` / `_convert_resource` / `_convert_prompt`
+                `(mcp_obj, client, server_name) -> T | None`
+            Convert the MCP primitive into the provider's native shape AND
+            register the binding via `self._register_binding(...)`. Return
+            `None` to skip. Per-kind: prompts synthesize an input schema from
+            `mcp_prompt.arguments` if the provider expects one; resources
+            have no arguments and are usually exposed as a no-arg "read" tool.
+      - `generate(*, model, inputs, tools, ...) -> ModelTurnResult`
+            Drive one model turn against the provider's API.
+
+    Override only for known provider quirks:
+      - `fix_schema(schema)`
+            extra JSON Schema dialect rewrites beyond the defaults
+            (e.g. strip `default` for OpenAI strict mode, drop `format: "uri"` for Gemini).
+      - `parse_result(result)`
+            Override only if the provider returns a non-MCP-shaped result.
+            Default handles raw `CallToolResult` / `ReadResourceResult` / `GetPromptResult`.
+
+    Convention (most adapters implement their own; not in base):
+      - `_make_exposed_name(server_name, raw_name) -> str`
+            Sanitize + prefix to satisfy the provider's tool-name regex.
+
+    Configure-don't-override:
+      - `disallowed_tools=[...]` —> `_convert_tool` returns `None` for matches.
+      - `unsupported_schema_keys={...}` —> keys stripped by `sanitize_schema`.
+
+    Verify before writing code
+    ──────────────────────────
 
     The provider's official API and SDK documentation is the source of
     truth for every shape this adapter produces or consumes. Verify
@@ -53,11 +84,9 @@ class BaseAdapter(Generic[T], ABC):
         `format` keywords; encode workarounds in `fix_schema` and
         `unsupported_schema_keys`)
       - tool-call id semantics — does the provider supply stable ids,
-        and must the next request echo them back? (OpenAI: yes;
-        Google: no — synthesize)
+        and must the next tool-result message echo that same id back?
       - limits: max tools per request, max name length, name regex,
         parameter cap, context window
-      - streaming vs. non-streaming response shape if both are supported
 
     ──────────────────────────────────────────────────────────────────────
     Citations
@@ -90,15 +119,23 @@ class BaseAdapter(Generic[T], ABC):
                   page — the prose explanation of how the schema is
                   used in practice. The reference page tells you the
                   *shape*; the overview page tells you the *intent*.
-                  Cite both whenever an overview exists.
+                  Cite both whenever an overview exists, plus any additional
+                  pages (e.g. "Handle tool calls") that clarify the contract.
 
-    Methods that need citations on every adapter:
+    Citations required on every overridden method:
       - `_convert_tool`      → provider's tool-definition schema page
-      - `_convert_prompt`    → if applicable (some providers have no
-                                structured prompt concept)
-      - `_convert_resource`  → if applicable (usually attached as content)
+      - `_convert_resource`  → provider's resource / attachment schema,
+                                OR a one-line rationale if the method
+                                returns `None`
+      - `_convert_prompt`    → provider's prompt schema, OR a one-line
+                                rationale if the provider has no
+                                structured prompt concept and the
+                                method returns `None`
       - `generate`           → provider's model-generation endpoint page
-      - `fix_schema`         → any page enumerating JSON Schema dialect quirks for this provider
+                                (REQUIRED — Spec + ToolSpec + Verified)
+      - `fix_schema`         → recommended-only; required if overridden,
+                                cite the page enumerating JSON Schema
+                                dialect quirks for this provider
 
     Example
     ───────
@@ -123,7 +160,8 @@ class BaseAdapter(Generic[T], ABC):
       Anthropic Messages API (overview):
         https://platform.claude.com/docs/en/docs/build-with-claude/working-with-messages
       Anthropic tool use:
-        https://platform.claude.com/docs/en/docs/build-with-claude/tool-use
+        https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview
+        https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls
 
       OpenAI Responses API (the standard and ONLY supported OpenAI endpoint for any adapter work) (reference):
         https://developers.openai.com/api/reference/resources/responses/methods/create
@@ -146,10 +184,10 @@ class BaseAdapter(Generic[T], ABC):
     def __init__(
         self,
         disallowed_tools: Iterable[str] | None = None,
-        unsupported_schema_keys: set[str] | None = None,
+        unsupported_schema_keys: Iterable[str] | None = None,
     ) -> None:
-        self.disallowed_tools = set(disallowed_tools or [])
-        self.unsupported_schema_keys = set(unsupported_schema_keys or [])
+        self.disallowed_tools = _to_string_set(disallowed_tools)
+        self.unsupported_schema_keys = _to_string_set(unsupported_schema_keys)
 
         self._server_tool_cache: dict[str, list[T]] = {}
         self._server_resource_cache: dict[str, list[T]] = {}
@@ -165,99 +203,7 @@ class BaseAdapter(Generic[T], ABC):
     def all_capabilities(self) -> list[T]:
         return [*self.tools, *self.resources, *self.prompts]
 
-    # ── Cache & Refresh ───────────────────────────────────────────────────────────
-    # ── Creation of MCP Primitives ────────────────────────────────────────────────
-    # ── Binding ───────────────────────────────────────────────────────────────────
-    # ── Schema Helpers ─────────────────────────────────────────────────────
-
-    def parse_result(self, result: Any) -> str:
-        """Normalize MCP operation results into text per the MCP spec."""
-        if hasattr(result, "contents"):  # resource read result
-            return "\n".join(
-                c.decode() if isinstance(c, bytes) else str(c)
-                for c in result.contents
-            )
-
-        if hasattr(result, "messages"):  # prompt result
-            return "\n".join(str(m) for m in result.messages)
-
-        if hasattr(result, "content") and isinstance(result.content, list):
-            # tool result — content is list[TextContent | ImageContent | ...]
-            parts: list[str] = []
-            for item in result.content:
-                text = getattr(item, "text", None)
-                if text is not None:
-                    parts.append(text)
-                else:
-                    # image / audio / resource_link — represent as a label
-                    mime = getattr(item, "mimeType", "")
-                    kind = getattr(item, "type", "binary")
-                    parts.append(f"[{kind}: {mime}]" if mime else f"[{kind}]")
-            result_text = "\n".join(parts) if parts else ""
-            if getattr(result, "isError", False):
-                return f"Error: {result_text or 'tool returned an error'}"
-            return result_text
-
-        return str(result)
-
-    def fix_schema(self, schema: Any) -> Any:
-        """
-        Normalize schemas for LLM vendors that dislike union-style 'type' arrays.
-        """
-        if isinstance(schema, dict):
-            schema = dict(schema)
-
-            if "type" in schema and isinstance(schema["type"], list):
-                schema["anyOf"] = [{"type": t} for t in schema["type"]]
-                del schema["type"]
-
-            if "enum" in schema and "type" not in schema:
-                schema["type"] = "string"
-
-            for key, value in list(schema.items()):
-                schema[key] = self.fix_schema(value)
-            return schema
-
-        if isinstance(schema, list):
-            return [self.fix_schema(item) for item in schema]
-
-        return schema
-
-    def sanitize_schema(self, schema: Any) -> Any:
-        """
-        Strip schema keys that are valid JSON Schema but unsupported by provider SDKs.
-        """
-        if isinstance(schema, dict):
-            return {
-                key: self.sanitize_schema(value)
-                for key, value in schema.items()
-                if key not in self.unsupported_schema_keys
-            }
-
-        if isinstance(schema, list):
-            return [self.sanitize_schema(item) for item in schema]
-
-        return schema
-
-    def clear_cache(self) -> None:
-        self._server_tool_cache.clear()
-        self._server_resource_cache.clear()
-        self._server_prompt_cache.clear()
-        self._bindings.clear()
-        self.tools = []
-        self.resources = []
-        self.prompts = []
-
-    def _register_binding(self, binding: BoundPrimitive) -> None:
-        if binding.exposed_name in self._bindings:
-            raise ValueError(f"Duplicate framework capability name: {binding.exposed_name}")
-        self._bindings[binding.exposed_name] = binding
-
-    def get_binding(self, exposed_name: str) -> BoundPrimitive:
-        try:
-            return self._bindings[exposed_name]
-        except KeyError as exc:
-            raise KeyError(f"No bound capability found for '{exposed_name}'.") from exc
+    # ── Creation & Caching of MCP Primitives ─────────────────────────────────────
 
     async def create_all(self, client: BaseClient) -> None:
         await self.create_tools(client)
@@ -332,20 +278,110 @@ class BaseAdapter(Generic[T], ABC):
         self._server_prompt_cache[server_name] = converted
         return list(converted)
 
+    # ── Binding Registry ─────────────────────────────────────────────────────────
+
+    def _register_binding(self, binding: BoundPrimitive) -> None:
+        if binding.exposed_name in self._bindings:
+            raise ValueError(f"Duplicate exposed primitive name: {binding.exposed_name}")
+        self._bindings[binding.exposed_name] = binding
+
+    def get_binding(self, exposed_name: str) -> BoundPrimitive:
+        try:
+            return self._bindings[exposed_name]
+        except KeyError as exc:
+            raise KeyError(f"No bound primitive found for '{exposed_name}'.") from exc
+
+    # ── Result & Schema Helpers ──────────────────────────────────────────────────
+
+    def parse_result(self, result: Any) -> str:
+        """Normalize MCP operation results into text."""
+        if hasattr(result, "messages"):  # prompt result
+            return "\n".join(str(m) for m in result.messages)
+
+        if hasattr(result, "contents"):  # resource read result
+            return "\n".join(
+                c.decode() if isinstance(c, bytes) else str(c)
+                for c in result.contents
+            )
+
+        if hasattr(result, "content") and isinstance(result.content, list):
+            # tool result — content is list[TextContent | ImageContent | ...]
+            parts: list[str] = []
+            for item in result.content:
+                text = getattr(item, "text", None)
+                if text is not None:
+                    parts.append(text)
+                else:
+                    # image / audio / resource_link — represent as a label
+                    mime = getattr(item, "mimeType", "")
+                    kind = getattr(item, "type", "binary")
+                    parts.append(f"[{kind}: {mime}]" if mime else f"[{kind}]")
+            result_text = "\n".join(parts) if parts else ""
+            if getattr(result, "isError", False):
+                return f"Error: {result_text or 'tool returned an error'}"
+            return result_text
+
+        return str(result)
+
+    def normalize_schema(self, schema: Any) -> Any:
+        """Normalize schemas for LLM vendors that dislike union-style 'type' arrays."""
+        if isinstance(schema, dict):
+            schema = dict(schema)
+
+            if "type" in schema and isinstance(schema["type"], list):
+                schema["anyOf"] = [{"type": t} for t in schema["type"]]
+                del schema["type"]
+
+            if "enum" in schema and "type" not in schema:
+                schema["type"] = "string"
+
+            for key, value in list(schema.items()):
+                schema[key] = self.normalize_schema(value)
+            return schema
+
+        if isinstance(schema, list):
+            return [self.normalize_schema(item) for item in schema]
+
+        return schema
+
+    def sanitize_schema(self, schema: Any) -> Any:
+        """Strip schema keys that are valid JSON Schema but unsupported by provider SDKs."""
+        if isinstance(schema, dict):
+            return {
+                key: self.sanitize_schema(value)
+                for key, value in schema.items()
+                if key not in self.unsupported_schema_keys
+            }
+
+        if isinstance(schema, list):
+            return [self.sanitize_schema(item) for item in schema]
+
+        return schema
+
+    # ── Cache & Refresh ──────────────────────────────────────────────────────────
+
+    def clear_cache(self) -> None:
+        self._server_tool_cache.clear()
+        self._server_resource_cache.clear()
+        self._server_prompt_cache.clear()
+        self._bindings.clear()
+        self.tools = []
+        self.resources = []
+        self.prompts = []
+
+    # ── Invocation & Generation ──────────────────────────────────────────────────
+
     async def invoke(self, client: BaseClient, exposed_name: str, arguments: dict[str, Any]) -> Any:
         binding = self.get_binding(exposed_name)
-
         if binding.kind == "tool":
             return await client.call_tool(binding.server_name, binding.source_id, arguments)
-
-        if binding.kind == "prompt":
-            return await client.get_prompt(binding.server_name, binding.source_id, arguments)
-
         if binding.kind == "resource":
             return await client.read_resource(binding.server_name, binding.source_id)
+        if binding.kind == "prompt":
+            return await client.get_prompt(binding.server_name, binding.source_id, arguments)
+        raise ValueError(f"Unsupported primitive kind: {binding.kind}")
 
-        raise ValueError(f"Unsupported capability kind: {binding.kind}")
-
+    @abstractmethod
     async def generate(
         self,
         *,
@@ -360,32 +396,23 @@ class BaseAdapter(Generic[T], ABC):
         output_config: Any | None = None,
         extra: dict[str, Any] | None = None,
     ) -> ModelTurnResult:
-        raise NotImplementedError(
-            f"{type(self).__name__}.generate() is not implemented. "
-            f"Override generate() in this adapter to call the provider's "
-            f"model-generation endpoint and return a ModelTurnResult."
-        )
+        """Drive one model turn. Translate canonical message history
+        into the provider's request shape, call its model-generation
+        endpoint, and parse the response into a `ModelTurnResult`."""
+        ...
+
+    # ── Subclass-required Provider Converters ────────────────────────────────────
 
     @abstractmethod
     def _convert_tool(self, mcp_tool: Tool, client: BaseClient, server_name: str) -> T | None:
         ...
 
     @abstractmethod
-    def _convert_resource(
-        self,
-        mcp_resource: Resource,
-        client: BaseClient,
-        server_name: str,
-    ) -> T | None:
+    def _convert_resource(self, mcp_resource: Resource, client: BaseClient, server_name: str) -> T | None:
         ...
 
     @abstractmethod
-    def _convert_prompt(
-        self,
-        mcp_prompt: Prompt,
-        client: BaseClient,
-        server_name: str,
-    ) -> T | None:
+    def _convert_prompt(self, mcp_prompt: Prompt, client: BaseClient, server_name: str) -> T | None:
         ...
 
 

@@ -102,7 +102,7 @@ class OpenAIAdapter(BaseAdapter[dict[str, Any]]):
         return self._function_tool(
             exposed_name=exposed_name,
             description=mcp_tool.description,
-            parameters_schema=self.fix_schema(self.sanitize_schema(mcp_tool.inputSchema)),
+            parameters_schema=self.normalize_schema(self.sanitize_schema(mcp_tool.inputSchema)),
         )
 
     def _convert_resource(
