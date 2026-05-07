@@ -90,12 +90,8 @@ class OpenAIAdapter(BaseAdapter[dict[str, Any]]):
             return None
 
         self._register_binding(
-            BoundPrimitive(
-                exposed_name=exposed_name,
-                server_name=server_name,
-                source_id=mcp_tool.name,
-                kind="tool",
-                description=mcp_tool.description,
+            BoundPrimitive.from_mcp_tool(
+                mcp_tool, exposed_name=exposed_name, server_name=server_name
             )
         )
 
@@ -118,12 +114,8 @@ class OpenAIAdapter(BaseAdapter[dict[str, Any]]):
             return None
 
         self._register_binding(
-            BoundPrimitive(
-                exposed_name=exposed_name,
-                server_name=server_name,
-                source_id=str(mcp_resource.uri),
-                kind="resource",
-                description=mcp_resource.description,
+            BoundPrimitive.from_mcp_resource(
+                mcp_resource, exposed_name=exposed_name, server_name=server_name
             )
         )
 
@@ -146,12 +138,8 @@ class OpenAIAdapter(BaseAdapter[dict[str, Any]]):
             return None
 
         self._register_binding(
-            BoundPrimitive(
-                exposed_name=exposed_name,
-                server_name=server_name,
-                source_id=mcp_prompt.name,
-                kind="prompt",
-                description=mcp_prompt.description,
+            BoundPrimitive.from_mcp_prompt(
+                mcp_prompt, exposed_name=exposed_name, server_name=server_name
             )
         )
 

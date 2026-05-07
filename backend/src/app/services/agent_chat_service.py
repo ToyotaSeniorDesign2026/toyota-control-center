@@ -105,7 +105,7 @@ def _build_full_prompt(
 
 def _extract_run_id(tool_executions: list[dict]) -> str | None:
     for te in tool_executions:
-        if te.get("remote_name") != "trigger_run":
+        if te.get("source_id") != "trigger_run":
             continue
         result = te.get("parsed_result")
         # parsed_result may be a list of content blocks or a plain dict
@@ -145,7 +145,7 @@ def _parse_signal_tools(tool_executions: list[dict]) -> tuple[dict | None, list[
     db_type_options: list[dict] | None = None
 
     for te in tool_executions:
-        name = te.get("remote_name", "")
+        name = te.get("source_id", "")
         args = te.get("arguments") or {}
 
         if name == "request_db_type_selection":
@@ -232,9 +232,9 @@ async def run_agent(
             response = await agent.run(full_prompt)
             tool_executions = [
                 {
-                    "framework_name": item.framework_name,
+                    "exposed_name": item.exposed_name,
                     "server_name": item.server_name,
-                    "remote_name": item.remote_name,
+                    "source_id": item.source_id,
                     "arguments": item.arguments,
                     "parsed_result": item.parsed_result,
                 }

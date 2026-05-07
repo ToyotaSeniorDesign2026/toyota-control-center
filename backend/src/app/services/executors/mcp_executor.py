@@ -142,9 +142,9 @@ class MCPJobExecutor(BaseJobExecutor):
                 "server_names": agent.client.connected_servers,
                 "tool_executions": [
                     {
-                        "framework_name": item.framework_name,
+                        "exposed_name": item.exposed_name,
                         "server_name": item.server_name,
-                        "remote_name": item.remote_name,
+                        "source_id": item.source_id,
                         "arguments": item.arguments,
                         "parsed_result": item.parsed_result,
                     }
