@@ -171,7 +171,13 @@ def create_run_and_execute_v2(
 
     # ── Map v2 result to Run fields ────────────────────────────────────────────
     run.connector_run_id = f"{contract.executor_type.value}-{run_id}"
-    run.resolved_job_spec_json = result.get("metadata") or {}
+    # Store BOTH the executor's metadata block and its `result` payload (which
+    # carries final_text for agents, columns/rows for tools, etc.) so the chat
+    # UI / run-detail page can render whatever the executor produced.
+    run.resolved_job_spec_json = {
+        **(result.get("metadata") or {}),
+        "executor_state": result.get("result"),
+    }
 
     if result.get("error"):
         _transition_run_or_409(db, run, "failed")

@@ -7,6 +7,77 @@ const MODEL_OPTIONS = [
   { label: "GPT-4o mini", value: "gpt-4o-mini" },
 ] as const;
 
+// ── V2 response translator ──────────────────────────────────────────────────
+// /api/chat/run returns { job_id, job_type, contract_type, executor_type, run }
+// ChatPanel expects { response: string, run_id?, ... }. Translate so the rest
+// of the component renders unchanged.
+//
+// Falls back gracefully when fields are missing — the new endpoint can return
+// either a tool result (final_text via executor_state) or a simple status.
+function translateV2ResponseToChatShape(raw: any): {
+  response: string;
+  run_id?: string;
+  job_creation_intent?: boolean;
+  extracted_fields?: Record<string, any>;
+} {
+  const run = raw?.run ?? {};
+  const status: string | undefined = run.status;
+  const error: string | null | undefined = run.error;
+  const executorType: string = raw?.executor_type ?? "unknown";
+  const contractType: string = raw?.contract_type ?? raw?.job_type ?? "unknown";
+  const jobId: string | undefined = raw?.job_id;
+  const runId: string | undefined = run.id;
+  const exec = run.resolved_job_spec_json ?? {};
+  const execState = exec.executor_state ?? {};
+
+  // Build a human-readable summary
+  const lines: string[] = [];
+  if (error) {
+    lines.push(`✗ Run **failed**: ${error}`);
+  } else if (status === "succeeded") {
+    lines.push(`✓ Run succeeded — ${contractType} job (${executorType})`);
+  } else {
+    lines.push(`Run status: ${status ?? "unknown"} (${executorType})`);
+  }
+
+  // Pull executor-specific output
+  if (typeof execState.final_text === "string" && execState.final_text.trim()) {
+    lines.push("");
+    lines.push(execState.final_text.trim());
+  } else if (Array.isArray(execState.rows) && execState.rows.length > 0) {
+    const cols: string[] = Array.isArray(execState.columns) ? execState.columns : [];
+    const previewRows = execState.rows.slice(0, 10);
+    if (cols.length > 0) {
+      lines.push("");
+      lines.push(`| ${cols.join(" | ")} |`);
+      lines.push(`| ${cols.map(() => "---").join(" | ")} |`);
+      for (const row of previewRows) {
+        lines.push(`| ${row.map((v: any) => String(v ?? "")).join(" | ")} |`);
+      }
+      if (execState.row_count > previewRows.length) {
+        lines.push(`_…${execState.row_count - previewRows.length} more rows_`);
+      }
+    }
+  }
+
+  if (jobId) {
+    lines.push("");
+    lines.push(`_Job: \`${jobId}\` · Run: \`${runId ?? "?"}\`_`);
+  }
+
+  return {
+    response: lines.join("\n"),
+    run_id: runId,
+    // Surface a couple of fields the existing UI hooks may use
+    extracted_fields: {
+      job_id: jobId,
+      job_type: raw?.job_type,
+      contract_type: contractType,
+      executor_type: executorType,
+    },
+  };
+}
+
 interface AssistantActivityStep {
   id: string;
   label: string;
@@ -407,25 +478,69 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
       const authToken = typeof window !== "undefined"
         ? window.localStorage.getItem("control-center-auth-token")
         : null;
-      const response = await fetch("/api/chat/agent", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
-        },
-        body: JSON.stringify({
-          message: requestMessage,
-          conversation_history: conversationHistory,
-          model: selectedModel,
-          session_env: Object.keys(activeSessionEnv).length > 0 ? activeSessionEnv : undefined,
-        }),
-      });
 
-      if (!response.ok) {
-        throw new Error(`API error: ${response.statusText}`);
+      // ── /legacy escape hatch ─────────────────────────────────────────────
+      // Users can force the legacy guided/agent flow with `/legacy ...` or
+      // `/legacy/agent ...` or `/legacy/guided ...`. Anything else routes to
+      // the new v2 endpoint (/api/chat/run) which dispatches via JobTypeContract.
+      const legacyMatch = requestMessage.match(
+        /^\s*\/legacy(?:\/(agent|guided))?\s*(.*)$/is,
+      );
+      const useLegacy = !!legacyMatch;
+      const legacyKind = (legacyMatch?.[1] || "agent").toLowerCase();
+      const messageBody = legacyMatch ? legacyMatch[2].trim() : requestMessage;
+
+      let response: Response;
+      if (useLegacy) {
+        response = await fetch(`/api/chat-legacy/${legacyKind}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+          },
+          body: JSON.stringify({
+            message: messageBody,
+            conversation_history: conversationHistory,
+            model: selectedModel,
+            session_env: Object.keys(activeSessionEnv).length > 0 ? activeSessionEnv : undefined,
+          }),
+        });
+      } else {
+        response = await fetch("/api/chat/run", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+          },
+          body: JSON.stringify({
+            prompt: messageBody,
+            // Pass prior turns so the agent can act on conversational context.
+            // Deterministic executors (SQL_QUERY etc.) ignore this field.
+            conversation_history: conversationHistory,
+            // Default to the MCP agent contract — handles any free-form prompt
+            // by spinning up an agent loop. SQL contracts can be triggered by
+            // running an existing SQL job via the Jobs UI or by including a
+            // SELECT/UPDATE/etc. keyword in the prompt (the backend's heuristic
+            // classifier picks it up).
+            job_type: undefined,
+            target_environment: "dev",
+          }),
+        });
       }
 
-      const data = await response.json();
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`API error ${response.status}: ${errorBody.slice(0, 200)}`);
+      }
+
+      const rawData = await response.json();
+
+      // ── Translate v2 response into the shape ChatPanel already consumes ──
+      // Legacy shape: { response, run_id?, secret_request?, config_request?, ... }
+      // V2 shape:     { job_id, job_type, contract_type, executor_type, run: {...} }
+      const data = useLegacy
+        ? rawData
+        : translateV2ResponseToChatShape(rawData);
       if (data.secret_request) {
         setPendingSecretRequest({
           ...data.secret_request,
