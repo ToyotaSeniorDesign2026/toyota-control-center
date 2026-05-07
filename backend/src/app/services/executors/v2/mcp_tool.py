@@ -8,14 +8,12 @@ Reads:
     job.config              — defaults for tool args
     payload.params          — per-run overrides for tool args (preferred)
 
-The merged config+params dict is passed straight to the tool. For sql-mcp
-specifically, connection details (host, db, user, pass, db_driver) are also
-passed through as env overrides on the subprocess (until the sql-mcp refactor
-in Phase 5 makes them tool args).
+For sql-mcp specifically, connection details (db_driver, host, port, database,
+username, password, warehouse) are bundled into a `connection` dict and passed
+as a tool arg — sql-mcp's tools accept it directly. No env-var injection.
 """
 
 import logging
-import os
 from typing import Any
 
 from control_center.mcp import call_tool_once
@@ -29,12 +27,11 @@ from .base import V2Executor
 logger = logging.getLogger(__name__)
 
 
-# Tool args we pull from config/params and pass to the tool (whitelist).
-# For sql-mcp's execute_sql, only `query` and `connection_id` are accepted today.
-_TOOL_ARG_KEYS = {"query", "connection_id", "topic", "max_results"}
+# Tool args we pull from config/params and pass directly to the tool (whitelist).
+_DIRECT_ARG_KEYS = {"query", "connection_id", "topic", "max_results"}
 
-# Connection-related fields that go to env overrides for sql-mcp specifically.
-_SQL_CONN_KEYS = {"db_driver", "database", "host", "port", "username", "password", "warehouse"}
+# For sql-mcp: keys to bundle into a `connection` dict tool arg.
+_SQL_CONN_KEYS = {"db_driver", "host", "port", "database", "username", "password", "warehouse"}
 
 
 def _merged_inputs(request: ExecutionRequestV2) -> dict[str, Any]:
@@ -46,55 +43,26 @@ def _merged_inputs(request: ExecutionRequestV2) -> dict[str, Any]:
     return {**job_config, **params}
 
 
-def _build_tool_arguments(merged: dict[str, Any]) -> dict[str, Any]:
-    """Pull only the whitelisted tool-arg keys from the merged dict."""
-    return {k: v for k, v in merged.items() if k in _TOOL_ARG_KEYS and v not in (None, "")}
+def _build_tool_arguments(server_name: str, merged: dict[str, Any]) -> dict[str, Any]:
+    """Build the dict of arguments to send to the tool.
 
-
-def _sql_env_overrides(server_name: str, merged: dict[str, Any]) -> dict[str, str] | None:
-    """For sql-mcp: build env vars that configure the SQLAlchemy engine.
-
-    Phase 5 will move this into the tool args and make sql-mcp accept a
-    connection dict per call. Until then, env overrides keep the existing
-    server contract working.
+    For all servers: pull whitelisted direct args (query, connection_id, etc.).
+    For sql-mcp: also bundle SQL connection fields under `connection`.
     """
-    if server_name != "sql-mcp":
-        return None
-
-    driver = str(merged.get("db_driver") or "").strip().lower()
-    database = str(merged.get("database") or "").strip()
-
-    if driver == "sqlite":
-        if not database:
-            return None
-        return {"SQL_DB_DRIVER": "sqlite", "SQL_DB_DATABASE": database}
-
-    host = str(merged.get("host") or "").strip()
-    port = str(merged.get("port") or "").strip()
-    username = str(merged.get("username") or "").strip()
-    password = str(merged.get("password") or "").strip()
-    warehouse = str(merged.get("warehouse") or "").strip()
-
-    if not all([host, database, username, password]):
-        return None
-
-    overrides: dict[str, str] = {
-        "SQL_DB_HOST": host,
-        "SQL_DB_DATABASE": database,
-        "SQL_DB_USERNAME": username,
-        "SQL_DB_PASSWORD": password,
+    args: dict[str, Any] = {
+        k: v for k, v in merged.items()
+        if k in _DIRECT_ARG_KEYS and v not in (None, "")
     }
-    if driver:
-        overrides["SQL_DB_DRIVER"] = driver
-    if warehouse:
-        overrides["SQL_DB_WAREHOUSE"] = warehouse
-    if port:
-        overrides["SQL_DB_PORT"] = port
-        overrides["SQL_CONNECTION_STRING"] = (
-            f"Host={host};Port={port};Database={database};"
-            f"Username={username};Password={password}"
-        )
-    return overrides
+
+    if server_name == "sql-mcp":
+        connection = {
+            k: v for k, v in merged.items()
+            if k in _SQL_CONN_KEYS and v not in (None, "")
+        }
+        if connection:
+            args["connection"] = connection
+
+    return args
 
 
 def _resolve_server_name(request: ExecutionRequestV2) -> str:
@@ -121,18 +89,10 @@ class MCPToolExecutor(V2Executor):
         server_name = _resolve_server_name(request)
 
         merged = _merged_inputs(request)
-        arguments = _build_tool_arguments(merged)
+        arguments = _build_tool_arguments(server_name, merged)
 
-        # Resolve server config + apply env overrides (sql-mcp connection details).
         manager = RegistryManager(environment=request.target_environment)
         server_config = manager.get_server_config(server_name)
-        env_overrides = _sql_env_overrides(server_name, merged)
-        if env_overrides:
-            base_env = dict(os.environ)
-            existing = server_config.get("env")
-            if isinstance(existing, dict):
-                base_env.update(existing)
-            server_config = {**server_config, "env": {**base_env, **env_overrides}}
 
         try:
             raw_result = await call_tool_once(
