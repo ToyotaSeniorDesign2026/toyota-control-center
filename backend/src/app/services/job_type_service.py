@@ -2,9 +2,9 @@ from __future__ import annotations
 
 """Job-type discovery and validation derived from the connector registry.
 
-Known job types (sql, repo_connection, mcp) are defined as full JobTypeContract
-instances in control_center.specs.known_contracts. Registry entries that map to
-a known type return that contract directly. Unknown types get an auto-generated
+Known job types (sql, mcp) are defined as full JobTypeContract instances in
+control_center.specs.known_contracts. Registry entries that map to a known
+type return that contract directly. Unknown types get an auto-generated
 contract with minimal metadata.
 """
 
@@ -13,14 +13,14 @@ from fastapi import HTTPException, status
 from control_center.registry import RegistryManager
 from control_center.specs import KNOWN_CONTRACTS
 from control_center.specs.job_type import (
-    CapabilityRequirement,
+    ExecutionRequirement,
+    ExecutorType,
     GovernancePolicy,
     InputSchema,
+    InteractionSurfaceType,
     JobTypeContract,
     RunFeatures,
 )
-
-_VALID_KINDS = {"runtime", "artifact"}
 
 
 def _auto_contract(
@@ -32,16 +32,25 @@ def _auto_contract(
     optional: list[str] | None = None,
     connector_types: list[str] | None = None,
 ) -> JobTypeContract:
-    """Build a minimal contract for registry entries without a known definition."""
-    kind_actions = ["activate", "pause", "archive"]
+    """Build a minimal contract for registry entries without a known definition.
+
+    Defaults to MCP_AGENT executor type — registry-discovered MCP servers without
+    a hand-authored contract are treated as agentic targets the user can prompt.
+    """
     return JobTypeContract(
         type=job_type,
         display_name=display_name or job_type.replace("_", " ").title(),
         description=description,
-        kind="runtime",
-        supported_actions=kind_actions,
-        executor="mcp",
-        requires=CapabilityRequirement(connector_types=connector_types or []),
+        supported_actions=["activate", "pause", "archive"],
+        deterministic=False,
+        executor_type=ExecutorType.MCP_AGENT,
+        executor="default",
+        requires=[
+            ExecutionRequirement(
+                surface_type=InteractionSurfaceType.MCP_SERVER,
+                names=connector_types or [],
+            ),
+        ],
         features=RunFeatures(),
         policy=GovernancePolicy(),
         source="system",
@@ -91,19 +100,14 @@ def get_job_type_contract(job_type: str, environment: str | None = None) -> JobT
 
 
 def validate_job_contract(kind: str, job_type: str, config: dict) -> JobTypeContract:
-    if kind not in _VALID_KINDS:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Invalid kind '{kind}'. Must be one of: {sorted(_VALID_KINDS)}",
-        )
+    """Validate a job's config against its contract.
 
+    The `kind` arg is preserved for backward compatibility with callers that
+    used to enforce runtime/artifact distinction; it is now ignored. The
+    JobTypeContract itself indicates artifact-vs-runtime via presence of
+    `artifact: ArtifactSpec | None`.
+    """
     contract = get_job_type_contract(job_type)
-    if contract and contract.kind != kind:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Type '{job_type}' requires kind '{contract.kind}'",
-        )
-
     if contract:
         required = set(contract.config.required)
         cfg = config or {}

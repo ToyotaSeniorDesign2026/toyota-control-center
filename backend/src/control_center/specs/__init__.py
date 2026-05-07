@@ -1,19 +1,20 @@
 from .base import MCPBase
 from .primitive import BoundPrimitive, PrimitiveKind, JSONSchema
 from .execution import AgentRun, DirectToolCall, MCPRunSpec
-from .known_contracts import KNOWN_CONTRACTS
 from .job_type import (
     ArtifactSpec,
-    CapabilityRequirement,
+    ExecutionRequirement,
+    ExecutorType,
     FieldSpec,
     FieldType,
     GovernancePolicy,
     InputSchema,
-    JobKind,
+    InteractionSurfaceType,
     JobTypeContract,
     JobTypeSource,
     RunFeatures,
 )
+from .known_contracts import KNOWN_CONTRACTS
 from .tool_result import ExecutionError, ExecutionResult, MCPToolResult
 
 __all__ = [
@@ -31,12 +32,13 @@ __all__ = [
     "JSONSchema",
     # job type contract (building blocks for MCP App registration)
     "ArtifactSpec",
-    "CapabilityRequirement",
+    "ExecutionRequirement",
+    "ExecutorType",
     "FieldSpec",
     "FieldType",
     "GovernancePolicy",
     "InputSchema",
-    "JobKind",
+    "InteractionSurfaceType",
     "JobTypeContract",
     "JobTypeSource",
     "RunFeatures",

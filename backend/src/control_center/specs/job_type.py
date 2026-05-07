@@ -83,7 +83,7 @@ class AccessPolicy(BaseModel):
 
 
 class EnvironmentPolicy(BaseModel):
-    approval_required_in: list[Environment] = Field(default_factory=lambda: [Environment.PROD])
+    approval_required_in: list[Environment] = Field(default_factory=lambda: ["prod"])
     blocked_in: list[Environment] = Field(default_factory=list)
 
 

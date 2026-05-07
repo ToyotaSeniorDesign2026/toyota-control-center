@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 
 _logger = logging.getLogger(__name__)
 
-from app.api.routers import admin, audit, auth, chat, connectors, integrations, job_types, jobs, policy, runs
+from app.api.routers import admin, audit, auth, chat, chat_legacy, connectors, integrations, job_types, jobs, policy, runs
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.logging import setup_logging
@@ -51,6 +51,9 @@ def create_app() -> FastAPI:
     app.include_router(audit.router, prefix="/audit", tags=["audit"])
     app.include_router(integrations.router, prefix="/integrations", tags=["integrations"])
     app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
+    # Legacy hardcoded chat flow — kept mounted at /api/chat-legacy/* during the
+    # JobTypeContract migration. Remove once the new chat.py covers all flows.
+    app.include_router(chat_legacy.router, prefix="/api/chat-legacy", tags=["chat-legacy"])
 
     scheduler_stop_event: asyncio.Event | None = None
     scheduler_task: asyncio.Task | None = None
