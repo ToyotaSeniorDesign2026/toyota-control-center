@@ -50,7 +50,7 @@ class BaseAdapter(Generic[T], ABC):
             `None` to skip. Per-kind: prompts synthesize an input schema from
             `mcp_prompt.arguments` if the provider expects one; resources
             have no arguments and are usually exposed as a no-arg "read" tool.
-      - `generate(*, model, inputs, tools, ...) -> ModelTurnResult`
+      - `generate(*, model, messages, tools, ...) -> ModelTurnResult`
             Drive one model turn against the provider's API.
 
     Override only for known provider quirks:
@@ -297,8 +297,8 @@ class BaseAdapter(Generic[T], ABC):
                 if item is not None:
                     converted.append(item)
 
-                self._server_prompt_cache[server_name] = converted
-                return list(converted)
+            self._server_prompt_cache[server_name] = converted
+            return list(converted)
         except Exception:
             self._remove_bindings_for_server(server_name, kind="prompt")
             raise
