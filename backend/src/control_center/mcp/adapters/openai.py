@@ -228,7 +228,6 @@ class OpenAIAdapter(BaseAdapter[dict[str, Any]]):
         max_tokens: int | None = None,
         temperature: float | None = None,
         tool_choice: Any | None = None,
-        max_retries: int | None = None,
         output_config: Any | None = None,
         extra: dict[str, Any] | None = None,
     ) -> ModelTurnResult:
