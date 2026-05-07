@@ -264,8 +264,8 @@ class OpenAIAdapter(BaseAdapter[dict[str, Any]]):
             request["temperature"] = temperature
 
         if output_config is not None:
-            # Responses API structured outputs use text.format,
-            # not chat.completions response_format.
+            # Responses API structured outputs are passed under `text.format`.
+            # See: https://developers.openai.com/api/reference/resources/responses/methods/create
             request["text"] = output_config
 
         if extra:

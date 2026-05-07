@@ -11,10 +11,134 @@ T = TypeVar("T")
 
 
 class BaseAdapter(Generic[T], ABC):
-    """
-    Convert MCP capabilities into framework-native objects.
+    """Bridge between MCP primitives and an LLM provider's tool format.
 
-    This adapter is aligned to BaseClient, not connector/session internals.
+    Each adapter:
+      - lists primitives from connected MCP servers and converts them into
+        the provider's native tool/prompt/resource shape (`T`)
+      - maintains a binding registry (`exposed_name -> BoundPrimitive`)
+        so `invoke()` can dispatch a model-issued tool call back to the
+        right MCP server + source_id
+      - sanitizes JSON Schemas for provider quirks (`fix_schema`,
+        `sanitize_schema`)
+      - drives the provider's model-generation endpoint via `generate()`
+        to produce one model turn (text + requested tool calls). Endpoint
+        differs per provider:
+            Anthropic : client.messages.create(...)         (Messages API)
+            OpenAI    : client.responses.create(...)        (Responses API)
+            Google    : client.models.generate_content(...) (Gemini API)
+      - normalizes raw MCP protocol object payloads—`CallToolResult`, `ReadResourceResult`,
+        and `GetPromptResult`—into plain text via `parse_result()`.
+
+    Sits above `BaseClient` (transport) and below the agent loop. Knows
+    nothing about transport, sessions, or orchestration — only about the
+    shape mismatch between MCP and the LLM provider it targets.
+
+    Subclasses implement `_convert_tool`, `_convert_prompt`, `_convert_resource`, and `generate`.
+
+    ──────────────────────────────────────────────────────────────────────
+    Building a new provider adapter
+    ──────────────────────────────────────────────────────────────────────
+
+    The provider's official API and SDK documentation is the source of
+    truth for every shape this adapter produces or consumes. Verify
+    BEFORE writing code, not after a runtime failure:
+
+      - exact request payload (messages vs. input, role names, tool
+        format, tool_choice values, content-block types)
+      - exact response payload (text fragments, tool-call objects, id
+        fields, stop reasons, usage/cost metadata, streaming chunks)
+      - JSON Schema dialect and restrictions (some providers reject
+        `additionalProperties: false`, `type: [a, b]` arrays, certain
+        `format` keywords; encode workarounds in `fix_schema` and
+        `unsupported_schema_keys`)
+      - tool-call id semantics — does the provider supply stable ids,
+        and must the next request echo them back? (OpenAI: yes;
+        Google: no — synthesize)
+      - limits: max tools per request, max name length, name regex,
+        parameter cap, context window
+      - streaming vs. non-streaming response shape if both are supported
+
+    ──────────────────────────────────────────────────────────────────────
+    Citations
+    ──────────────────────────────────────────────────────────────────────
+
+    Every overridden method MUST carry these in its docstring:
+
+        Spec:     URL of the provider's API REFERENCE page — the exact
+                  request/response schema that defines this method's
+                  contract. The reference page is the source of truth;
+                  if the overview and the schema page disagree, the
+                  schema page wins.
+
+        ToolSpec: URL of the provider's tool / function-call schema
+                  page. Required only when the provider exposes a
+                  structured tool format (Anthropic tool_use blocks,
+                  OpenAI function tools, Gemini FunctionDeclaration).
+                  Cite alongside Spec.
+
+        Verified: ISO date the citation was last validated, plus the
+                  exact SDK version tested against — e.g.
+                  `2026-05-07, openai==2.4.0`. Bump both fields together;
+                  a date without a version is ambiguous, a version
+                  without a date doesn't tell you whether the docs have
+                  moved underneath you.
+
+    And SHOULD carry (strongly recommended):
+
+        Doc:      URL of the provider's API OVERVIEW or "build with X"
+                  page — the prose explanation of how the schema is
+                  used in practice. The reference page tells you the
+                  *shape*; the overview page tells you the *intent*.
+                  Cite both whenever an overview exists.
+
+    Methods that need citations on every adapter:
+      - `_convert_tool`      → provider's tool-definition schema page
+      - `_convert_prompt`    → if applicable (some providers have no
+                                structured prompt concept)
+      - `_convert_resource`  → if applicable (usually attached as content)
+      - `generate`           → provider's model-generation endpoint page
+      - `fix_schema`         → any page enumerating JSON Schema dialect quirks for this provider
+
+    Example
+    ───────
+
+        async def generate(self, ...) -> ModelTurnResult:
+            \"\"\"Drive one model turn via Anthropic's Messages API.
+
+            Spec:     https://platform.claude.com/docs/en/api/messages/create
+            ToolSpec: https://platform.claude.com/docs/en/docs/build-with-claude/tool-use
+            Doc:      https://platform.claude.com/docs/en/docs/build-with-claude/working-with-messages
+            Verified: 2026-05-07, anthropic==0.40.0
+            \"\"\"
+
+    When upgrading the SDK or targeting a new model, re-read EVERY cited
+    page and bump BOTH the adapter implementation AND the Verified line
+    before shipping. A stale Verified line on changed code is a review block.
+
+    Reference URLs (verified 2026-05-07)
+    ─────────────────────────────────────
+      Anthropic Messages API (reference):
+        https://platform.claude.com/docs/en/api/messages/create
+      Anthropic Messages API (overview):
+        https://platform.claude.com/docs/en/docs/build-with-claude/working-with-messages
+      Anthropic tool use:
+        https://platform.claude.com/docs/en/docs/build-with-claude/tool-use
+
+      OpenAI Responses API (the standard and ONLY supported OpenAI endpoint for any adapter work) (reference):
+        https://developers.openai.com/api/reference/resources/responses/methods/create
+      OpenAI Responses API (overview / migration):
+        https://developers.openai.com/api/docs/guides/migrate-to-responses
+      OpenAI tool / function calling:
+        https://developers.openai.com/api/docs/guides/function-calling
+        https://developers.openai.com/api/docs/guides/tools
+
+      Google Gemini generate_content (reference):
+        https://ai.google.dev/api/generate-content
+      Google Gemini generate_content (overview):
+        https://ai.google.dev/gemini-api/docs/text-generation
+      Google Gemini function calling:
+        https://ai.google.dev/gemini-api/docs/function-calling
     """
 
     framework: str = "unknown"  # Provider/framework identifier, e.g. 'openai', 'anthropic', or 'google'.
@@ -237,7 +361,9 @@ class BaseAdapter(Generic[T], ABC):
         extra: dict[str, Any] | None = None,
     ) -> ModelTurnResult:
         raise NotImplementedError(
-            f"{type(self).__name__} does not implement model generation for '{model}'."
+            f"{type(self).__name__}.generate() is not implemented. "
+            f"Override generate() in this adapter to call the provider's "
+            f"model-generation endpoint and return a ModelTurnResult."
         )
 
     @abstractmethod

@@ -85,7 +85,7 @@ class LLMClient(BaseClient):
         )
         self._exit_stack = AsyncExitStack()
         self._sessions: dict[str, ClientSession] = {}
-        # InitializeResult per server (serverInfo, capabilities, instructions, protocolVersion).
+        # InitializeResult per server (serverInfo, primitives, instructions, protocolVersion).
         # Captured during connect_to_server; available via get_server_info().
         self._init_results: dict[str, Any] = {}
 
