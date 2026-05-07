@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Download, RefreshCw } from "lucide-react";
 import { Button } from "../components/ui/button";
+import { RiskDistributionChart } from "../components/risk/RiskDistributionChart";
+import { RiskDriversSection } from "../components/risk/RiskDriversSection";
 import { getPolicyChecks, listJobs, listRuns, type JobRecord, type PolicyEvaluation, type RunRecord } from "../lib/controlCenterApi";
 
 type PolicyChecksByRun = Record<string, PolicyEvaluation | null>;
@@ -117,41 +119,28 @@ export default function Risk() {
         <div className="rounded-lg border border-red-200 bg-red-50/40 p-4 shadow-sm"><div className="text-sm font-medium text-gray-600">Policy Check Failures</div><div className="mt-2 text-3xl font-bold text-red-700">{metrics.policyViolations}</div></div>
       </div>
 
-      <div className="mb-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-          <h3 className="text-lg font-semibold text-gray-900">Risk Distribution by Environment</h3>
-          <p className="mt-1 text-sm text-gray-600">Counts of job risk levels across environments from backend job records.</p>
-          <div className="mt-4 space-y-4 text-sm">
-            {Object.entries(distribution).map(([env, levels]) => (
-              <div key={env} className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-                <p className="font-semibold text-gray-900">{env}</p>
-                <div className="mt-2 grid grid-cols-2 gap-2 lg:grid-cols-4">
-                  {Object.entries(levels).map(([level, count]) => (
-                    <div key={level} className="rounded bg-white px-3 py-2 text-gray-700">
-                      <span className="font-medium capitalize">{level}</span>: {count}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+      <div className="mb-4">
+        <RiskDistributionChart distribution={distribution} />
+      </div>
 
-        <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-          <h3 className="text-lg font-semibold text-gray-900">Top Policy Drivers</h3>
-          <p className="mt-1 text-sm text-gray-600">Most common failing check categories pulled from backend policy evaluations.</p>
-          <div className="mt-4 space-y-3 text-sm">
-            {Object.values(policyChecksByRun).flatMap((evaluation) => evaluation?.checks ?? []).filter((check) => check.result.toLowerCase() === "failed").slice(0, 8).map((check, index) => (
-              <div key={`${check.id}-${index}`} className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-                <p className="font-medium text-gray-900">{check.check_name}</p>
-                <p className="mt-1 text-gray-600">{check.reason}</p>
-                <p className="mt-2 text-xs uppercase tracking-wide text-gray-500">{check.category} • severity {check.severity}</p>
-              </div>
-            ))}
-            {!loading && Object.values(policyChecksByRun).flatMap((evaluation) => evaluation?.checks ?? []).filter((check) => check.result.toLowerCase() === "failed").length === 0 ? (
-              <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-gray-600">No failed policy checks found in the current backend dataset.</div>
-            ) : null}
-          </div>
+      <div className="mb-4">
+        <RiskDriversSection runs={runs} />
+      </div>
+
+      <div className="mb-4 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+        <h3 className="text-lg font-semibold text-gray-900">Top Policy Drivers</h3>
+        <p className="mt-1 text-sm text-gray-600">Most common failing check categories pulled from backend policy evaluations.</p>
+        <div className="mt-4 space-y-3 text-sm">
+          {Object.values(policyChecksByRun).flatMap((evaluation) => evaluation?.checks ?? []).filter((check) => check.result.toLowerCase() === "failed").slice(0, 8).map((check, index) => (
+            <div key={`${check.id}-${index}`} className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+              <p className="font-medium text-gray-900">{check.check_name}</p>
+              <p className="mt-1 text-gray-600">{check.reason}</p>
+              <p className="mt-2 text-xs uppercase tracking-wide text-gray-500">{check.category} • severity {check.severity}</p>
+            </div>
+          ))}
+          {!loading && Object.values(policyChecksByRun).flatMap((evaluation) => evaluation?.checks ?? []).filter((check) => check.result.toLowerCase() === "failed").length === 0 ? (
+            <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-gray-600">No failed policy checks found in the current backend dataset.</div>
+          ) : null}
         </div>
       </div>
 

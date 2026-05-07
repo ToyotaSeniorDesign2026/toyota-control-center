@@ -66,7 +66,7 @@ export default function Connectors() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Connectors</h1>
           <p className="mt-2 text-sm text-gray-600">
-            Manage external systems and tools that jobs connect to — databases, GitHub repos, cloud
+            Manage external systems and tools that jobs connect to — MCP servers, GitHub repos, cloud
             services, and more.
           </p>
         </div>

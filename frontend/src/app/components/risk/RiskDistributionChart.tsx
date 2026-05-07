@@ -2,32 +2,31 @@ import { useState } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import { ChevronDown } from "lucide-react";
 
-const data = [
-  {
-    environment: "Dev",
-    Low: 45,
-    Medium: 28,
-    High: 12,
-    Critical: 3,
-  },
-  {
-    environment: "Semi-Prod",
-    Low: 32,
-    Medium: 24,
-    High: 15,
-    Critical: 6,
-  },
-  {
-    environment: "Production",
-    Low: 28,
-    Medium: 18,
-    High: 18,
-    Critical: 8,
-  },
+type DistributionBuckets = Record<string, Record<string, number>>;
+
+const fallbackData = [
+  { environment: "Dev", Low: 45, Medium: 28, High: 12, Critical: 3 },
+  { environment: "Semi-Prod", Low: 32, Medium: 24, High: 15, Critical: 6 },
+  { environment: "Production", Low: 28, Medium: 18, High: 18, Critical: 8 },
 ];
 
-export function RiskDistributionChart() {
+function bucketsToChartData(buckets: DistributionBuckets) {
+  return Object.entries(buckets).map(([env, levels]) => ({
+    environment: env,
+    Low: levels.low ?? 0,
+    Medium: levels.medium ?? 0,
+    High: levels.high ?? 0,
+    Critical: levels.critical ?? 0,
+  }));
+}
+
+interface RiskDistributionChartProps {
+  distribution?: DistributionBuckets;
+}
+
+export function RiskDistributionChart({ distribution }: RiskDistributionChartProps) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const data = distribution && Object.keys(distribution).length > 0 ? bucketsToChartData(distribution) : fallbackData;
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white shadow-sm">

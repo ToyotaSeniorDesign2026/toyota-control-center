@@ -16,7 +16,6 @@ from .config import ConfigManager
 from .client import RestClient
 
 console = Console()
-client = OpenAI()
 
 
 # ============================================================================
@@ -624,6 +623,13 @@ def get_agent_context():
 
 def talk_to_agent():
     """Chat with AI Assistant."""
+    try:
+        client = OpenAI()
+    except Exception as e:
+        console.print(f"[red]AI Assistant unavailable:[/red] {e}")
+        console.print("[yellow]Set OPENAI_API_KEY to use 'cc ai'. Other CLI commands do not need it.[/yellow]")
+        raise typer.Exit(code=1)
+
     console.print("\n[bold green]CC Assistant[/bold green]")
     console.print("[dim]You can ask me things about your jobs and runs.[/dim]\n")
     console.print("[bold]Try things like:[/bold]")
