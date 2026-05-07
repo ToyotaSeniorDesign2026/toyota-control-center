@@ -1,7 +1,5 @@
 {
   "command": "npx",
   "args": ["-y", "--quiet", "@modelcontextprotocol/server-github"],
-  "env": {
-    "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"
-  }
+  "type": "stdio"
 }

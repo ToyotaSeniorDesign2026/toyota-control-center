@@ -105,6 +105,7 @@ interface ChatPanelProps {
   ) => void;
   resources?: ResourceSummary[];
   onRunStarted?: (runId: string) => void;
+  onAgentResponse?: () => void;
 }
 
 const initialMessages: ChatMessage[] = [
@@ -206,7 +207,7 @@ const mockChatHistory: ChatThread[] = [
 ];
 
 
-export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtracted, currentDraftData, assistantNotices, onExternalDragEnter, onConsoleEvent, resources, onRunStarted }: ChatPanelProps) {
+export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtracted, currentDraftData, assistantNotices, onExternalDragEnter, onConsoleEvent, resources, onRunStarted, onAgentResponse }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [inputValue, setInputValue] = useState("");
   const [showHistory, setShowHistory] = useState(false);
@@ -225,6 +226,11 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
   const [dbTypeOptions, setDbTypeOptions] = useState<DbTypeOption[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const seenNoticeIdsRef = useRef<Set<string>>(new Set());
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   useEffect(() => {
     if (!assistantNotices?.length) return;
@@ -418,6 +424,9 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
           conversation_history: conversationHistory,
           model: selectedModel,
           session_env: Object.keys(activeSessionEnv).length > 0 ? activeSessionEnv : undefined,
+          ...((githubPersonalAccessToken || sessionGitHubToken)
+            ? { server_env_overrides: { github: { GITHUB_PERSONAL_ACCESS_TOKEN: githubPersonalAccessToken || sessionGitHubToken } } }
+            : {}),
         }),
       });
 
@@ -513,6 +522,9 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
       if (data.run_id) {
         onRunStarted?.(data.run_id);
       }
+
+      // Refresh jobs/runs after every agent response so newly created jobs appear immediately
+      onAgentResponse?.();
 
       // Handle extracted fields from the message
       if (data.reset_draft && onFieldsExtracted) {
@@ -919,6 +931,7 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
             </div>
           ));
           })()}
+          <div ref={messagesEndRef} />
         </div>
       )}
 
@@ -959,10 +972,12 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
             <p className="text-xs font-medium text-amber-900">{pendingSecretRequest.prompt}</p>
             <div className="mt-3 flex gap-2">
               <input
-                type="password"
+                type="text"
                 value={secretInputValue}
                 onChange={(e) => setSecretInputValue(e.target.value)}
                 placeholder="GitHub personal access token"
+                autoComplete="off"
+                style={{ WebkitTextSecurity: "disc" } as React.CSSProperties}
                 className="flex-1 rounded-md border border-amber-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-500 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
               />
               <button
@@ -1055,10 +1070,12 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
                           {field.label}{field.required ? " *" : ""}
                         </label>
                         <input
-                          type={field.secret ? "password" : "text"}
+                          type="text"
                           value={configInputValues[field.key] ?? sessionEnv[field.key] ?? ""}
                           onChange={(e) => setConfigInputValues((prev) => ({ ...prev, [field.key]: e.target.value }))}
                           placeholder={field.placeholder ?? ""}
+                          autoComplete="off"
+                          style={field.secret ? { WebkitTextSecurity: "disc" } as React.CSSProperties : undefined}
                           className="w-full rounded border border-emerald-300 bg-white px-2 py-1 text-xs text-gray-900 placeholder-gray-400 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
                         />
                       </div>
@@ -1075,10 +1092,12 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
                       {field.label}{field.required ? " *" : ""}
                     </label>
                     <input
-                      type={field.secret ? "password" : "text"}
+                      type="text"
                       value={configInputValues[field.key] ?? sessionEnv[field.key] ?? ""}
                       onChange={(e) => setConfigInputValues((prev) => ({ ...prev, [field.key]: e.target.value }))}
                       placeholder={field.placeholder ?? ""}
+                      autoComplete="off"
+                      style={field.secret ? { WebkitTextSecurity: "disc" } as React.CSSProperties : undefined}
                       className="w-full rounded border border-emerald-300 bg-white px-2 py-1 text-xs text-gray-900 placeholder-gray-400 focus:border-[#ed0923] focus:outline-none focus:ring-1 focus:ring-[#ed0923]"
                     />
                   </div>

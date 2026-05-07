@@ -265,7 +265,7 @@ def get_job_schedule(db: Session, user, job_id: str):
     }
 
 
-def set_job_schedule(db: Session, user, job_id: str, schedule: str):
+def set_job_schedule(db: Session, user, job_id: str, schedule: str, end_date: str | None = None):
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
@@ -282,15 +282,20 @@ def set_job_schedule(db: Session, user, job_id: str, schedule: str):
     cfg = dict(job.config or {})
     cfg["schedule"] = schedule
     cfg["schedule_updated_at"] = now_iso()
+    if end_date:
+        cfg["schedule_end_date"] = end_date
+    else:
+        cfg.pop("schedule_end_date", None)
     job.config = cfg
     job.updated_at = now_iso()
     db.add(job)
     db.commit()
     db.refresh(job)
-    write_audit(db, user, "JOB_SCHEDULE_UPDATED", {"job_id": job_id, "schedule": schedule})
+    write_audit(db, user, "JOB_SCHEDULE_UPDATED", {"job_id": job_id, "schedule": schedule, "end_date": end_date})
     return {
         "job_id": job.id,
         "schedule": schedule,
+        "end_date": end_date,
         "updated_at": job.updated_at,
     }
 

@@ -5,6 +5,7 @@ import { useUser } from "../contexts/UserContext";
 import { useState } from "react";
 import { NotificationPanel } from "./notifications/NotificationPanel";
 import { useCalendarOverlay } from "../contexts/CalendarContext";
+import tfsLogo from "../../assets/tfs-logo-white-red-bg.svg";
 
 export function UserNavigation({ 
   activePage = "Dashboard",
@@ -25,8 +26,8 @@ export function UserNavigation({
         <div className="flex items-center gap-8">
           <Link to="/user-home" className="flex items-center gap-2">
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded bg-[#ed0923] flex items-center justify-center">
-                <span className="text-white font-bold text-sm">T</span>
+              <div className="w-11 h-11 rounded bg-[#ed0923] flex items-center justify-center overflow-hidden">
+                <img src={tfsLogo} alt="TFS" className="w-full h-full object-cover scale-150" />
               </div>
               <span className="text-lg font-semibold text-gray-900">Toyota Control Center</span>
             </div>

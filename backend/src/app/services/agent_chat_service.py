@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy.orm import Session
+_GITHUB_KEYWORDS = re.compile(
+    r"\bgithub\b|\brepo(?:sitory)?\b|\bcommit\b|\bpush\b|\.sql\s+(?:to|in|into)\b",
+    re.IGNORECASE,
+)
 
 from control_center.agent import build_agent_from_registry
 
@@ -59,6 +63,7 @@ class AgentResult:
     config_request: dict | None = None
     db_type_options: list[dict] | None = None
     run_id: str | None = None
+    secret_request: dict | None = None
 
 
 # ── System prompt ──────────────────────────────────────────────────────────────
@@ -68,26 +73,56 @@ You are CC Assistant for the Toyota Control Center — a platform for managing, 
 
 Be concise. Always use your available tools to answer questions about jobs and runs; never guess at IDs or status.
 
-CRITICAL — job creation rule: before calling any create_*_job tool, you MUST present a confirmation summary to the user that lists every field you are about to submit (name, type, schedule, environment, query, connector, etc.) and explicitly ask them to confirm. Only proceed with creation after the user says yes or approves. Never skip this step.
+CRITICAL — full task sequence: when a task involves SQL and/or GitHub, follow these steps in order — do NOT skip or reorder:
+
+Step 1 — DATABASE: If SQL connection details are missing from the session context, call request_db_type_selection, then request_db_connection_form. When calling request_db_connection_form, pass a prefill dict with any connection values the user already mentioned in their message (database name → SQL_DB_DATABASE, host → SQL_DB_HOST, port → SQL_DB_PORT, username → SQL_DB_USERNAME). For example, if the user said "the customer_accounts database", pass prefill={"SQL_DB_DATABASE": "customer_accounts"}. Say "Please fill in your database connection details below." and STOP. Do not continue until the user submits the form.
+
+Step 2 — GITHUB TOKEN: If the task involves writing to GitHub AND the GITHUB STATUS below says NOT connected, call request_github_token immediately. Say "Please enter your GitHub Personal Access Token below." and STOP. Do not continue until the user submits the token. You MUST do this before inspecting schema or creating any job.
+
+Step 3 — SCHEMA: Once you have both DB credentials and the GitHub token (if needed), inspect the schema: call list_tables, then describe_table for relevant tables. Use ONLY the real table and column names found — never guess.
+
+Step 4 — CONFIRM: Draft the SQL query. Present a confirmation summary with all fields (name, query, db_driver, host, port, database, username, environment, run_type, schedule, schedule_end_date if applicable, and github_repo/path/branch if applicable). Wait for user approval.
+
+Step 5 — CREATE: Call create_sql_job with all required fields EXCEPT schedule/schedule_end_date. Also pass github_repo, github_path, github_branch, and github_token (from GITHUB_PERSONAL_ACCESS_TOKEN in the session context) when applicable. Do not call create_or_update_file directly — the run handles the GitHub write.
+
+Step 5b — SCHEDULE (scheduled jobs only): If run_type is 'scheduled', you MUST call schedule_job immediately after create_sql_job using the job ID it returned. Pass:
+  - cron_expression: the 5-part cron string (translate "every weekday at 8 AM" → "0 8 * * 1-5", etc.)
+  - end_date: ISO date from TODAY'S DATE context (e.g. if user says "until May 20th" and today is 2026-05-06, pass "2026-05-20"). Leave empty if no end date was specified.
+  Do NOT call trigger_run for scheduled jobs. Tell the user when the job will next run.
+
+Step 5c — RUN (manual jobs only): If run_type is 'manual', call trigger_run with the job ID to execute it immediately.
 """
 
 
-def _session_env_section(session_env: dict[str, str] | None) -> str:
-    if not session_env:
-        return ""
-    lines = ["SESSION CONNECTION DETAILS (user-provided — use these when calling create_sql_job):"]
-    for key, value in session_env.items():
-        lines.append(f"  {key} = {value}")
-    return "\n".join(lines)
+def _session_env_section(session_env: dict[str, str] | None, github_token: str | None = None) -> str:
+    lines: list[str] = []
+    if session_env:
+        lines.append("SESSION CONNECTION DETAILS (user-provided — use these when calling create_sql_job):")
+        for key, value in session_env.items():
+            lines.append(f"  {key} = {value}")
+    if github_token:
+        lines.append(f"  GITHUB_PERSONAL_ACCESS_TOKEN = {github_token}")
+    return "\n".join(lines) if lines else ""
 
 
 def _build_full_prompt(
     message: str,
     conversation_history: list[dict[str, Any]] | None,
     session_env: dict[str, str] | None,
+    github_available: bool = False,
+    github_token: str | None = None,
 ) -> str:
-    env_block = _session_env_section(session_env)
-    system = _SYSTEM_PROMPT + ("\n\n" + env_block if env_block else "")
+    from datetime import date as _date
+    today_iso = _date.today().isoformat()
+
+    env_block = _session_env_section(session_env, github_token)
+    github_block = (
+        "GITHUB STATUS: connected — GitHub tools (create_or_update_file, etc.) are available."
+        if github_available
+        else "GITHUB STATUS: NOT connected — you have NO GitHub tools. If the user wants to write to GitHub, call request_github_token immediately and then stop."
+    )
+    date_block = f"TODAY'S DATE: {today_iso} — use this when resolving relative dates like 'until May 20th' into ISO dates (e.g. '{today_iso[:4]}-05-20')."
+    system = _SYSTEM_PROMPT + "\n\n" + date_block + "\n\n" + github_block + ("\n\n" + env_block if env_block else "")
 
     parts = [system, ""]
     for turn in conversation_history or []:
@@ -108,8 +143,14 @@ def _extract_run_id(tool_executions: list[dict]) -> str | None:
         if te.get("remote_name") != "trigger_run":
             continue
         result = te.get("parsed_result")
-        # parsed_result may be a list of content blocks or a plain dict
-        if isinstance(result, list):
+        # The adapter's parse_result() returns a plain string (joined text content).
+        # Fall back to list-of-blocks and raw-dict forms for forward compatibility.
+        if isinstance(result, str):
+            try:
+                return json.loads(result).get("id")
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+        elif isinstance(result, list):
             for block in result:
                 if isinstance(block, dict) and block.get("type") == "text":
                     try:
@@ -139,10 +180,13 @@ def _build_config_request(db_type: str, prompt: str, prefill: dict | None = None
     }
 
 
-def _parse_signal_tools(tool_executions: list[dict]) -> tuple[dict | None, list[dict] | None]:
-    """Return (config_request, db_type_options) by inspecting signal tool calls."""
+def _parse_signal_tools(
+    tool_executions: list[dict],
+) -> tuple[dict | None, list[dict] | None, dict | None]:
+    """Return (config_request, db_type_options, secret_request) from signal tool calls."""
     config_request: dict | None = None
     db_type_options: list[dict] | None = None
+    secret_request: dict | None = None
 
     for te in tool_executions:
         name = te.get("remote_name", "")
@@ -157,7 +201,14 @@ def _parse_signal_tools(tool_executions: list[dict]) -> tuple[dict | None, list[
             prefill = args.get("prefill") if isinstance(args, dict) else None
             config_request = _build_config_request(db_type, prompt, prefill)
 
-    return config_request, db_type_options
+        elif name == "request_github_token":
+            secret_request = {
+                "kind": "github_personal_access_token",
+                "prompt": "Enter your GitHub Personal Access Token to write to a repository.",
+                "submit_label": "Use token",
+            }
+
+    return config_request, db_type_options, secret_request
 
 
 # ── Server resolution ──────────────────────────────────────────────────────────
@@ -201,15 +252,12 @@ async def run_agent(
     *,
     message: str,
     conversation_history: list[dict[str, Any]] | None = None,
-    db: Session,
     user: Any,
     model: str | None = None,
     server_env_overrides: dict[str, dict[str, str]] | None = None,
     session_env: dict[str, str] | None = None,
 ) -> AgentResult:
     """Run the control center agent for one user turn. Returns AgentResult."""
-    full_prompt = _build_full_prompt(message, conversation_history, session_env)
-
     # Inject the real user's token so CC MCP server creates jobs owned by that user.
     merged_overrides = dict(server_env_overrides or {})
     cc_overrides = dict(merged_overrides.get("control-center", {}))
@@ -217,6 +265,22 @@ async def run_agent(
     merged_overrides["control-center"] = cc_overrides
 
     servers, overrides = _resolve_servers(session_env, merged_overrides)
+    github_available = "github" in servers
+    github_token = overrides.get("github", {}).get("GITHUB_PERSONAL_ACCESS_TOKEN") if github_available else None
+
+    # If the task mentions GitHub but no PAT has been provided yet, ask for it
+    # immediately — don't hand off to the agent, which may skip this step.
+    if not github_available and _GITHUB_KEYWORDS.search(message):
+        return AgentResult(
+            response="Please enter your GitHub Personal Access Token below.",
+            secret_request={
+                "kind": "github_personal_access_token",
+                "prompt": "Enter your GitHub Personal Access Token to write to a repository.",
+                "submit_label": "Use token",
+            },
+        )
+
+    full_prompt = _build_full_prompt(message, conversation_history, session_env, github_available, github_token)
 
     try:
         agent = await build_agent_from_registry(
@@ -243,7 +307,7 @@ async def run_agent(
         finally:
             await agent.cleanup()
 
-        config_request, db_type_options = _parse_signal_tools(tool_executions)
+        config_request, db_type_options, secret_request = _parse_signal_tools(tool_executions)
         run_id = _extract_run_id(tool_executions)
 
         return AgentResult(
@@ -251,8 +315,18 @@ async def run_agent(
             config_request=config_request,
             db_type_options=db_type_options,
             run_id=run_id,
+            secret_request=secret_request,
         )
 
     except Exception as exc:
+        err_str = str(exc)
+        if "429" in err_str or "rate_limit" in err_str.lower() or "rate limit" in err_str.lower():
+            wait_match = re.search(r"try again in\s+([\d.]+)s", err_str, re.IGNORECASE)
+            suggested = float(wait_match.group(1)) if wait_match else 0.0
+            suggested_str = f" (wait ~{int(suggested) + 1}s)" if suggested > 0 else ""
+            logger.warning("Rate limit hit — not retrying to avoid duplicate tool calls: %s", exc)
+            return AgentResult(
+                response=f"The AI service is temporarily rate-limited{suggested_str}. Please resend your message in a moment."
+            )
         logger.error("Agent error: %s", exc)
         return AgentResult(response=f"Sorry, something went wrong: {exc}")

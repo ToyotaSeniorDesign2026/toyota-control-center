@@ -232,10 +232,12 @@ export function RunParamsModal({ job, onClose, onSubmit, isSubmitting }: RunPara
                     <div>
                       <label className="block text-xs font-medium text-gray-700 mb-1">Password</label>
                       <input
-                        type="password"
+                        type="text"
                         value={fields.password}
                         onChange={(e) => set("password", e.target.value)}
                         placeholder="••••••••"
+                        autoComplete="off"
+                        style={{ WebkitTextSecurity: "disc" } as React.CSSProperties}
                         className="w-full rounded-md border border-gray-200 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                         required
                       />
@@ -253,10 +255,12 @@ export function RunParamsModal({ job, onClose, onSubmit, isSubmitting }: RunPara
                   Personal access token
                 </label>
                 <input
-                  type="password"
+                  type="text"
                   value={fields.github_token}
                   onChange={(e) => set("github_token", e.target.value)}
                   placeholder="github_pat_..."
+                  autoComplete="off"
+                  style={{ WebkitTextSecurity: "disc" } as React.CSSProperties}
                   className="w-full rounded-md border border-gray-200 px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                   required
                   autoFocus

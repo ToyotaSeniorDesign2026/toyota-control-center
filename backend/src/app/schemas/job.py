@@ -80,11 +80,13 @@ class JobHealthOut(BaseModel):
 
 class JobScheduleUpdate(BaseModel):
     schedule: str = Field(min_length=1, max_length=255)
+    end_date: str | None = None
 
 
 class JobScheduleOut(BaseModel):
     job_id: str
     schedule: str | None = None
+    end_date: str | None = None
     updated_at: str
 
 

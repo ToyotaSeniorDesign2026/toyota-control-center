@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import suppress
 
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.services.scheduler_service import run_due_scheduled_jobs
 
+_logger = logging.getLogger(__name__)
 
 # Worker task placeholders for asynchronous orchestration.
 # In production this would call Celery/RQ tasks and stream connector logs.
@@ -24,7 +26,11 @@ async def scheduler_loop(stop_event: asyncio.Event | None = None) -> None:
     while stop_event is None or not stop_event.is_set():
         db = SessionLocal()
         try:
-            run_due_scheduled_jobs(db)
+            fired = run_due_scheduled_jobs(db)
+            if fired:
+                _logger.info("Scheduler fired %d job(s): %s", len(fired), fired)
+        except Exception:
+            _logger.exception("Scheduler tick failed — loop continues")
         finally:
             db.close()
 

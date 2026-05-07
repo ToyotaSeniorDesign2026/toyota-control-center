@@ -9,11 +9,14 @@ so the existing schema can support scheduled execution without a migration.
 """
 
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
+import logging
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy.orm import Session
+
+_logger = logging.getLogger(__name__)
 
 from app.core.config import settings
 from app.core.db import now_iso
@@ -55,26 +58,58 @@ def _parse_time(raw: str) -> time | None:
     return time(hour=hour, minute=minute)
 
 
-def _parse_cron_daily(schedule: str) -> time | None:
+def _parse_dow(dow_s: str) -> set[int] | None:
+    """Parse a cron day-of-week field into a set of Python weekday ints (0=Mon…6=Sun).
+
+    Cron uses 0=Sun, 1=Mon, …, 6=Sat (also 7=Sun on some systems).
+    Returns None when the field is '*' (all days).
+    """
+    if dow_s == "*":
+        return None
+    python_days: set[int] = set()
+    for part in dow_s.split(","):
+        if "-" in part:
+            lo, hi = part.split("-", 1)
+            for d in range(int(lo), int(hi) + 1):
+                python_days.add((int(d) - 1) % 7)
+        else:
+            python_days.add((int(part) - 1) % 7)
+    return python_days
+
+
+def _parse_cron(schedule: str) -> tuple[time, set[int] | None] | None:
+    """Parse a 5-part cron expression into (scheduled_time, dow_set | None).
+
+    dom and month must be '*'. dow_set is None when all days are allowed.
+    """
     parts = schedule.split()
     if len(parts) != 5:
         return None
-    minute, hour, day_of_month, month, day_of_week = parts
-    if day_of_month != "*" or month != "*" or day_of_week != "*":
+    minute_s, hour_s, dom, month, dow_s = parts
+    if dom != "*" or month != "*":
         return None
-    if not minute.isdigit() or not hour.isdigit():
+    if not minute_s.isdigit() or not hour_s.isdigit():
         return None
-    hour_number = int(hour)
-    minute_number = int(minute)
-    if hour_number > 23 or minute_number > 59:
+    h, m = int(hour_s), int(minute_s)
+    if h > 23 or m > 59:
         return None
-    return time(hour=hour_number, minute=minute_number)
+    try:
+        dow_set = _parse_dow(dow_s)
+    except (ValueError, AttributeError):
+        return None
+    return time(hour=h, minute=m), dow_set
 
 
 def next_daily_occurrence(schedule: str, now: datetime | None = None, timezone_name: str | None = None) -> ScheduleOccurrence | None:
     tz = _timezone(timezone_name)
     current = (now or datetime.now(timezone.utc)).astimezone(tz)
-    scheduled_time = _parse_cron_daily(schedule) or _parse_time(schedule)
+
+    dow_set: set[int] | None = None
+    cron = _parse_cron(schedule)
+    if cron is not None:
+        scheduled_time, dow_set = cron
+    else:
+        scheduled_time = _parse_time(schedule)
     if scheduled_time is None:
         return None
 
@@ -86,6 +121,14 @@ def next_daily_occurrence(schedule: str, now: datetime | None = None, timezone_n
     )
     if occurrence > current:
         occurrence -= timedelta(days=1)
+
+    if dow_set is not None:
+        for _ in range(7):
+            if occurrence.weekday() in dow_set:
+                break
+            occurrence -= timedelta(days=1)
+        else:
+            return None
 
     return ScheduleOccurrence(
         due_at=occurrence.astimezone(timezone.utc),
@@ -158,44 +201,61 @@ def run_due_scheduled_jobs(db: Session, now: datetime | None = None) -> list[dic
     fired: list[dict] = []
 
     for job in _scheduled_jobs(db):
-        config = dict(job.config or {})
-        occurrence = next_daily_occurrence(
-            str(config.get("schedule") or ""),
-            now=current,
-            timezone_name=str(config.get("timezone") or settings.job_scheduler_timezone),
-        )
-        if not occurrence or occurrence.due_at > current:
-            continue
-        schedule_active_at = _parse_iso_datetime(str(config.get("schedule_updated_at") or "")) or _parse_iso_datetime(job.created_at)
-        if schedule_active_at and occurrence.due_at < schedule_active_at:
-            continue
-        if config.get("schedule_last_fire_key") == occurrence.fire_key:
-            continue
-        if _recent_duplicate_exists(db, job.id, occurrence.fire_key):
-            config["schedule_last_fire_key"] = occurrence.fire_key
-            job.config = config
-            job.updated_at = now_iso()
-            db.add(job)
-            db.commit()
-            continue
+        try:
+            _fire_job_if_due(db, job, current, fired)
+        except Exception:
+            _logger.exception("Scheduler: error processing job %s — skipping", job.id)
 
-        owner = db.get(User, job.owner_id)
-        if not owner or not owner.is_active:
-            continue
+    return fired
 
-        run = create_run_and_maybe_execute(
-            db,
-            owner,
-            _run_payload_for_job(job, occurrence.fire_key),
-            trigger_source="schedule",
-        )
+
+def _fire_job_if_due(db: Session, job, current: datetime, fired: list[dict]) -> None:
+    config = dict(job.config or {})
+    occurrence = next_daily_occurrence(
+        str(config.get("schedule") or ""),
+        now=current,
+        timezone_name=str(config.get("timezone") or settings.job_scheduler_timezone),
+    )
+    if not occurrence or occurrence.due_at > current:
+        return
+    end_date_str = config.get("schedule_end_date")
+    if end_date_str:
+        try:
+            if current.date() > date.fromisoformat(str(end_date_str)):
+                _logger.info("Scheduler: job %s past schedule_end_date %s — skipping", job.id, end_date_str)
+                return
+        except ValueError:
+            pass
+    schedule_active_at = _parse_iso_datetime(str(config.get("schedule_updated_at") or "")) or _parse_iso_datetime(job.created_at)
+    if schedule_active_at and occurrence.due_at < schedule_active_at:
+        return
+    if config.get("schedule_last_fire_key") == occurrence.fire_key:
+        return
+    if _recent_duplicate_exists(db, job.id, occurrence.fire_key):
         config["schedule_last_fire_key"] = occurrence.fire_key
-        config["schedule_last_run_at"] = now_iso()
         job.config = config
         job.updated_at = now_iso()
         db.add(job)
         db.commit()
-        write_audit(db, owner, "SCHEDULED_RUN_CREATED", {"job_id": job.id, "run_id": run["id"]})
-        fired.append({"job_id": job.id, "run_id": run["id"], "fire_key": occurrence.fire_key})
+        return
+
+    owner = db.get(User, job.owner_id)
+    if not owner or not owner.is_active:
+        return
+
+    run = create_run_and_maybe_execute(
+        db,
+        owner,
+        _run_payload_for_job(job, occurrence.fire_key),
+        trigger_source="schedule",
+    )
+    config["schedule_last_fire_key"] = occurrence.fire_key
+    config["schedule_last_run_at"] = now_iso()
+    job.config = config
+    job.updated_at = now_iso()
+    db.add(job)
+    db.commit()
+    write_audit(db, owner, "SCHEDULED_RUN_CREATED", {"job_id": job.id, "run_id": run["id"]})
+    fired.append({"job_id": job.id, "run_id": run["id"], "fire_key": occurrence.fire_key})
 
     return fired

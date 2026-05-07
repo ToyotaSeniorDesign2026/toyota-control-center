@@ -343,7 +343,8 @@ def _sql_ordered_required_fields() -> list[str]:
 
 
 def _sql_field_has_value(field: str, draft: dict, session_env: dict) -> bool:
-    config = draft.get("config") if isinstance(draft.get("config"), dict) else {}
+    _raw = draft.get("config")
+    config: dict = _raw if isinstance(_raw, dict) else {}
     if field == "job_name":
         return bool(_non_empty_str(draft.get("job_name") or draft.get("name")))
     if field == "run_type":
@@ -1356,12 +1357,12 @@ class AgentChatResponse(BaseModel):
     config_request: Optional[dict[str, Any]] = None
     db_type_options: Optional[list[dict[str, Any]]] = None
     run_id: Optional[str] = None
+    secret_request: Optional[dict[str, Any]] = None
 
 
 @router.post("/agent", response_model=AgentChatResponse)
 async def agent_chat(
     request: AgentChatRequest,
-    db=Depends(get_db),
     user=Depends(get_current_user),
 ) -> AgentChatResponse:
     """Agent-driven chat endpoint backed by the Control Center MCP server."""
@@ -1374,7 +1375,6 @@ async def agent_chat(
     result = await run_agent(
         message=request.message.strip(),
         conversation_history=history or None,
-        db=db,
         user=user,
         model=request.model,
         server_env_overrides=request.server_env_overrides,
@@ -1385,4 +1385,5 @@ async def agent_chat(
         config_request=result.config_request,
         db_type_options=result.db_type_options,
         run_id=result.run_id,
+        secret_request=result.secret_request,
     )

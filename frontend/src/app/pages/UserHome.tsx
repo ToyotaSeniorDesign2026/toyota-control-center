@@ -1314,6 +1314,7 @@ export default function UserHome() {
           if (terminal.includes(result.status.toLowerCase())) {
             stopped = true;
             setConsoleActiveTab("output");
+            void refreshJobRuns();
           }
         }
       } catch {
@@ -1918,15 +1919,19 @@ export default function UserHome() {
       lastResizeX.current = e.clientX;
 
       if (isResizing === "jobs") {
-        setJobsPanelWidth((prev) => Math.max(220, prev + delta));
+        setJobsPanelWidth((prev) => {
+          const viewportWidth = window.innerWidth;
+          const rightPanelTotal = isChatPanelOpen ? chatPanelWidth + RESIZE_HANDLE_WIDTH : 0;
+          const max = viewportWidth - ICON_RAIL_WIDTH - RESIZE_HANDLE_WIDTH - rightPanelTotal;
+          return Math.max(220, Math.min(prev + delta, max));
+        });
       } else if (isResizing === "chat") {
         setChatPanelWidth((prev) => {
           const viewportWidth = window.innerWidth;
           const leftPanelWidth = activePanelId ? jobsPanelWidth : 0;
-          const workspaceFloor = 120;
           const maxAllowedWidth = Math.max(
             280,
-            viewportWidth - ICON_RAIL_WIDTH - leftPanelWidth - RESIZE_HANDLE_WIDTH * 2 - workspaceFloor,
+            viewportWidth - ICON_RAIL_WIDTH - leftPanelWidth - RESIZE_HANDLE_WIDTH * 2,
           );
           return Math.min(Math.max(280, prev - delta), maxAllowedWidth);
         });
@@ -1947,7 +1952,7 @@ export default function UserHome() {
       document.removeEventListener("mousemove", handleMouseMove);
       document.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [activePanelId, isResizing, jobsPanelWidth]);
+  }, [activePanelId, chatPanelWidth, isChatPanelOpen, isResizing, jobsPanelWidth]);
 
   useEffect(() => {
     const syncResponsiveLayout = () => {
@@ -1957,10 +1962,10 @@ export default function UserHome() {
 
       const jobsFloor = viewportWidth < 1100 ? 180 : 220;
       const chatFloor = viewportWidth < 1100 ? 240 : 280;
-      const workspaceFloor = 120;
+      const workspaceFloor = 0;
 
       let nextJobsWidth = isLeftPanelOpen
-        ? Math.min(Math.max(jobsPanelWidth, jobsFloor), Math.min(360, Math.floor(viewportWidth * 0.3)))
+        ? Math.max(jobsPanelWidth, jobsFloor)
         : 0;
       let nextChatWidth = isChatOpen
         ? Math.max(chatPanelWidth, chatFloor)
@@ -4716,18 +4721,6 @@ export default function UserHome() {
         const jobTypeFilters = Array.from(new Set(dashboardJobs.map((job) => job.type))).sort();
         return (
           <div className="p-4 space-y-3 flex flex-col h-full">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Runs Table</p>
-                <p className="text-xs text-gray-500">{runs.length} database runs loaded</p>
-              </div>
-              <button
-                onClick={() => void refreshJobRuns()}
-                className="rounded-md border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50"
-              >
-                Refresh
-              </button>
-            </div>
             {jobRunsError && (
               <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
                 {jobRunsError}
@@ -4923,7 +4916,7 @@ export default function UserHome() {
                 ) : (
                   <div className="text-center py-8">
                     <p className="text-sm text-gray-500">
-                      {dashboardJobs.length === 0 ? "No jobs found in the runs table" : "No jobs match your search"}
+                      {dashboardJobs.length === 0 ? "No jobs found" : "No jobs match your search"}
                     </p>
                   </div>
                 )}
@@ -6153,6 +6146,7 @@ export default function UserHome() {
                 setConsoleHeight(300);
                 void refreshJobRuns();
               }}
+              onAgentResponse={() => void refreshJobRuns()}
             />
           </div>
         )}

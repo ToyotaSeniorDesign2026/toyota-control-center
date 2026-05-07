@@ -85,7 +85,10 @@ class MCPJobExecutor(BaseJobExecutor):
             config = {}
         params = execution_request.params or {}
 
-        driver = str(params.get("db_driver") or config.get("db_driver") or "").strip().lower()
+        _driver_raw = str(params.get("db_driver") or config.get("db_driver") or "").strip().lower()
+        # Normalise short-form driver names to their SQLAlchemy dialect+driver strings.
+        _driver_aliases = {"postgresql": "postgresql+psycopg", "postgres": "postgresql+psycopg"}
+        driver = _driver_aliases.get(_driver_raw, _driver_raw)
         database = str(params.get("database") or config.get("database") or "").strip()
 
         if driver == "sqlite":
@@ -120,19 +123,40 @@ class MCPJobExecutor(BaseJobExecutor):
             )
         return {"sql-mcp": overrides}
 
+    def _github_server_env_overrides(self, execution_request: ExecutionRequest) -> dict[str, dict[str, str]] | None:
+        """Return GitHub server env overrides if a PAT is available in run params, job config, or app env."""
+        params = execution_request.params or {}
+        config = execution_request.resource.config if hasattr(execution_request.resource, "config") else {}
+        if not isinstance(config, dict):
+            config = {}
+        token = (
+            str(params.get("github_token") or config.get("github_token") or "").strip()
+            or os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN", "")
+        )
+        if not token:
+            return None
+        return {"github": {"GITHUB_PERSONAL_ACCESS_TOKEN": token}}
+
     async def _execute_agent(self, execution_request: ExecutionRequest) -> dict[str, Any]:
         run_spec = execution_request.run_spec
         assert isinstance(run_spec, AgentRun)
 
-        server_env_overrides = self._sql_server_env_overrides(execution_request)
+        # Merge SQL and GitHub env overrides; add github to server_names when a PAT is available.
+        sql_overrides = self._sql_server_env_overrides(execution_request) or {}
+        github_overrides = self._github_server_env_overrides(execution_request) or {}
+        server_env_overrides = {**sql_overrides, **github_overrides}
+
+        server_names = list(run_spec.server_names or [])
+        if github_overrides and "github" not in server_names:
+            server_names.append("github")
 
         agent = await build_agent_from_registry(
             environment=execution_request.target_environment,
-            server_names=run_spec.server_names or None,
+            server_names=server_names or None,
             selection_prompt=run_spec.selection_prompt if run_spec.allow_auto_selection else None,
             model=default_mcp_model(),
             instructor_model=os.getenv("CONTROL_CENTER_MCP_INSTRUCTOR_MODEL"),
-            server_env_overrides=server_env_overrides,
+            server_env_overrides=server_env_overrides or None,
             verbose=False,
         )
         try:

@@ -118,7 +118,7 @@ def update_job_schedule(
     db=Depends(get_db),
     user=Depends(get_current_user),
 ):
-    return set_job_schedule(db, user, job_id, payload.schedule)
+    return set_job_schedule(db, user, job_id, payload.schedule, end_date=payload.end_date)
 
 
 @router.get("/{job_id}/artifact/version", response_model=ArtifactVersionOut)

@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from "react-router";
 import { ArrowRight, Shield, CheckCircle, AlertCircle } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { useUser } from "../contexts/UserContext";
+import tfsLogoWhiteRedBg from "../../assets/tfs-logo-red-white-bg.svg";
 
 const AUTH_TOKEN_KEY = "control-center-auth-token";
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
@@ -100,11 +101,11 @@ export function LoginPage() {
         <div className="relative flex flex-col justify-center items-start p-16 text-white z-10 w-full">
           <div className="max-w-lg">
             <div className="flex items-center gap-4 mb-8">
-              <div className="w-20 h-20 rounded-2xl bg-white flex items-center justify-center shadow-2xl">
-                <span className="text-[#ed0923] font-bold text-4xl">T</span>
+              <div className="w-20 h-20 rounded-2xl bg-white flex items-center justify-center shadow-2xl overflow-hidden">
+                <img src={tfsLogoWhiteRedBg} alt="TFS" className="w-full h-full object-cover scale-150" />
               </div>
               <div>
-                <h1 className="text-3xl font-bold">Toyota</h1>
+                <h1 className="text-3xl font-bold">TOYOTA</h1>
                 <p className="text-lg font-medium text-red-100">Control Center</p>
               </div>
             </div>

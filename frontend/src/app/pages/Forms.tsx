@@ -48,24 +48,21 @@ export default function Forms() {
 
   const openSQLWithAI = () => {
     const lower = aiPrompt.toLowerCase();
+    const query = lower.includes("customer")
+      ? "SELECT * FROM customers WHERE active = true LIMIT 100;"
+      : lower.includes("sales")
+        ? "SELECT region, SUM(amount) AS total_sales FROM sales GROUP BY region ORDER BY total_sales DESC;"
+        : lower.includes("finance") || lower.includes("revenue")
+          ? "SELECT month, SUM(revenue) AS total_revenue FROM financials GROUP BY month ORDER BY month;"
+          : "SELECT * FROM users LIMIT 100;";
     const draft = {
-      jobName: buildName("sql_report", aiPrompt),
-      description: aiPrompt || "AI-generated SQL report workflow.",
-      owner: buildEmail(aiPrompt),
-      reportTemplate: lower.includes("customer")
-        ? "customer_metrics"
-        : lower.includes("dealer")
-          ? "dealer_performance"
-          : lower.includes("finance") || lower.includes("revenue")
-            ? "revenue_breakdown"
-            : "daily_sales",
-      dateRange: "30",
-      regionFilter: "all",
-      departmentFilter: lower.includes("finance") ? "finance" : "all",
-      minAmount: lower.includes("high value") ? "10000" : "1000",
-      outputDestination: "email",
-      emailRecipients: buildEmail(aiPrompt),
+      jobName: buildName("sql_job", aiPrompt),
+      description: aiPrompt || "AI-generated SQL job.",
+      query,
+      db_driver: "postgresql",
+      database: lower.includes("analytics") ? "analytics" : "postgres",
       dataSensitivity: "internal",
+      scheduleType: lower.includes("daily") ? "daily" : lower.includes("weekly") ? "weekly" : "on-demand",
     };
     navigate("/sql-job", { state: { aiPrompt, aiDraft: draft } });
   };

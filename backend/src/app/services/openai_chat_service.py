@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -66,20 +67,37 @@ def request_openai_chat(payload: OpenAIChatRequest) -> dict:
         method="POST",
     )
 
-    try:
-        with urlopen(request, timeout=settings.openai_timeout_seconds) as response:
-            response_json = json.loads(response.read().decode("utf-8"))
-    except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="ignore")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"OpenAI request failed: {detail or exc.reason}",
-        ) from exc
-    except URLError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"OpenAI connection failed: {exc.reason}",
-        ) from exc
+    _MAX_ATTEMPTS = 4
+    response_json: dict = {}
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            with urlopen(request, timeout=settings.openai_timeout_seconds) as response:
+                response_json = json.loads(response.read().decode("utf-8"))
+            break
+        except HTTPError as exc:
+            if exc.code == 429 and attempt < _MAX_ATTEMPTS - 1:
+                raw = exc.read().decode("utf-8", errors="ignore")
+                import re as _re
+                wait_match = _re.search(r"try again in\s+([\d.]+)s", raw, _re.IGNORECASE)
+                base_wait = float(wait_match.group(1)) if wait_match else 5.0
+                wait = min(base_wait * (2 ** attempt), 60.0)
+                time.sleep(wait)
+                continue
+            detail = exc.read().decode("utf-8", errors="ignore")
+            if exc.code == 429:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="The AI service is currently busy. Please wait a moment and try again.",
+                ) from exc
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"OpenAI request failed: {detail or exc.reason}",
+            ) from exc
+        except URLError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"OpenAI connection failed: {exc.reason}",
+            ) from exc
 
     content = _extract_output_text(response_json) or payload.fallback_response or ""
     if not content:

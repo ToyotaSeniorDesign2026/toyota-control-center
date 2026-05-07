@@ -52,6 +52,14 @@ def _post(path: str, body: dict, token: str | None = None) -> Any:
         return resp.json()
 
 
+def _put(path: str, body: dict, token: str | None = None) -> Any:
+    url = f"{_BASE_URL}{path}"
+    with httpx.Client(timeout=30) as client:
+        resp = client.put(url, headers=_headers(token), content=json.dumps(body))
+        resp.raise_for_status()
+        return resp.json()
+
+
 @mcp.tool()
 def list_jobs(job_type: str | None = None, status: str | None = None) -> list[dict]:
     """List all registered jobs.
@@ -177,7 +185,7 @@ def trigger_run(
             "target_environment": target_environment,
             "params": parsed_params,
         }
-        return _post(f"/jobs/{job_id}/runs", body)
+        return _post(f"/jobs/{job_id}/runs", body, token=_USER_TOKEN or None)
     except Exception as exc:
         raise ValueError(f"Failed to trigger run for job '{job_id}': {exc}") from exc
 
@@ -234,6 +242,22 @@ def request_db_connection_form(db_type: str, prompt: str = "", prefill: dict | N
 
 
 @mcp.tool()
+def request_github_token() -> dict:
+    """Render a GitHub Personal Access Token input in the user's browser.
+
+    YOU MUST CALL THIS TOOL — do not ask for the token in plain text.
+    Calling this tool is what physically renders the masked input field.
+
+    Call this whenever the user asks to write a file or query to GitHub
+    and no GitHub PAT is present in the current session context.
+
+    After calling this tool, say "Please enter your GitHub Personal Access Token below."
+    and stop. Wait for the user to submit before proceeding.
+    """
+    return {"signal": "github_token", "status": "GitHub token input shown to user."}
+
+
+@mcp.tool()
 def create_sql_job(
     name: str,
     query: str,
@@ -245,7 +269,12 @@ def create_sql_job(
     password: str = "",
     run_type: str = "manual",
     schedule: str = "",
+    schedule_end_date: str = "",
     environment: str = "dev",
+    github_repo: str = "",
+    github_path: str = "",
+    github_branch: str = "main",
+    github_token: str = "",
 ) -> dict:
     """Create a new SQL job in the Control Center.
 
@@ -258,18 +287,25 @@ def create_sql_job(
       - snowflake:                          host (account identifier), database, username, password
 
     Args:
-        name:        Unique, descriptive job name.
-        query:       The SQL query to execute. Use actual table names discovered via list_tables.
-        db_driver:   Database driver string (e.g. 'postgresql+psycopg', 'sqlite', 'snowflake').
-        host:        Database host or Snowflake account identifier (empty for SQLite).
-        port:        Database port as a string (empty for SQLite and Snowflake).
-        database:    Database name, file path, or Snowflake DATABASE/SCHEMA.
-        username:    Database username (empty for SQLite).
-        password:    Database password (empty for SQLite).
-        run_type:    'manual' for one-off runs or 'scheduled' for recurring runs. Default 'manual'.
-        schedule:    Cron expression — required when run_type is 'scheduled' (e.g. '0 8 * * 1-5').
-                     Translate natural language schedules: "every weekday at 8 AM" → '0 8 * * 1-5'.
-        environment: Target environment — 'dev', 'semi-prod', or 'prod'. Default 'dev'.
+        name:               Unique, descriptive job name.
+        query:              The SQL query to execute. Use actual table names discovered via list_tables.
+        db_driver:          Database driver string (e.g. 'postgresql+psycopg', 'sqlite', 'snowflake').
+        host:               Database host or Snowflake account identifier (empty for SQLite).
+        port:               Database port as a string (empty for SQLite and Snowflake).
+        database:           Database name, file path, or Snowflake DATABASE/SCHEMA.
+        username:           Database username (empty for SQLite).
+        password:           Database password (empty for SQLite).
+        run_type:           'manual' for one-off runs or 'scheduled' for recurring runs. Default 'manual'.
+        schedule:           Cron expression — required when run_type is 'scheduled' (e.g. '0 8 * * 1-5').
+                            Translate natural language schedules: "every weekday at 8 AM" → '0 8 * * 1-5'.
+        schedule_end_date:  ISO date (YYYY-MM-DD) after which the scheduler stops firing the job.
+                            Use when the user says "until <date>" or "ending on <date>". Leave empty for no end.
+        environment:        Target environment — 'dev', 'semi-prod', or 'prod'. Default 'dev'.
+        github_repo:        GitHub repo to write the SQL query to, e.g. 'owner/repo'. Leave empty if no GitHub write.
+        github_path:        File path inside the repo, e.g. 'queries/my_query.sql'.
+        github_branch:      Branch to commit to. Default 'main'.
+        github_token:       GitHub Personal Access Token — use the value from GITHUB_PERSONAL_ACCESS_TOKEN
+                            in the session context. Required when github_repo is set.
 
     Returns the created job object including its ID.
     """
@@ -289,6 +325,14 @@ def create_sql_job(
         config["password"] = password
     if schedule:
         config["schedule"] = schedule
+    if schedule_end_date:
+        config["schedule_end_date"] = schedule_end_date
+    if github_repo:
+        config["github_repo"] = github_repo
+        config["github_path"] = github_path or "query.sql"
+        config["github_branch"] = github_branch or "main"
+    if github_token:
+        config["github_token"] = github_token
 
     payload = {
         "name": name,
@@ -310,6 +354,54 @@ def create_sql_job(
         }
     except Exception as exc:
         raise ValueError(f"Failed to create SQL job '{name}': {exc}") from exc
+
+
+@mcp.tool()
+def schedule_job(
+    job_id: str,
+    cron_expression: str,
+    end_date: str = "",
+) -> dict:
+    """Set or update the recurring schedule on an existing job.
+
+    Always call this as a dedicated step AFTER create_sql_job when the user wants a scheduled job.
+    Never rely on create_sql_job alone to store the schedule — use this tool explicitly.
+
+    Cron expression quick reference (5 parts: minute hour dom month dow):
+      Every weekday at 8 AM          → '0 8 * * 1-5'
+      Every day at 9 PM              → '0 21 * * *'
+      Every Monday at 6 AM           → '0 6 * * 1'
+      Every weekday at noon          → '0 12 * * 1-5'
+      Every hour                     → '0 * * * *'
+      Twice daily at 8 AM and 5 PM   → call schedule_job twice, or use '0 8,17 * * *'
+    Days: 0=Sun 1=Mon 2=Tue 3=Wed 4=Thu 5=Fri 6=Sat
+
+    Args:
+        job_id:          The job ID returned by create_sql_job.
+        cron_expression: 5-part cron string. Translate natural language first:
+                         "every weekday at 8 AM" → "0 8 * * 1-5".
+        end_date:        ISO date (YYYY-MM-DD) after which the scheduler stops firing.
+                         Use the exact year from TODAY'S DATE in your context.
+                         Leave empty for no end date.
+
+    Returns a confirmation with the stored cron and end_date.
+    """
+    payload: dict[str, Any] = {"schedule": cron_expression}
+    if end_date:
+        payload["end_date"] = end_date
+    try:
+        result = _put(f"/jobs/{job_id}/schedule", payload, token=_USER_TOKEN or None)
+        msg = f"Job {job_id} scheduled: '{cron_expression}'"
+        if end_date:
+            msg += f", runs until {end_date}"
+        return {
+            "job_id": result.get("job_id", job_id),
+            "cron_expression": result.get("schedule", cron_expression),
+            "end_date": result.get("end_date") or end_date or None,
+            "message": msg,
+        }
+    except Exception as exc:
+        raise ValueError(f"Failed to schedule job {job_id}: {exc}") from exc
 
 
 _REGISTRY_PATH = Path(

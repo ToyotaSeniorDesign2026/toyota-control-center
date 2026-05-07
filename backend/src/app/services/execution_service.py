@@ -103,6 +103,29 @@ def resolve_run_spec(resource, payload: RunCreate) -> MCPRunSpec:
             },
         )
 
+    # --- SQL + GitHub write (compound agent run) ---
+    if resource_type == "sql" and connector != "github":
+        query = _non_empty(payload.params.get("query")) or _non_empty(resource_config.get("query"))
+        github_repo = _non_empty(payload.params.get("github_repo") or resource_config.get("github_repo"))
+        if query and github_repo:
+            github_path = _non_empty(payload.params.get("github_path") or resource_config.get("github_path")) or "query.sql"
+            github_branch = _non_empty(payload.params.get("github_branch") or resource_config.get("github_branch")) or "main"
+            owner, _, repo_name = github_repo.partition("/")
+            prompt = (
+                "Before writing or executing any SQL, you MUST:\n"
+                "1. Call list_tables to discover all available tables.\n"
+                "2. Call describe_table for every table relevant to the task.\n"
+                "3. Use only the real table and column names you find — do not guess.\n\n"
+                f"Task: Execute the following SQL query against the database, then write the query text "
+                f"to the file '{github_path}' in the GitHub repository '{github_repo}' on branch '{github_branch}'.\n\n"
+                f"SQL query:\n{query}"
+            )
+            return AgentRun(
+                server_names=["sql-mcp", "github"],
+                prompt=prompt,
+                allow_auto_selection=False,
+            )
+
     # --- SQL direct execution ---
     if resource_type == "sql":
         query = _non_empty(payload.params.get("query")) or _non_empty(resource_config.get("query"))
@@ -150,6 +173,21 @@ def resolve_run_spec(resource, payload: RunCreate) -> MCPRunSpec:
         raise RuntimeError(
             f"Job type '{resource_type}' requires a prompt. "
             "Pass prompt in the run request or set a default in the job config."
+        )
+
+    # For SQL agent runs, prepend schema-inspection instructions so the agent
+    # always verifies table and column names before writing or executing a query.
+    # If a GitHub PAT is available the agent also has access to GitHub tools.
+    _sql_connectors = {"sql-mcp", "sql-mcp-analytics", "sql"}
+    if resource_type == "sql" or connector in _sql_connectors:
+        prompt = (
+            "Before writing or executing any SQL, you MUST:\n"
+            "1. Call list_tables to discover all available tables.\n"
+            "2. Call describe_table for every table relevant to the task.\n"
+            "3. Use only the real table and column names you find — do not guess.\n\n"
+            "If a GitHub repository is specified in the task, you may also use the "
+            "GitHub tools to write the query or results to a file in that repository.\n\n"
+            + prompt
         )
 
     server_names = [connector] if connector else []
