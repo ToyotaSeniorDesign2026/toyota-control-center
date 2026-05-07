@@ -65,17 +65,17 @@ class MCPAgent:
     async def _generate_turn(
         self,
         *,
-        inputs: list[dict[str, Any]],
+        messages: list[dict[str, Any]],
     ) -> ModelTurnResult:
         if isinstance(self._model, str):
             return await self._adapter.generate(
                 model=self._model,
-                inputs=inputs,
+                messages=messages,
                 tools=self._adapter.all_capabilities,
             )
 
         return await self._model.generate(
-            inputs=inputs,
+            messages=messages,
             tools=self._adapter.all_capabilities,
         )
 
@@ -83,11 +83,11 @@ class MCPAgent:
         await self.refresh_capabilities()
 
         tool_executions: list[AgentToolExecution] = []
-        inputs: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
+        messages: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
         last_model_result: ModelTurnResult | None = None
 
         for round_index in range(self._max_tool_rounds):
-            model_result = await self._generate_turn(inputs=inputs)
+            model_result = await self._generate_turn(messages=messages)
             last_model_result = model_result
             self._log(f"(Round {round_index + 1}/{self._max_tool_rounds})")
 
@@ -118,7 +118,7 @@ class MCPAgent:
                     }
                     for tc, cid in calls_with_ids
                 ]
-            inputs.append(assistant_msg)
+            messages.append(assistant_msg)
 
             if not calls_with_ids:
                 return AgentResponse(
@@ -138,7 +138,7 @@ class MCPAgent:
                 except Exception as exc:
                     error_text = f"[ERROR] Unknown tool {requested_call.name!r}: {exc}"
                     self._log(f"(Tool error: {error_text})")
-                    inputs.append({
+                    messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call_id,
                         "content": error_text,
@@ -176,7 +176,7 @@ class MCPAgent:
                     )
                 )
 
-                inputs.append({
+                messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call_id,
                     "content": parsed_result,

@@ -177,18 +177,18 @@ class OpenAIAdapter(BaseAdapter[dict[str, Any]]):
         )
 
     @staticmethod
-    def _to_responses_input(inputs: Any) -> Any:
+    def _to_responses_input(messages: Any) -> Any:
         """Translate generic chat-style messages into Responses API items.
 
         Responses API rejects assistant messages with `tool_calls` arrays and
         `role: "tool"` messages — they must be `function_call` /
         `function_call_output` items instead.
         """
-        if not isinstance(inputs, list):
-            return inputs
+        if not isinstance(messages, list):
+            return messages
 
         converted: list[dict[str, Any]] = []
-        for msg in inputs:
+        for msg in messages:
             if not isinstance(msg, dict):
                 converted.append(msg)
                 continue
@@ -234,7 +234,7 @@ class OpenAIAdapter(BaseAdapter[dict[str, Any]]):
         self,
         *,
         model: str,
-        inputs: Any,
+        messages: Any,
         tools: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
         max_tokens: int | None = None,
@@ -247,7 +247,7 @@ class OpenAIAdapter(BaseAdapter[dict[str, Any]]):
 
         request: dict[str, Any] = {
             "model": model,
-            "input": self._to_responses_input(inputs),
+            "input": self._to_responses_input(messages),
         }
 
         if system_prompt:

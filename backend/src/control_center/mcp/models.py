@@ -49,7 +49,7 @@ class LLMProtocol(Protocol):
     async def generate(
         self,
         *,
-        inputs: Any,
+        messages: Any,
         tools: list[T] | None = None,
         system_prompt: str | None = None,
         max_tokens: int | None = None,
