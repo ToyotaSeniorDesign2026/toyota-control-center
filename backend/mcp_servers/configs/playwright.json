@@ -4,6 +4,7 @@
     "-y", "@playwright/mcp@latest",
     "--browser", "chromium",
     "--caps", "storage",
-    "--output-mode", "stdout"
+    "--output-mode", "stdout",
+    "--output-dir", "${BACKEND_ROOT}/.local/playwright-mcp"
   ]
 }
