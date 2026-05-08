@@ -245,6 +245,34 @@ def _seed_default_users(db: Session) -> None:
             manager="Collections Admin",
             employee_id="EMP007",
         ),
+        # Generic analyst account separate from realistic personas above for testing and demos
+        User(
+            id="u_analyst",
+            email="analyst@toyota.dev",
+            name="Analyst User",
+            first_name="Analyst",
+            last_name="User",
+            role="user",
+            domain="collections",
+            is_active=True,
+            created_at=ts,
+            avatar_type="color",
+            selected_color="bg-cyan-500",
+            mfa_enabled=True,
+            approval_authority=False,
+            allowed_environments="dev,staging",
+            password_last_changed=datetime.now(),
+            access_token=f"cc_user_{secrets.token_hex(16)}",
+            cli_token=f"cc_cli_user_{secrets.token_hex(16)}",
+            theme="Light",
+            notifications="Important",
+            timezone="UTC-8 (Pacific)",
+            job_title="Data Analyst",
+            department="Collections",
+            team="Analytics",
+            manager="Collections Admin",
+            employee_id="EMP008",
+        ),
     ]
     
     db.add_all(demo_users)
@@ -253,10 +281,32 @@ def _seed_default_users(db: Session) -> None:
 
 
 def _seed_demo_jobs(db: Session) -> None:
-    """Seed demo jobs and runs for all analyst users in the Collections department."""
-    # Check if demo jobs already exist
-    existing_jobs = db.query(Job).count()
-    if existing_jobs > 0:
+    """Seed demo jobs and runs for all analyst users in the Collections department.
+
+    Existing demo jobs are identified by the "demo" tag attached at create time.
+    Set ``SEED_DEMO_JOBS=replace`` to wipe demo jobs and reseed without dropping
+    the Postgres volume. ``SEED_DEMO_JOBS=force`` adds another pass on top of
+    whatever exists.
+    """
+    import os
+    seed_mode = os.getenv("SEED_DEMO_JOBS", "auto").lower()
+
+    # Filter in Python — Job.tags is plain JSON (not JSONB) so SQLAlchemy's
+    # .contains() doesn't reliably translate to a working SQL operator.
+    all_jobs = db.query(Job).all()
+    existing_demo = [
+        j for j in all_jobs
+        if isinstance(j.tags, list) and "demo" in j.tags
+    ]
+
+    if seed_mode == "replace" and existing_demo:
+        demo_ids = {j.id for j in existing_demo}
+        for run in db.query(Run).filter(Run.job_id.in_(demo_ids)).all():
+            db.delete(run)
+        for job in existing_demo:
+            db.delete(job)
+        db.commit()
+    elif seed_mode != "force" and existing_demo:
         return
 
     # Get all users for seeding
@@ -271,82 +321,165 @@ def _seed_demo_jobs(db: Session) -> None:
     ts = now_iso()
     now = datetime.now(timezone.utc)
 
-    # Job templates for different types - each user gets 2-3 of these
+    # Job templates aligned with KNOWN_CONTRACTS (sql, mcp, airflow_python).
+    # Connector names match real MCP servers in registry.json so the v2 path
+    # can dispatch them without translation. Each user gets a rotating slice.
+    sql_db_path = "/app/mcp_servers/sql-mcp-server/test.db"
+
     job_templates = [
+        # ── SQL contract → MCP_TOOL → sql-mcp ───────────────────────────────
         {
-            "name": "Daily Data Validation",
-            "type": "sql_query",
-            "connector": "sql_mcp",
+            "name": "Delinquency Risk Snapshot",
+            "type": "sql",
+            "connector": "sql-mcp",
             "data_sensitivity": "high",
             "config": {
-                "query": "SELECT COUNT(*) FROM collections WHERE status = 'pending'",
-                "target": "collections_db",
-                "schedule": "daily_08:00"
-            }
+                "db_driver": "sqlite",
+                "database": sql_db_path,
+                "query": "SELECT COUNT(*) AS total FROM delinquency_risk",
+                "schedule": "daily_08:00",
+            },
         },
         {
-            "name": "Monthly Receivables Report",
-            "type": "excel_report",
-            "connector": "excel_mcp",
+            "name": "Recent Defaults Sample",
+            "type": "sql",
+            "connector": "sql-mcp",
             "data_sensitivity": "high",
             "config": {
-                "template": "receivables_template.xlsx",
-                "output": "s3://reports/receivables/",
-                "schedule": "monthly_first_monday"
-            }
+                "db_driver": "sqlite",
+                "database": sql_db_path,
+                "query": "SELECT * FROM delinquency_risk LIMIT 25",
+            },
         },
         {
-            "name": "Airflow ETL Pipeline",
-            "type": "airflow_dag",
-            "connector": "airflow_mcp",
+            "name": "SQLite Schema Inspect",
+            "type": "sql",
+            "connector": "sql-mcp",
+            "data_sensitivity": "low",
+            "config": {
+                "db_driver": "sqlite",
+                "database": sql_db_path,
+                "query": "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
+            },
+        },
+
+        # ── MCP Agent contract → MCP_AGENT → various MCP servers ────────────
+        {
+            "name": "Daily Research Digest",
+            "type": "mcp",
+            "connector": "arxiv-research",
+            "data_sensitivity": "low",
+            "config": {
+                "prompt": "Search arxiv for one recent paper about LLM tool use and summarize its abstract in 3 sentences.",
+                "schedule": "daily_07:00",
+            },
+        },
+        {
+            "name": "FastMCP Docs Lookup",
+            "type": "mcp",
+            "connector": "fastmcp-docs",
+            "data_sensitivity": "low",
+            "config": {
+                "prompt": "Find the FastMCP documentation page about defining tools and quote the example.",
+            },
+        },
+        {
+            "name": "Web Page Summary",
+            "type": "mcp",
+            "connector": "fetch",
+            "data_sensitivity": "low",
+            "config": {
+                "prompt": "Fetch https://en.wikipedia.org/wiki/Toyota and summarize the founding history in 5 bullet points.",
+            },
+        },
+        {
+            "name": "GitHub Repo Activity",
+            "type": "mcp",
+            "connector": "github",
             "data_sensitivity": "medium",
             "config": {
-                "dag_id": "collections_etl_pipeline",
-                "schedule": "daily_midnight",
-                "retries": 2
-            }
+                "prompt": "List the 5 most recent commits to the configured repository and summarize each.",
+            },
         },
         {
-            "name": "Executive Dashboard",
-            "type": "powerpoint_presentation",
-            "connector": "powerpoint_mcp",
-            "data_sensitivity": "high",
+            "name": "Vocabulary Helper",
+            "type": "mcp",
+            "connector": "wordsmith-mcp",
+            "data_sensitivity": "low",
             "config": {
-                "template": "executive_dashboard.pptx",
-                "sections": ["summary", "metrics", "trends"],
-                "schedule": "weekly_friday"
-            }
+                "prompt": "Look up the word 'delinquency' and list synonyms appropriate for a financial context.",
+            },
         },
         {
-            "name": "Invoice Reconciliation",
-            "type": "data_reconciliation",
-            "connector": "sql_mcp",
-            "data_sensitivity": "high",
-            "config": {
-                "compare_tables": ["invoices", "ar_ledger"],
-                "tolerance": 0.01,
-                "schedule": "daily_10:00"
-            }
-        },
-        {
-            "name": "Weekly Analytics Summary",
-            "type": "sql_query",
-            "connector": "sql_mcp",
+            "name": "Filesystem Inventory",
+            "type": "mcp",
+            "connector": "filesystem",
             "data_sensitivity": "medium",
             "config": {
-                "query": "SELECT week, total_collections FROM weekly_summary",
-                "target": "analytics_db"
-            }
+                "prompt": "List the files in the allowed sandbox directory and describe what each looks like it does.",
+            },
+        },
+        {
+            "name": "Browser Automation Demo",
+            "type": "mcp",
+            "connector": "playwright",
+            "data_sensitivity": "low",
+            "config": {
+                "prompt": "Open https://example.com, take a snapshot, and tell me the page title.",
+            },
+        },
+
+        # ── Airflow Python contract → AIRFLOW_PYTHON → subprocess scripts ───
+        {
+            "name": "Hello Toyota (Airflow)",
+            "type": "airflow_python",
+            "connector": "hello_world",
+            "data_sensitivity": "low",
+            "config": {
+                "run_mode": "subprocess",
+                "script": "hello_world",
+                "name": "Toyota",
+                "multiplier": 3,
+            },
+        },
+        {
+            "name": "Daily Metrics Rollup (Airflow)",
+            "type": "airflow_python",
+            "connector": "daily_metrics",
+            "data_sensitivity": "medium",
+            "config": {
+                "run_mode": "subprocess",
+                "script": "daily_metrics",
+                "region": "WEST",
+                "schedule": "daily_06:00",
+            },
+        },
+        {
+            "name": "Data Validation Check (Airflow)",
+            "type": "airflow_python",
+            "connector": "data_validation",
+            "data_sensitivity": "high",
+            "config": {
+                "run_mode": "subprocess",
+                "script": "data_validation",
+                "rows": 5000,
+                "schedule": "hourly",
+            },
         },
     ]
 
-    # Seed jobs and runs for each user
+    # Seed jobs and runs for each user. Each analyst gets 4–6 jobs spread
+    # across all three contract types so the dashboard shows variety. The
+    # offset shifts which slice of templates each user owns so different
+    # users surface different MCP servers / Airflow scripts.
     for user_idx, user in enumerate(analyst_users):
-        # Each user gets 2-3 jobs from templates
-        num_jobs = 2 + (user_idx % 2)  # Alternates between 2 and 3 jobs per user
-        
-        for job_template_idx in range(num_jobs):
-            job_template = job_templates[job_template_idx % len(job_templates)]
+        num_jobs = 4 + (user_idx % 3)  # 4, 5, or 6 jobs per user
+        offset = (user_idx * 3) % len(job_templates)
+
+        for slot_idx in range(num_jobs):
+            template_idx = (offset + slot_idx) % len(job_templates)
+            job_template = job_templates[template_idx]
+            job_template_idx = template_idx  # legacy var name still used below
             
             job_id = new_id("job")
             job = Job(

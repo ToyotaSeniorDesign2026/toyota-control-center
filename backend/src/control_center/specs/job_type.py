@@ -237,6 +237,7 @@ class ExecutorType(StrEnum):
     # --- Local-Execution Executors ---
     PYTHON_BUILTIN = "python_builtin"  # Run a Python module shipped in the repo (e.g. scripts/runtime/*.py). Code-reviewed, deterministic, no sandbox.
     PYTHON_FILE = "python_file"  # Run a user-uploaded Python script. Sandboxed, governed, source='user'. Looked up via UserJobScript table at execution time.
+    AIRFLOW_PYTHON = "airflow_python"  # Run a Python file as an Airflow DAG/PythonOperator task
     SHELL_COMMAND = "shell_command"  # Run a shell command against a SHELL_PROCESS surface. Used for CLI-driven executors (e.g. `dbt run`, `playwright codegen`).
 
     # --- None ---

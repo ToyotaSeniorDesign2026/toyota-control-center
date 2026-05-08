@@ -28,6 +28,17 @@ services:
       DB_MAX_OVERFLOW: "20"
       DB_POOL_RECYCLE: "1800"
       DB_POOL_PRE_PING: "true"
+      # Demo-jobs seeding mode: auto (skip if demo jobs exist),
+      # replace (wipe + reseed), force (add on top). Override via shell:
+      #   SEED_DEMO_JOBS=replace docker compose up --build
+      SEED_DEMO_JOBS: "${SEED_DEMO_JOBS:-auto}"
+      # Self-reference for the control-center MCP server. When the agent
+      # spawns control-center as a subprocess, it calls back to this same
+      # API container. localhost:8000 resolves inside the container.
+      CC_API_BASE_URL: "http://localhost:8000"
+      # Bearer token the MCP server uses when calling the API. The seeded
+      # u_analyst user's id IS its access token (see auth/login).
+      CC_USER_TOKEN: "${CC_USER_TOKEN:-u_analyst}"
     volumes:
       - ./mcp_servers/sql-mcp-server:/app/mcp_servers/sql-mcp-server
       - ./mcp_servers/control-center-server:/app/mcp_servers/control-center-server

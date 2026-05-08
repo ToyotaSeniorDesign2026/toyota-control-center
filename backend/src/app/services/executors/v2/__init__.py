@@ -13,6 +13,7 @@ Add new executors here as they land:
 
 from control_center.specs import ExecutorType
 
+from .airflow_python import AirflowPythonExecutor
 from .base import V2Executor
 from .mcp_agent import MCPAgentExecutor
 from .mcp_tool import MCPToolExecutor
@@ -22,12 +23,14 @@ from .noop import NoopExecutor
 EXECUTOR_REGISTRY: dict[ExecutorType, type[V2Executor]] = {
     ExecutorType.MCP_TOOL: MCPToolExecutor,
     ExecutorType.MCP_AGENT: MCPAgentExecutor,
+    ExecutorType.AIRFLOW_PYTHON: AirflowPythonExecutor,
     ExecutorType.NOOP: NoopExecutor,
 }
 
 
 __all__ = [
     "EXECUTOR_REGISTRY",
+    "AirflowPythonExecutor",
     "MCPAgentExecutor",
     "MCPToolExecutor",
     "NoopExecutor",

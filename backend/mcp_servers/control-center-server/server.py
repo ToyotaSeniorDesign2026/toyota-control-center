@@ -342,6 +342,74 @@ def create_sql_job(
         raise ValueError(f"Failed to create SQL job '{name}': {exc}") from exc
 
 
+@mcp.tool()
+def create_airflow_job(
+    name: str,
+    script: str,
+    run_mode: str = "subprocess",
+    params: str = "{}",
+    schedule: str = "",
+    environment: str = "dev",
+    data_sensitivity: str = "low",
+) -> dict:
+    """Create a new Airflow Python job in the Control Center.
+
+    The job runs a Python file under backend/scripts/airflow/ via the
+    AIRFLOW_PYTHON executor. Bundled scripts: 'hello_world', 'daily_metrics',
+    'data_validation'. Custom scripts must be added to that directory.
+
+    Args:
+        name:             Unique, descriptive job name.
+        script:           Script identifier (bare name → /app/scripts/airflow/<name>.py).
+        run_mode:         'subprocess' (default; runs python <file>) or 'trigger_dag'
+                          (POSTs to Airflow REST — requires airflow_url + airflow_token).
+        params:           JSON string of params forwarded to the script as --params.
+                          Example: '{"region": "WEST", "rows": 5000}'
+        schedule:         Cron expression for recurring runs (optional).
+        environment:      'dev', 'semi-prod', or 'prod'. Default 'dev'.
+        data_sensitivity: 'low', 'medium', or 'high'. Affects approval policy.
+
+    Returns the created job object including its ID.
+    """
+    _ENV_ALIASES = {"development": "dev", "production": "prod", "staging": "semi-prod"}
+    environment = _ENV_ALIASES.get(environment.lower(), environment.lower())
+
+    try:
+        parsed_params = json.loads(params) if params else {}
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"params must be valid JSON: {exc}") from exc
+
+    config: dict[str, Any] = {
+        "run_mode": run_mode,
+        "script": script,
+        **parsed_params,
+    }
+    if schedule:
+        config["schedule"] = schedule
+
+    payload = {
+        "name": name,
+        "kind": "runtime",
+        "type": "airflow_python",
+        "connector": script,  # mirrors the script identifier for surface lookup
+        "environment": environment,
+        "config": config,
+        "data_sensitivity": data_sensitivity,
+        "tags": [],
+    }
+    try:
+        result = _post("/jobs", payload, token=_USER_TOKEN or None)
+        return {
+            "id": result.get("id"),
+            "name": result.get("name"),
+            "type": result.get("type"),
+            "status": result.get("status"),
+            "message": f"Airflow job '{name}' created (script={script}, mode={run_mode}).",
+        }
+    except Exception as exc:
+        raise ValueError(f"Failed to create Airflow job '{name}': {exc}") from exc
+
+
 _REGISTRY_PATH = Path(
     os.environ.get("CC_REGISTRY_PATH", "")
     or str(Path(__file__).parent.parent.parent / "src" / "control_center" / "registry" / "registry.json")
@@ -408,6 +476,10 @@ def get_job_type_schema(job_type: str | None = None, driver: str | None = None) 
         if srv.get("job_type") == job_type:
             matched = srv
             break
+
+    }
+    if not matched and job_type in _BUILTIN_FALLBACKS:
+        matched = _BUILTIN_FALLBACKS[job_type]
 
     result: dict[str, Any] = {
         "universal_required": universal.get("required", []),

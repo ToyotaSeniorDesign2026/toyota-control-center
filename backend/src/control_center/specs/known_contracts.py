@@ -5,8 +5,10 @@ from __future__ import annotations
 Single source of truth for what each shipped job type looks like:
 field schemas, executor wiring, surface requirements, governance defaults.
 
-For MVP: two contracts (sql, mcp). Add more as new ExecutorType variants
-land in the EXECUTOR_REGISTRY.
+Currently shipped:
+  - sql            → MCP_TOOL    (deterministic execute_sql via sql-mcp)
+  - mcp            → MCP_AGENT   (prompt-driven agent loop)
+  - airflow_python → AIRFLOW_PYTHON (subprocess-mode Airflow-style task)
 """
 
 from .job_type import (
@@ -173,7 +175,105 @@ MCP_CONTRACT = JobTypeContract(
 )
 
 
+# ── Airflow Python: run a Python file as a DAG/task (subprocess mode) ───────
+
+AIRFLOW_PYTHON_CONTRACT = JobTypeContract(
+    type="airflow_python",
+    display_name="Airflow Python Task",
+    description=(
+        "Run a Python file as an Airflow-style task. In subprocess mode the "
+        "executor invokes `python <script> --params <json>` directly — no "
+        "Airflow scheduler needed for development. Use trigger_dag mode in "
+        "production to fire a real DAG via Airflow REST."
+    ),
+    supported_actions=["activate", "pause", "archive"],
+    deterministic=True,
+    executor_type=ExecutorType.AIRFLOW_PYTHON,
+    # The `executor` field names the script identifier. The AirflowPythonExecutor
+    # resolves it to /app/scripts/airflow/<executor>.py inside the container
+    # (override AIRFLOW_SCRIPT_ROOT to change this base).
+    executor="hello_world",
+    requires=[
+        ExecutionRequirement(
+            surface_type=InteractionSurfaceType.PYTHON_RUNTIME,  # Runs in-process subprocess.
+            names=[],
+        ),
+    ],
+    features=RunFeatures(
+        supports_retry=True,
+        supports_cancel=True,
+        supports_schedule=True,
+        supports_heartbeat=False,
+        max_runtime_seconds=300,
+    ),
+    policy=GovernancePolicy(),
+    source="system",
+    config=InputSchema(
+        required=[],
+        optional=["run_mode", "script", "airflow_url", "airflow_token"],
+        fields={
+            "run_mode": FieldSpec(
+                name="run_mode",
+                type=FieldType.STRING,
+                enum=["subprocess", "trigger_dag"],
+                default="subprocess",
+                description=(
+                    "subprocess: run the Python file directly. "
+                    "trigger_dag: hit Airflow REST to start a real DAG run."
+                ),
+            ),
+            "script": FieldSpec(
+                name="script",
+                type=FieldType.STRING,
+                description=(
+                    "Override the script identifier set on the contract's "
+                    "executor field. Bare name → /app/scripts/airflow/<name>.py."
+                ),
+                placeholder="hello_world",
+            ),
+            "airflow_url": FieldSpec(
+                name="airflow_url",
+                type=FieldType.STRING,
+                format="uri",
+                description="Base URL of the Airflow API (trigger_dag mode only).",
+                placeholder="https://airflow.internal/api/v1",
+            ),
+            "airflow_token": FieldSpec(
+                name="airflow_token",
+                type=FieldType.STRING,
+                format="secret",
+                description="Bearer token for the Airflow API (trigger_dag mode only).",
+                sensitive=True,
+                write_only=True,
+                special_storage="session",
+            ),
+        },
+    ),
+    # All run params are forwarded to the script as JSON via --params.
+    # No fixed schema — anything the script needs is fair game.
+    params=InputSchema(
+        required=[],
+        optional=["name", "multiplier"],
+        fields={
+            "name": FieldSpec(
+                name="name",
+                type=FieldType.STRING,
+                description="Sample param consumed by the bundled hello_world.py demo task.",
+                placeholder="world",
+            ),
+            "multiplier": FieldSpec(
+                name="multiplier",
+                type=FieldType.INTEGER,
+                description="How many times to repeat the greeting (hello_world demo).",
+                default=1,
+            ),
+        },
+    ),
+)
+
+
 KNOWN_CONTRACTS: dict[str, JobTypeContract] = {
     "sql": SQL_CONTRACT,
     "mcp": MCP_CONTRACT,
+    "airflow_python": AIRFLOW_PYTHON_CONTRACT,
 }

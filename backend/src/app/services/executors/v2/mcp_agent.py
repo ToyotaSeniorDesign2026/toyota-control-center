@@ -82,7 +82,7 @@ class MCPAgentExecutor(V2Executor):
                 # No explicit servers ⇒ let the selection model pick from registry.
                 selection_prompt=prompt if not server_names else None,
                 model=default_mcp_model(),
-                instructor_model=os.getenv("CONTROL_CENTER_MCP_INSTRUCTOR_MODEL"),
+                instructor_model=os.getenv("CONTROL_CENTER_MCP_INSTRUCTOR_MODEL") or default_mcp_model(),
                 verbose=False,
             )
         except Exception as exc:
