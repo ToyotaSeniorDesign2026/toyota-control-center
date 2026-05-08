@@ -1,0 +1,12 @@
+{
+  "command": "uv",
+  "args": [
+    "run",
+    "--directory", "internal/control-center-mcp-app",
+    "--with", "fastmcp",
+    "--with", "fastmcp[apps]",
+    "--with", "prefab-ui",
+    "--with", "httpx",
+    "server.py"
+  ]
+}

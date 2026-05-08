@@ -77,13 +77,13 @@ from control_center.specs import KNOWN_CONTRACTS
 
 logger = logging.getLogger(__name__)
 
-SERVER_NAME = "control-center-job-app"
+SERVER_NAME = "control-center-job-creator"
 SERVER_DESCRIPTION = (
     "Interactive Control Center job designer — pick a job type, choose a "
     "connector, fill the contract-driven form, and create or trigger jobs."
 )
 APP_RESOURCE_URI = "ui://control-center/job-designer.html"
-APP_RESOURCE_DOMAIN = "https://control-center-job-app.local"
+APP_RESOURCE_DOMAIN = "https://control-center-job-creator.local"
 
 _API_BASE = os.environ.get("CC_API_BASE_URL", "http://localhost:8000").rstrip("/")
 _API_TOKEN = os.environ.get("CC_SERVICE_TOKEN", "")

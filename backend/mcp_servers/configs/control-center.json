@@ -1,6 +1,5 @@
 {
   "command": "python",
-  "args": ["control-center-server/server.py"],
   "type": "stdio",
   "env": {
     "CC_API_BASE_URL": "${CC_API_BASE_URL}",
@@ -8,4 +7,5 @@
     "OPENAI_API_KEY": "${OPENAI_API_KEY}",
     "OPENAI_MODEL": "${OPENAI_MODEL}"
   }
+  "args": ["internal/control-center-server/server.py"],
 }

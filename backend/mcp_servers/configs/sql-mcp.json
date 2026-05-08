@@ -1,5 +1,5 @@
 {
   "command": "python",
-  "args": ["sql-mcp-server/server.py"],
+  "args": ["internal/sql-mcp-server/server.py"],
   "type": "stdio"
 }

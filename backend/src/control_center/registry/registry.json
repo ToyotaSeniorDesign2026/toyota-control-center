@@ -48,6 +48,18 @@
       }
     },
 
+    "control-center-mcp-app": {
+      "description": "Internal Control Center MCP Server App — creates a rich UI and exposes jobs, runs, and trigger capabilities to AI clients.",
+      "display_name": "Control Center MCP App",
+      "allowed_environments": ["dev", "semi-prod"],
+      "config_path": "configs/control-center-mcp-app.json",
+      "config_type": "standard",
+      "version": "1.0",
+      "tags": ["internal", "control-center", "orchestration", "ui", "app", "mcp-app"],
+      "active": true,
+      "job_type": "mcp"
+    },
+
     "arxiv-research": {
       "description": "Custom arXiv research MCP server to grab topical papers in research-oriented workflows.",
       "allowed_environments": ["dev", "semi-prod", "prod"],
