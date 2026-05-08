@@ -1,13 +1,14 @@
 """Control Center Job Designer MCP App.
 
 Interactive Prefab app for creating Control Center jobs. Reactive to the
-selected job type's contract: the form pulls config/params field definitions
-from the backend `/job-types/{type}/form-schema` endpoint and renders a
-dynamic form (text/number/boolean/select/secret) keyed off `FieldSpec`.
+selected job type's contract: built-in types are loaded from
+`control_center.specs.KNOWN_CONTRACTS`, then API-discovered types may fall
+back to the backend form-schema endpoint. The UI renders a dynamic form
+(text/number/boolean/select/secret) keyed off `FieldSpec`.
 
 Backend wiring (HTTP):
-    GET  /job-types
-    GET  /job-types/{type}/form-schema
+    GET  /job-types                         refresh/discover additional types
+    GET  /job-types/{type}/form-schema      fallback for API-discovered types
     GET  /connectors
     POST /jobs
     POST /jobs/{job_id}/runs
@@ -253,6 +254,7 @@ def _refresh_job_types_action() -> CallTool:
         "list_job_types",
         on_success=[
             SetState("availableJobTypes", RESULT.items),
+            SetState("apiJobTypes", RESULT.dynamic_items),
             SetState("loading", False),
         ],
         on_error=[SetState("loading", False), ShowToast(ERROR, variant="error")],
@@ -346,6 +348,8 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
     refresh_connectors_action = _refresh_connectors_action()
     create_action = _create_job_action()
     run_action = _trigger_run_action()
+    selected_job_type = initial_state.get("selectedJobType") or ""
+    static_job_types = list(initial_state.get("availableJobTypes") or [])
 
     def _async_btn(label: str, *, action: object, variant: str = "secondary") -> None:
         Button(
@@ -374,13 +378,21 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                         with FieldContent():
                             with Select(
                                 name="selectedJobType",
-                                value=initial_state.get("selectedJobType") or None,
                                 on_change=[
                                     SetState("loading", True),
                                     job_type_action,
                                 ],
                             ):
-                                with ForEach("availableJobTypes") as jt:
+                                for jt in static_job_types:
+                                    job_type = jt.get("type") or ""
+                                    if not job_type:
+                                        continue
+                                    SelectOption(
+                                        jt.get("display_name") or job_type,
+                                        value=job_type,
+                                        selected=job_type == selected_job_type,
+                                    )
+                                with ForEach("apiJobTypes") as jt:
                                     SelectOption(
                                         jt.display_name.default(jt.type),
                                         value=jt.type,
@@ -578,6 +590,7 @@ def _initial_state(
 
     return {
         "availableJobTypes": available_job_types,
+        "apiJobTypes": [],
         "availableConnectors": [],
         "selectedJobType": selected_type,
         "selectedConnectorType": (selected_schema.get("connector_types") or [selected_type])[0],
@@ -745,11 +758,14 @@ def _static_form_schema(job_type: str) -> dict[str, Any]:
     return _form_schema_payload(payload) if payload else _form_schema_payload({})
 
 
-def _schema_for_job_type(job_type: str) -> dict[str, Any]:
+def _schema_for_job_type(job_type: str, *, allow_api_fallback: bool = False) -> dict[str, Any]:
     normalized = (job_type or "").strip().lower()
     static_schema = _static_form_schema(normalized)
     if static_schema.get("type"):
         return static_schema
+
+    if not allow_api_fallback:
+        return _form_schema_payload({})
 
     try:
         raw = _api_get(f"/job-types/{normalized}/form-schema")
@@ -763,6 +779,17 @@ def _static_job_types() -> list[dict[str, Any]]:
     return [_job_type_summary(contract.model_dump(mode="json")) for contract in KNOWN_CONTRACTS.values()]
 
 
+def _dynamic_job_type_summaries(api_job_types: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    static_types = set(KNOWN_CONTRACTS)
+    return [
+        item
+        for item in api_job_types
+        if isinstance(item, dict)
+        and item.get("type")
+        and str(item["type"]).strip().lower() not in static_types
+    ]
+
+
 def _merge_job_type_summaries(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
     merged: dict[str, dict[str, Any]] = {}
     for group in groups:
@@ -770,7 +797,7 @@ def _merge_job_type_summaries(*groups: list[dict[str, Any]]) -> list[dict[str, A
             if not isinstance(item, dict):
                 continue
             job_type = item.get("type")
-            if job_type:
+            if job_type and job_type not in merged:
                 merged[job_type] = item
     return list(merged.values())
 
@@ -824,8 +851,9 @@ def build_server() -> FastMCP:
     @mcp.tool(
         name="open_job_designer",
         description=(
-            "Open the interactive Control Center job designer. Optionally "
-            "preselects a job type."
+            "Open the interactive Control Center job designer. The embedded app "
+            "starts from built-in static contracts; job_type is echoed for "
+            "text clients but does not mutate the static resource state."
         ),
         app=AppConfig(
             resource_uri=APP_RESOURCE_URI,
@@ -836,24 +864,19 @@ def build_server() -> FastMCP:
         job_type: str = "",
         environment: Literal["dev", "semi-prod", "prod"] = "dev",
     ) -> dict[str, Any]:
-        try:
-            api_job_types = _api_job_type_summaries()
-        except Exception as exc:
-            logger.warning("Failed to prefetch job types: %s", exc)
-            api_job_types = []
-
         form_schema_payload: dict = {}
         if job_type:
-            form_schema_payload = _schema_for_job_type(job_type)
+            form_schema_payload = _schema_for_job_type(job_type, allow_api_fallback=True)
 
         return {
             "status": "opened",
             "message": (
-                f"Job designer opened with preselected type '{job_type}'."
+                f"Job designer opened. Requested type '{job_type}' is available in the returned metadata."
                 if job_type
                 else "Job designer opened."
             ),
-            "job_types": _merge_job_type_summaries(_static_job_types(), api_job_types),
+            "job_types": _static_job_types(),
+            "dynamic_job_types": [],
             "form_schema": form_schema_payload,
             "environment": environment,
         }
@@ -868,7 +891,10 @@ def build_server() -> FastMCP:
         except Exception as exc:
             logger.warning("list_job_types failed: %s", exc)
             items = []
-        return {"items": _merge_job_type_summaries(_static_job_types(), items)}
+        return {
+            "items": _merge_job_type_summaries(_static_job_types(), items),
+            "dynamic_items": _dynamic_job_type_summaries(items),
+        }
 
     @mcp.tool(
         name="get_form_schema",
@@ -881,7 +907,7 @@ def build_server() -> FastMCP:
         normalized = (job_type or "").strip().lower()
         if not normalized:
             return _form_schema_payload({})
-        return _schema_for_job_type(normalized)
+        return _schema_for_job_type(normalized, allow_api_fallback=True)
 
     @mcp.tool(
         name="list_connectors",
@@ -923,8 +949,8 @@ def build_server() -> FastMCP:
     @mcp.tool(
         name="create_job",
         description=(
-            "Register a new Control Center job. Validates the config against the "
-            "selected JobTypeContract on the API side."
+            "Register a new Control Center job. Config is coerced from the "
+            "selected JobTypeContract before API-side validation."
         ),
     )
     def create_job(
@@ -948,10 +974,10 @@ def build_server() -> FastMCP:
         merged_tags = list(tags or []) + _split_tags(tags_text)
 
         try:
-            schema = _api_get(f"/job-types/{type}/form-schema")
-            config = _coerce_field_values(_form_schema_payload(schema)["config_fields"], config or {})
+            schema = _schema_for_job_type(type, allow_api_fallback=True)
+            config = _coerce_field_values(schema["config_fields"], config or {})
         except Exception as exc:
-            logger.warning("create_job: form-schema fetch failed, sending raw config: %s", exc)
+            logger.warning("create_job: schema coercion skipped, sending raw config: %s", exc)
             config = config or {}
 
         body = {
@@ -982,8 +1008,8 @@ def build_server() -> FastMCP:
 
         try:
             job = _api_get(f"/jobs/{job_id}")
-            schema = _api_get(f"/job-types/{job['type']}/form-schema")
-            params = _coerce_field_values(_form_schema_payload(schema)["params_fields"], params or {})
+            schema = _schema_for_job_type(job["type"], allow_api_fallback=True)
+            params = _coerce_field_values(schema["params_fields"], params or {})
         except Exception as exc:
             logger.warning("trigger_run: param coercion skipped: %s", exc)
             params = params or {}
@@ -1046,12 +1072,7 @@ def _job_type_summary(contract: dict) -> dict[str, Any]:
 
 
 def _connector_types_for(form_schema: dict) -> list[str]:
-    """Derive allowed connector types from a JobTypeContract response.
-
-    The /job-types/{t}/form-schema endpoint emits the contract via form_schema(),
-    which doesn't include the requires metadata. Fall back to the full contract list
-    and walk the new ExecutionRequirement list.
-    """
+    """Derive connector types for a fallback API form-schema payload."""
     return _job_type_metadata_for(form_schema).get("connector_types", [])
 
 
