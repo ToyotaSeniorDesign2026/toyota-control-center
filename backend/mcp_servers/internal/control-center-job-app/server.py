@@ -29,6 +29,7 @@ import httpx
 from fastmcp import FastMCP
 from fastmcp.apps import AppConfig, ResourceCSP
 from prefab_ui import PrefabApp
+from prefab_ui.app import ResolvedTool
 from prefab_ui.actions import SetState, ShowToast
 from prefab_ui.actions.mcp import CallTool, RequestDisplayMode
 from prefab_ui.components import (
@@ -70,6 +71,8 @@ from prefab_ui.components import (
 )
 from prefab_ui.rx import ERROR
 from prefab_ui.themes import Theme
+
+from control_center.specs import KNOWN_CONTRACTS
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +190,12 @@ def _render_field_loop(state_root: str, fields_path: str) -> None:
     """
     with ForEach(fields_path) as field:
         with Field():
-            FieldTitle(field.name)
+            with Row(gap=2, align="center", css_class="flex-wrap"):
+                FieldTitle(field.name)
+                with If(field.required):
+                    Badge("required", variant="outline")
+                with If(field.sensitive | field.write_only):
+                    Badge("sensitive", variant="outline")
             with If(field.description):
                 FieldDescription(field.description)
             with FieldContent():
@@ -274,6 +282,9 @@ def _select_job_type_action() -> CallTool:
             SetState("formSchema", RESULT),
             SetState("config", RESULT.defaults_config),
             SetState("params", RESULT.defaults_params),
+            SetState("kind", RESULT.kind),
+            SetState("selectedConnector", ""),
+            SetState("availableConnectors", []),
             SetState(
                 "selectedConnectorType",
                 RESULT.connector_types.first().default(STATE.selectedJobType),
@@ -363,6 +374,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                         with FieldContent():
                             with Select(
                                 name="selectedJobType",
+                                value=initial_state.get("selectedJobType") or None,
                                 on_change=[
                                     SetState("loading", True),
                                     job_type_action,
@@ -555,35 +567,30 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
 def _initial_state(
     *,
     job_types: list[dict] | None = None,
-    selected_type: str = "",
+    selected_type: str = "mcp",
     environment: str = "dev",
 ) -> dict[str, Any]:
+    available_job_types = job_types or _static_job_types()
+    selected_schema = _static_form_schema(selected_type)
+    if not selected_schema.get("type") and available_job_types:
+        selected_type = available_job_types[0].get("type") or ""
+        selected_schema = _static_form_schema(selected_type)
+
     return {
-        "availableJobTypes": job_types or [],
+        "availableJobTypes": available_job_types,
         "availableConnectors": [],
         "selectedJobType": selected_type,
-        "selectedConnectorType": selected_type,
+        "selectedConnectorType": (selected_schema.get("connector_types") or [selected_type])[0],
         "selectedConnector": "",
-        "kind": "runtime",
+        "kind": selected_schema.get("kind", "runtime"),
         "environment": environment,
         "dataSensitivity": "low",
         "jobName": "",
         "tagsText": "",
-        "config": {},
-        "params": {},
+        "config": selected_schema.get("defaults_config", {}),
+        "params": selected_schema.get("defaults_params", {}),
         "runPrompt": "",
-        "formSchema": {
-            "type": "",
-            "display_name": "",
-            "description": "",
-            "config_fields": [],
-            "params_fields": [],
-            "required_config": [],
-            "optional_config": [],
-            "required_params": [],
-            "optional_params": [],
-            "connector_types": [],
-        },
+        "formSchema": selected_schema,
         "createdJob": None,
         "lastRun": None,
         "loading": False,
@@ -612,13 +619,45 @@ def _resource_csp_for(app: PrefabApp) -> ResourceCSP:
     )
 
 
+def _resolve_prefab_tool(tool_ref: Any) -> ResolvedTool:
+    """Tell Prefab to expose FastMCP structuredContent as `$result`."""
+    name = tool_ref if isinstance(tool_ref, str) else getattr(tool_ref, "__name__", str(tool_ref))
+    return ResolvedTool(name=name, unwrap_result=True)
+
+
 # ── Form-schema serialization for the UI ─────────────────────────────────────
 
 
 def _form_schema_payload(contract_schema: dict) -> dict:
-    """Augment the API form_schema with defaults + connector_types for the UI."""
-    config_fields = contract_schema.get("config_fields", []) or []
-    params_fields = contract_schema.get("params_fields", []) or []
+    """Normalize a form-schema or full JobTypeContract response for the UI."""
+
+    def _field_list(schema: dict, section: str) -> list[dict]:
+        direct = schema.get(f"{section}_fields")
+        if direct:
+            return _mark_required_fields(direct, schema.get(f"required_{section}", []) or [])
+
+        input_schema = schema.get(section) or {}
+        fields = input_schema.get("fields", {})
+        if isinstance(fields, dict):
+            values = list(fields.values())
+        else:
+            values = list(fields or [])
+        return _mark_required_fields(values, input_schema.get("required", []) or [])
+
+    def _required(schema: dict, section: str) -> list[str]:
+        direct = schema.get(f"required_{section}")
+        if direct is not None:
+            return list(direct or [])
+        return list((schema.get(section) or {}).get("required", []) or [])
+
+    def _optional(schema: dict, section: str) -> list[str]:
+        direct = schema.get(f"optional_{section}")
+        if direct is not None:
+            return list(direct or [])
+        return list((schema.get(section) or {}).get("optional", []) or [])
+
+    config_fields = _field_list(contract_schema, "config")
+    params_fields = _field_list(contract_schema, "params")
 
     def _defaults(fields: list[dict]) -> dict:
         out: dict[str, Any] = {}
@@ -633,16 +672,28 @@ def _form_schema_payload(contract_schema: dict) -> dict:
         "type": contract_schema.get("type", ""),
         "display_name": contract_schema.get("display_name") or contract_schema.get("type", ""),
         "description": contract_schema.get("description"),
+        "kind": contract_schema.get("kind") or ("artifact" if contract_schema.get("artifact") else "runtime"),
         "config_fields": config_fields,
         "params_fields": params_fields,
-        "required_config": contract_schema.get("required_config", []),
-        "optional_config": contract_schema.get("optional_config", []),
-        "required_params": contract_schema.get("required_params", []),
-        "optional_params": contract_schema.get("optional_params", []),
-        "connector_types": contract_schema.get("connector_types", []),
+        "required_config": _required(contract_schema, "config"),
+        "optional_config": _optional(contract_schema, "config"),
+        "required_params": _required(contract_schema, "params"),
+        "optional_params": _optional(contract_schema, "params"),
+        "connector_types": _extract_connector_types(contract_schema),
         "defaults_config": _defaults(config_fields),
         "defaults_params": _defaults(params_fields),
     }
+
+
+def _mark_required_fields(fields: list[dict], required: list[str]) -> list[dict]:
+    required_names = set(required)
+    normalized: list[dict] = []
+    for field in fields:
+        if not isinstance(field, dict):
+            continue
+        name = field.get("name")
+        normalized.append({**field, "required": bool(name and name in required_names)})
+    return normalized
 
 
 # ── Tag/JSON normalization helpers for create_job ────────────────────────────
@@ -682,26 +733,69 @@ def _coerce_field_values(fields: list[dict], data: dict) -> dict:
     return out
 
 
+def _contract_payload(job_type: str) -> dict[str, Any]:
+    contract = KNOWN_CONTRACTS.get((job_type or "").strip().lower())
+    if contract is None:
+        return {}
+    return contract.model_dump(mode="json")
+
+
+def _static_form_schema(job_type: str) -> dict[str, Any]:
+    payload = _contract_payload(job_type)
+    return _form_schema_payload(payload) if payload else _form_schema_payload({})
+
+
+def _schema_for_job_type(job_type: str) -> dict[str, Any]:
+    normalized = (job_type or "").strip().lower()
+    static_schema = _static_form_schema(normalized)
+    if static_schema.get("type"):
+        return static_schema
+
+    try:
+        raw = _api_get(f"/job-types/{normalized}/form-schema")
+        return _form_schema_payload({**raw, **_job_type_metadata_for(raw)})
+    except Exception as exc:
+        logger.warning("Failed to fetch dynamic form schema for %s: %s", normalized, exc)
+        raise
+
+
+def _static_job_types() -> list[dict[str, Any]]:
+    return [_job_type_summary(contract.model_dump(mode="json")) for contract in KNOWN_CONTRACTS.values()]
+
+
+def _merge_job_type_summaries(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for group in groups:
+        for item in group:
+            if not isinstance(item, dict):
+                continue
+            job_type = item.get("type")
+            if job_type:
+                merged[job_type] = item
+    return list(merged.values())
+
+
+def _job_type_items(response: Any) -> list[dict[str, Any]]:
+    if isinstance(response, list):
+        return [item for item in response if isinstance(item, dict)]
+    if isinstance(response, dict):
+        for key in ("items", "job_types", "available_job_types"):
+            value = response.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _api_job_type_summaries() -> list[dict[str, Any]]:
+    return [_job_type_summary(c) for c in _job_type_items(_api_get("/job-types"))]
+
+
 # ── Server build ─────────────────────────────────────────────────────────────
 
 
 def _prefetch_job_types() -> list[dict]:
-    """Best-effort job-type prefetch for the resource's initial state."""
-    try:
-        items = _api_get("/job-types") or []
-        return [
-            {
-                "type": c.get("type"),
-                "display_name": c.get("display_name") or c.get("type"),
-                "description": c.get("description"),
-                "kind": c.get("kind"),
-                "connector_types": (c.get("requires") or {}).get("connector_types", []),
-            }
-            for c in items
-        ]
-    except Exception as exc:
-        logger.warning("Failed to prefetch job types: %s", exc)
-        return []
+    """Static initial job types; API refresh happens through list_job_types."""
+    return _static_job_types()
 
 
 def build_server() -> FastMCP:
@@ -725,7 +819,7 @@ def build_server() -> FastMCP:
         ),
     )
     def control_center_job_designer_resource() -> str:
-        return blank_app.html()
+        return blank_app.html(tool_resolver=_resolve_prefab_tool)
 
     @mcp.tool(
         name="open_job_designer",
@@ -743,18 +837,14 @@ def build_server() -> FastMCP:
         environment: Literal["dev", "semi-prod", "prod"] = "dev",
     ) -> dict[str, Any]:
         try:
-            job_types = _api_get("/job-types")
+            api_job_types = _api_job_type_summaries()
         except Exception as exc:
             logger.warning("Failed to prefetch job types: %s", exc)
-            job_types = []
+            api_job_types = []
 
         form_schema_payload: dict = {}
         if job_type:
-            try:
-                raw = _api_get(f"/job-types/{job_type}/form-schema")
-                form_schema_payload = _form_schema_payload({**raw, "connector_types": _connector_types_for(raw)})
-            except Exception as exc:
-                logger.warning("Failed to prefetch form schema for %s: %s", job_type, exc)
+            form_schema_payload = _schema_for_job_type(job_type)
 
         return {
             "status": "opened",
@@ -763,7 +853,7 @@ def build_server() -> FastMCP:
                 if job_type
                 else "Job designer opened."
             ),
-            "job_types": job_types,
+            "job_types": _merge_job_type_summaries(_static_job_types(), api_job_types),
             "form_schema": form_schema_payload,
             "environment": environment,
         }
@@ -771,21 +861,14 @@ def build_server() -> FastMCP:
     @mcp.tool(
         name="list_job_types",
         description="List all known JobTypeContracts available to this Control Center deployment.",
-        app=AppConfig(visibility=["app"]),
     )
     def list_job_types() -> dict[str, Any]:
-        items = _api_get("/job-types") or []
-        compact = [
-            {
-                "type": c.get("type"),
-                "display_name": c.get("display_name") or c.get("type"),
-                "description": c.get("description"),
-                "kind": c.get("kind"),
-                "connector_types": (c.get("requires") or {}).get("connector_types", []),
-            }
-            for c in items
-        ]
-        return {"items": compact}
+        try:
+            items = _api_job_type_summaries()
+        except Exception as exc:
+            logger.warning("list_job_types failed: %s", exc)
+            items = []
+        return {"items": _merge_job_type_summaries(_static_job_types(), items)}
 
     @mcp.tool(
         name="get_form_schema",
@@ -793,15 +876,12 @@ def build_server() -> FastMCP:
             "Fetch the dynamic form schema for a job type. Returns config/params "
             "FieldSpec lists, defaults, required-field lists, and allowed connector types."
         ),
-        app=AppConfig(visibility=["app"]),
     )
     def get_form_schema(job_type: str) -> dict[str, Any]:
         normalized = (job_type or "").strip().lower()
         if not normalized:
             return _form_schema_payload({})
-        raw = _api_get(f"/job-types/{normalized}/form-schema")
-        raw["connector_types"] = _connector_types_for(raw)
-        return _form_schema_payload(raw)
+        return _schema_for_job_type(normalized)
 
     @mcp.tool(
         name="list_connectors",
@@ -809,7 +889,6 @@ def build_server() -> FastMCP:
             "List existing connectors. Optionally filter by connector_type "
             "(e.g. 'sql-mcp', 'github') and/or environment."
         ),
-        app=AppConfig(visibility=["app"]),
     )
     def list_connectors(
         connector_type: str = "",
@@ -822,7 +901,7 @@ def build_server() -> FastMCP:
             params["env"] = environment.strip()
         try:
             response = _api_get("/connectors", params=params or None)
-        except httpx.HTTPStatusError as exc:
+        except Exception as exc:
             logger.warning("list_connectors failed: %s", exc)
             response = {"items": []}
 
@@ -847,7 +926,6 @@ def build_server() -> FastMCP:
             "Register a new Control Center job. Validates the config against the "
             "selected JobTypeContract on the API side."
         ),
-        app=AppConfig(visibility=["app"]),
     )
     def create_job(
         name: str,
@@ -871,7 +949,7 @@ def build_server() -> FastMCP:
 
         try:
             schema = _api_get(f"/job-types/{type}/form-schema")
-            config = _coerce_field_values(schema.get("config_fields", []) or [], config or {})
+            config = _coerce_field_values(_form_schema_payload(schema)["config_fields"], config or {})
         except Exception as exc:
             logger.warning("create_job: form-schema fetch failed, sending raw config: %s", exc)
             config = config or {}
@@ -891,7 +969,6 @@ def build_server() -> FastMCP:
     @mcp.tool(
         name="trigger_run",
         description="Trigger a run for an existing job. Optionally pass per-run params and a prompt.",
-        app=AppConfig(visibility=["app"]),
     )
     def trigger_run(
         job_id: str,
@@ -906,7 +983,7 @@ def build_server() -> FastMCP:
         try:
             job = _api_get(f"/jobs/{job_id}")
             schema = _api_get(f"/job-types/{job['type']}/form-schema")
-            params = _coerce_field_values(schema.get("params_fields", []) or [], params or {})
+            params = _coerce_field_values(_form_schema_payload(schema)["params_fields"], params or {})
         except Exception as exc:
             logger.warning("trigger_run: param coercion skipped: %s", exc)
             params = params or {}
@@ -923,30 +1000,91 @@ def build_server() -> FastMCP:
     return mcp
 
 
-def _connector_types_for(form_schema: dict) -> list[str]:
-    """Best-effort: derive allowed connector types from a JobTypeContract response.
+def _extract_connector_types(contract: dict) -> list[str]:
+    """Walk the new JobTypeContract.requires shape and return a flat list of names.
 
-    The /job-types/{t}/form-schema endpoint emits the contract via form_schema(),
-    which doesn't include capability metadata. Fall back to the full contract list.
+    JobTypeContract.requires is `list[ExecutionRequirement]` where each entry has:
+        surface_type:    e.g. "mcp_server", "python_runtime", "http_api"
+        names:           e.g. ["sql-mcp"], ["arxiv-research"], []
+        required_tools:  list[str]
+        required_scopes: list[str]
+
+    For UI purposes "connector type" = the union of `names` across all requirements,
+    deduplicated, preserving order.
     """
-    embedded = form_schema.get("connector_types")
+    embedded = contract.get("connector_types")
     if embedded:
         return list(embedded)
+
+    requires = contract.get("requires")
+    if not requires:
+        return []
+    # Old shape (single ExecutionRequirement dict) — extract names directly.
+    if isinstance(requires, dict):
+        return list(requires.get("names") or requires.get("connector_types") or [])
+    # New shape (list of ExecutionRequirement dicts).
+    out: list[str] = []
+    seen: set[str] = set()
+    for req in requires:
+        if not isinstance(req, dict):
+            continue
+        for name in (req.get("names") or []):
+            if name and name not in seen:
+                seen.add(name)
+                out.append(name)
+    return out
+
+
+def _job_type_summary(contract: dict) -> dict[str, Any]:
+    return {
+        "type": contract.get("type"),
+        "display_name": contract.get("display_name") or contract.get("type"),
+        "description": contract.get("description"),
+        "kind": contract.get("kind") or ("artifact" if contract.get("artifact") else "runtime"),
+        "connector_types": _extract_connector_types(contract),
+    }
+
+
+def _connector_types_for(form_schema: dict) -> list[str]:
+    """Derive allowed connector types from a JobTypeContract response.
+
+    The /job-types/{t}/form-schema endpoint emits the contract via form_schema(),
+    which doesn't include the requires metadata. Fall back to the full contract list
+    and walk the new ExecutionRequirement list.
+    """
+    return _job_type_metadata_for(form_schema).get("connector_types", [])
+
+
+def _job_type_metadata_for(form_schema: dict) -> dict[str, Any]:
+    embedded_connectors = form_schema.get("connector_types")
+    embedded_kind = form_schema.get("kind")
+    if embedded_connectors is not None and embedded_kind:
+        return {"connector_types": list(embedded_connectors or []), "kind": embedded_kind}
+
     job_type = form_schema.get("type")
+    fallback = {
+        "connector_types": list(embedded_connectors or []),
+        "kind": embedded_kind or ("artifact" if form_schema.get("artifact") else "runtime"),
+    }
     if not job_type:
-        return []
+        return fallback
+
     try:
-        contracts = _api_get("/job-types") or []
+        contracts = _job_type_items(_api_get("/job-types"))
     except Exception:
-        return []
+        return fallback
     for c in contracts:
         if c.get("type") == job_type:
-            return list((c.get("requires") or {}).get("connector_types", []))
-    return []
+            summary = _job_type_summary(c)
+            return {
+                "connector_types": summary["connector_types"],
+                "kind": summary["kind"],
+            }
+    return fallback
 
 
 mcp = build_server()
 
 
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(transport="http", host="127.0.0.1", port=8001)
