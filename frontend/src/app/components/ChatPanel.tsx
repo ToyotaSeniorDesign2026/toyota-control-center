@@ -283,6 +283,11 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
   const [showHistory, setShowHistory] = useState(false);
   const [chatHistory, setChatHistory] = useState<ChatThread[]>(mockChatHistory);
   const [selectedModel, setSelectedModel] = useState<(typeof MODEL_OPTIONS)[number]["value"]>("gpt-4o");
+  // Execution path toggle. v2 = /api/chat/run (single-shot job dispatch),
+  // legacy = /api/chat-legacy/agent (stateful guided flow with config_request /
+  // secret_request UI prompts). The /legacy slash-command still works in
+  // either mode as a one-off override.
+  const [executionPath, setExecutionPath] = useState<"v2" | "legacy">("v2");
   const [isDragOverInput, setIsDragOverInput] = useState(false);
   const [attachedItems, setAttachedItems] = useState<AttachedItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -479,16 +484,18 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
         ? window.localStorage.getItem("control-center-auth-token")
         : null;
 
-      // ── /legacy escape hatch ─────────────────────────────────────────────
-      // Users can force the legacy guided/agent flow with `/legacy ...` or
-      // `/legacy/agent ...` or `/legacy/guided ...`. Anything else routes to
-      // the new v2 endpoint (/api/chat/run) which dispatches via JobTypeContract.
+      // ── Execution-path resolution ────────────────────────────────────────
+      // Two ways to choose the path:
+      //   1. Toggle in chat header — sets `executionPath` ("v2" or "legacy")
+      //   2. Per-message `/legacy` prefix — overrides the toggle for one turn
+      //      (`/legacy ...`, `/legacy/agent ...`, `/legacy/guided ...`)
       const legacyMatch = requestMessage.match(
         /^\s*\/legacy(?:\/(agent|guided))?\s*(.*)$/is,
       );
-      const useLegacy = !!legacyMatch;
+      const slashOverride = !!legacyMatch;
+      const useLegacy = slashOverride || executionPath === "legacy";
       const legacyKind = (legacyMatch?.[1] || "agent").toLowerCase();
-      const messageBody = legacyMatch ? legacyMatch[2].trim() : requestMessage;
+      const messageBody = slashOverride ? legacyMatch[2].trim() : requestMessage;
 
       let response: Response;
       if (useLegacy) {
@@ -1282,6 +1289,44 @@ export function ChatPanel({ isOpen, onClose, onJobCreationIntent, onFieldsExtrac
             ))}
           </select>
         </div>
+
+        {/* Execution Path Toggle */}
+        <div className="flex items-center gap-3 pt-1">
+          <label className="text-xs text-gray-700 font-medium" title="V2 dispatches a single-shot job via JobTypeContract; Legacy is the stateful guided flow with multi-turn config prompts.">
+            Path:
+          </label>
+          <div className="flex-1 flex items-center gap-1 rounded-md border border-gray-300 bg-white p-0.5">
+            <button
+              type="button"
+              onClick={() => setExecutionPath("v2")}
+              className={
+                "flex-1 text-xs rounded px-2 py-1.5 transition " +
+                (executionPath === "v2"
+                  ? "bg-[#ed0923] text-white font-medium"
+                  : "text-gray-700 hover:bg-gray-100")
+              }
+              title="POST /api/chat/run — JobTypeContract dispatch (sql, mcp_agent, airflow_python, ...)"
+            >
+              V2 / Run
+            </button>
+            <button
+              type="button"
+              onClick={() => setExecutionPath("legacy")}
+              className={
+                "flex-1 text-xs rounded px-2 py-1.5 transition " +
+                (executionPath === "legacy"
+                  ? "bg-[#ed0923] text-white font-medium"
+                  : "text-gray-700 hover:bg-gray-100")
+              }
+              title="POST /api/chat-legacy/agent — Legacy multi-turn guided flow with dynamic UI prompts"
+            >
+              Legacy / Guided
+            </button>
+          </div>
+        </div>
+        <p className="text-[10px] text-gray-500 leading-snug">
+          Tip: prefix any message with <code className="bg-gray-100 px-1 rounded">/legacy</code> to override the toggle for one turn.
+        </p>
       </div>
     </aside>
   );

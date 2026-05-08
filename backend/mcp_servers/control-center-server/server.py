@@ -155,31 +155,61 @@ def trigger_run(
     action: str = "run",
     params: str = "{}",
     target_environment: str = "dev",
+    prompt: str = "",
 ) -> dict:
-    """Trigger a new run for a job.
+    """Trigger a new run for an existing job.
+
+    Routes through the v2 endpoint (POST /api/chat/run) so it handles all
+    executor types — sql, mcp_agent, airflow_python — uniformly. Falls back
+    to the legacy /jobs/{id}/runs endpoint if the v2 path is unavailable.
 
     Args:
         job_id:             The job UUID to run.
-        action:             Action to perform (default 'run').
+        action:             Action to perform (default 'run'; v2 ignores this).
         params:             JSON string of run parameters (e.g. '{"query": "SELECT 1"}').
         target_environment: Deployment environment (default 'dev').
+        prompt:             Optional prompt — used by mcp_agent jobs. If omitted,
+                            a generic 'run job' prompt is sent.
 
-    Returns the newly created run object.
+    Returns the newly created run object (v2 wraps it under .run; legacy returns it flat).
     """
     try:
         parsed_params = json.loads(params) if params else {}
     except json.JSONDecodeError as exc:
         raise ValueError(f"params must be a valid JSON string: {exc}") from exc
 
+    # Try v2 first — handles every executor_type via the contract registry.
     try:
-        body = {
-            "action": action,
-            "target_environment": target_environment,
+        body_v2 = {
+            "prompt": prompt or "run",
+            "job_id": job_id,
             "params": parsed_params,
+            "target_environment": target_environment,
         }
-        return _post(f"/jobs/{job_id}/runs", body)
-    except Exception as exc:
-        raise ValueError(f"Failed to trigger run for job '{job_id}': {exc}") from exc
+        result = _post("/api/chat/run", body_v2, token=_USER_TOKEN or None)
+        # v2 wraps run under "run" — flatten for backward-compat.
+        if isinstance(result, dict) and "run" in result and isinstance(result["run"], dict):
+            run = dict(result["run"])
+            run["_v2_wrapper"] = {
+                "executor_type": result.get("executor_type"),
+                "contract_type": result.get("contract_type"),
+            }
+            return run
+        return result
+    except Exception as v2_exc:
+        # Fall back to legacy. Useful if /api/chat/run isn't mounted yet.
+        try:
+            body_legacy = {
+                "action": action,
+                "target_environment": target_environment,
+                "params": parsed_params,
+            }
+            return _post(f"/jobs/{job_id}/runs", body_legacy)
+        except Exception as legacy_exc:
+            raise ValueError(
+                f"Failed to trigger run for job '{job_id}'. "
+                f"v2 error: {v2_exc}; legacy error: {legacy_exc}"
+            ) from legacy_exc
 
 
 @mcp.tool()
@@ -385,6 +415,8 @@ def get_job_type_schema(job_type: str | None = None, driver: str | None = None) 
         "job_required": matched.get("required_fields", []),
         "job_optional": matched.get("optional_fields", []),
     }
+    if matched.get("notes"):
+        result["job_notes"] = matched["notes"]
 
     if driver and matched.get("drivers"):
         driver_info: dict[str, Any] = matched["drivers"].get(driver, {})

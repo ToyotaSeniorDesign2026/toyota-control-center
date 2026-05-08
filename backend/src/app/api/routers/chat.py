@@ -39,13 +39,22 @@ router.include_router(_legacy_router)
 # /run — new V2 entrypoint
 # ──────────────────────────────────────────────────────────────────────────────
 
+class ChatTurn(BaseModel):
+    """One message in a chat conversation. ``role`` is ``user`` or ``assistant``."""
+    role: str
+    content: str
+
+
 class ChatRunRequest(BaseModel):
-    """Single-shot chat-driven job execution.
+    """Chat-driven job execution.
 
     Either supply ``job_id`` to reuse an existing job, or supply ``job_type`` +
     ``config`` to ensure-or-create a job of that type owned by the caller.
-    ``prompt`` is forwarded to the executor (used by MCP_AGENT, ignored by
-    deterministic executors).
+
+    ``prompt`` is the latest user message. ``conversation_history`` (optional)
+    carries prior messages so agent jobs can act on the full context — the
+    history is folded into the prompt sent to the agent loop. SQL/deterministic
+    executors ignore the history.
     """
     prompt: str = Field(min_length=1)
     job_id: str | None = None
@@ -54,6 +63,7 @@ class ChatRunRequest(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
     params: dict[str, Any] = Field(default_factory=dict)
     target_environment: str = Field(default="dev")
+    conversation_history: list[ChatTurn] = Field(default_factory=list)
 
 
 class ChatRunResponse(BaseModel):
@@ -194,13 +204,50 @@ async def chat_run(
             target_environment=request.target_environment,
         )
 
+    # ── Persist run-specific defaults onto the job so legacy reruns work ─────
+    # Frontend's "Run" button hits POST /jobs/{id}/runs which goes through
+    # the legacy execution_service. That path looks for `query`/`prompt` in
+    # job.config (not just per-run params). Mirror them here so a re-run from
+    # the UI works without supplying params again.
+    config_patch: dict[str, Any] = {}
+    if request.params.get("query"):
+        config_patch["query"] = request.params["query"]
+    if request.prompt:
+        config_patch["prompt"] = request.prompt
+    if config_patch:
+        merged = {**(job.config or {}), **config_patch}
+        if merged != (job.config or {}):
+            job.config = merged
+            job.updated_at = now_iso()
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+
+    # ── Compose the prompt with conversation history (agent paths only) ──────
+    # Deterministic executors (SQL_QUERY, MCP_TOOL) don't read prompt content,
+    # so history fold-in is wasted. Agentic paths benefit greatly — the LLM
+    # gets prior turns and can pick up where the conversation left off.
+    effective_prompt = request.prompt
+    if request.conversation_history and contract.executor_type.value.startswith("mcp_agent"):
+        history_lines: list[str] = []
+        # Cap at last 10 turns to keep prompts under model context limits.
+        for turn in request.conversation_history[-10:]:
+            role = (turn.role or "user").strip().upper()
+            content = (turn.content or "").strip()
+            if not content:
+                continue
+            history_lines.append(f"{role}: {content}")
+        if history_lines:
+            history_lines.append(f"USER: {request.prompt}")
+            effective_prompt = "\n\n".join(history_lines)
+
     # ── Build run payload ─────────────────────────────────────────────────────
     payload = RunCreate(
         job_id=job.id,
         action="run",
         target_environment=request.target_environment,
         params=request.params,
-        prompt=request.prompt,
+        prompt=effective_prompt,
     )
 
     # ── Dispatch via v2 ───────────────────────────────────────────────────────
