@@ -477,6 +477,28 @@ def get_job_type_schema(job_type: str | None = None, driver: str | None = None) 
             matched = srv
             break
 
+    # Built-in fallbacks for KNOWN_CONTRACTS types not present in registry.json.
+    # Keep these in sync with control_center/specs/known_contracts.py.
+    # Yes, this is brittle — ideally the registry would be the single enterprise source of truth for MCP Servers,
+    # while JobTypeContracts are a separate layer registered by users, admins, or system defaults.
+    # However, this file is already built around the quick-and-dirty hard-coding approach,
+    # so a full refactor is needed to remove these fallbacks and address its underlying issues.
+    _BUILTIN_FALLBACKS: dict[str, dict[str, Any]] = {
+        "airflow_python": {
+            "required_fields": [],
+            "optional_fields": ["run_mode", "script", "schedule", "airflow_url", "airflow_token"],
+            "notes": "Subprocess mode runs scripts under /app/scripts/airflow/. trigger_dag mode hits Airflow REST.",
+        },
+        "mcp": {
+            "required_fields": [],
+            "optional_fields": ["prompt", "description", "schedule", "timezone"],
+            "notes": "Prompt-driven agent loop across approved MCP servers.",
+        },
+        "sql": {
+            "required_fields": ["query"],
+            "optional_fields": ["db_driver", "database", "schedule", "timezone"],
+            "notes": "Deterministic execute_sql via the sql-mcp server.",
+        },
     }
     if not matched and job_type in _BUILTIN_FALLBACKS:
         matched = _BUILTIN_FALLBACKS[job_type]
