@@ -61,7 +61,6 @@ from prefab_ui.components import (
     Loader,
     Muted,
     P,
-    Page,
     RESULT,
     Row,
     STATE,
@@ -121,11 +120,12 @@ def _api_post(path: str, body: dict) -> Any:
 APP_STYLES = """
 :root { color-scheme: dark; }
 
-body {
+html, body, #root {
   background:
     radial-gradient(circle at 12% 12%, rgba(54, 255, 181, 0.22), transparent 26%),
     radial-gradient(circle at 88% 10%, rgba(86, 191, 255, 0.24), transparent 24%),
-    linear-gradient(180deg, #07110f 0%, #0c1717 36%, #111b1e 100%);
+    linear-gradient(180deg, #07110f 0%, #0c1717 36%, #111b1e 100%) !important;
+  color: #edf7f2;
 }
 
 .pf-app-root {
@@ -147,20 +147,27 @@ body {
 .pf-app-root textarea::placeholder { color: #93a7a0 !important; }
 .pf-app-root select option { color: #081111 !important; }
 
+.pf-app-root .designer-hero,
+.pf-app-root.designer-hero,
+.designer-hero.pf-card,
 .designer-hero {
   background:
     radial-gradient(circle at top left, rgba(82, 255, 173, 0.18), transparent 28%),
     radial-gradient(circle at bottom right, rgba(93, 162, 255, 0.16), transparent 34%),
-    linear-gradient(135deg, rgba(8, 18, 19, 0.96) 0%, rgba(15, 31, 30, 0.96) 52%, rgba(22, 46, 39, 0.96) 100%);
-  border: 1px solid rgba(112, 244, 191, 0.18);
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.38);
+    linear-gradient(135deg, rgba(8, 18, 19, 0.96) 0%, rgba(15, 31, 30, 0.96) 52%, rgba(22, 46, 39, 0.96) 100%) !important;
+  border: 1px solid rgba(112, 244, 191, 0.28) !important;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.38) !important;
+  color: #edf7f2 !important;
 }
 
+.pf-app-root .glass-card,
+.glass-card.pf-card,
 .glass-card {
-  background: linear-gradient(180deg, rgba(11, 24, 24, 0.88) 0%, rgba(14, 29, 29, 0.92) 100%);
-  border: 1px solid rgba(120, 245, 194, 0.14);
-  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.22);
+  background: linear-gradient(180deg, rgba(11, 24, 24, 0.92) 0%, rgba(14, 29, 29, 0.94) 100%) !important;
+  border: 1px solid rgba(120, 245, 194, 0.18) !important;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.28) !important;
   backdrop-filter: blur(14px);
+  color: #edf7f2 !important;
 }
 """
 
@@ -269,15 +276,39 @@ def _refresh_job_types_action() -> CallTool:
     )
 
 
-def _refresh_connectors_action() -> CallTool:
+def _refresh_connectors_action(*, set_loading: bool = True) -> CallTool:
+    on_success: list[Any] = [SetState("availableConnectors", RESULT.items)]
+    if set_loading:
+        on_success.append(SetState("loading", False))
+    on_error: list[Any] = [ShowToast(ERROR, variant="error")]
+    if set_loading:
+        on_error.append(SetState("loading", False))
+    # Don't filter by connector_type: most contracts allow several types, and
+    # the list_connectors API only accepts one — filtering would hide valid options.
     return CallTool(
         "list_connectors",
-        arguments={
-            "connector_type": STATE.selectedConnectorType,
-            "environment": STATE.environment,
-        },
+        arguments={"environment": STATE.environment},
+        on_success=on_success,
+        on_error=on_error,
+    )
+
+
+def _load_schema_action(job_type_expr: Any) -> CallTool:
+    """Fetch the form schema for the given job type, then refresh connectors.
+
+    `job_type_expr` is whatever the renderer should pass in — typically `EVENT`
+    (for a Select on_change) or `STATE.selectedJobType` (for a button).
+    """
+    return CallTool(
+        "get_form_schema",
+        arguments={"job_type": job_type_expr},
         on_success=[
-            SetState("availableConnectors", RESULT.items),
+            SetState("formSchema", RESULT),
+            SetState("selectedConnectorType", RESULT.connector_types[0]),
+            SetState("config", RESULT.defaults_config),
+            SetState("params", RESULT.defaults_params),
+            SetState("kind", RESULT.kind),
+            _refresh_connectors_action(set_loading=False),
             SetState("loading", False),
         ],
         on_error=[SetState("loading", False), ShowToast(ERROR, variant="error")],
@@ -330,9 +361,10 @@ def _trigger_run_action() -> CallTool:
 
 
 def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
-    job_type_action: CallTool | None = None
     refresh_types_action = _refresh_job_types_action()
     refresh_connectors_action = _refresh_connectors_action()
+    load_schema_on_change = _load_schema_action(EVENT)
+    load_schema_for_selected = _load_schema_action(STATE.selectedJobType)
     create_action = _create_job_action()
     run_action = _trigger_run_action()
     selected_job_type = initial_state.get("selectedJobType") or ""
@@ -347,8 +379,6 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
         )
 
     with Column(gap=5) as view:
-        Page("Control Center Job Designer")
-
         # ── Hero ─────────────────────────────────────────────────────────────
         with Card(css_class="designer-hero"):
             with CardHeader():
@@ -367,24 +397,8 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                             with Select(
                                 name="selectedJobType",
                                 value=selected_job_type,
-                                on_change=[
-                                    SetState("loading", True),
-                                    CallTool(
-                                        "open_job_designer",
-                                        arguments={
-                                            "job_type": EVENT,
-                                            "environment": STATE.environment,
-                                        },
-                                    ),
-                                ],
-                            ) as job_type_select:
-                                job_type_action = CallTool(
-                                    "open_job_designer",
-                                    arguments={
-                                        "job_type": job_type_select.rx,
-                                        "environment": STATE.environment,
-                                    },
-                                )
+                                on_change=[SetState("loading", True), load_schema_on_change],
+                            ):
                                 for jt in static_job_types:
                                     job_type = jt.get("type") or ""
                                     if not job_type:
@@ -413,13 +427,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                 value=selected_environment,
                                 on_change=[
                                     SetState("loading", True),
-                                    CallTool(
-                                        "open_job_designer",
-                                        arguments={
-                                            "job_type": STATE.selectedJobType,
-                                            "environment": EVENT,
-                                        },
-                                    ),
+                                    refresh_connectors_action,
                                 ],
                             ):
                                 for value, opt_label in _ENVIRONMENT_OPTIONS:
@@ -432,7 +440,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                     Button(
                         "Load schema",
                         variant="success",
-                        on_click=job_type_action,
+                        on_click=[SetState("loading", True), load_schema_for_selected],
                     )
                     _async_btn("Refresh job types", action=refresh_types_action, variant="outline")
                     _async_btn("Refresh connectors", action=refresh_connectors_action, variant="outline")
@@ -614,6 +622,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
         css_class="max-w-5xl px-4 py-6 md:px-6",
         stylesheets=[APP_STYLES],
         theme=Theme(mode="dark", gradient=False),
+        on_mount=_refresh_connectors_action(set_loading=False),
         view=view,
     )
 
