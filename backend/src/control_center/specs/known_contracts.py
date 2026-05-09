@@ -22,7 +22,10 @@ from .job_type import (
     JobTypeContract,
     RunFeatures,
 )
+from control_center.registry import RegistryManager
 
+
+registryManager = RegistryManager("dev")
 
 # ── SQL: deterministic execute_sql call against sql-mcp ──────────────────────
 
@@ -128,8 +131,7 @@ MCP_CONTRACT = JobTypeContract(
     requires=[
         ExecutionRequirement(
             surface_type=InteractionSurfaceType.MCP_SERVER,
-            # Empty names = agent picks at runtime via auto-selection.
-            names=[],
+            names=registryManager.get_available_servers_list(),
         ),
     ],
     features=RunFeatures(

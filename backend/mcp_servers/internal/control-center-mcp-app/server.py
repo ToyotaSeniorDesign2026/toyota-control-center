@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Literal
 
 import httpx
@@ -70,7 +71,7 @@ from prefab_ui.components import (
     Text,
     Textarea,
 )
-from prefab_ui.rx import ERROR
+from prefab_ui.rx import ERROR, EVENT
 from prefab_ui.themes import Theme
 
 from control_center.specs import KNOWN_CONTRACTS
@@ -88,6 +89,7 @@ APP_RESOURCE_DOMAIN = "https://control-center-job-creator.local"
 _API_BASE = os.environ.get("CC_API_BASE_URL", "http://localhost:8000").rstrip("/")
 _API_TOKEN = os.environ.get("CC_SERVICE_TOKEN", "")
 _HTTP_TIMEOUT = 30
+_TEMPLATE_EXPR_RE = re.compile(r"^\s*\{\{.*\}\}\s*$")
 
 
 # ── Backend HTTP helpers ─────────────────────────────────────────────────────
@@ -237,13 +239,19 @@ def _render_field_loop(state_root: str, fields_path: str) -> None:
                     )
 
 
-def _select_field(label: str, name: str, options: list[tuple[str, str]]) -> None:
+def _select_field(
+    label: str,
+    name: str,
+    options: list[tuple[str, str]],
+    *,
+    selected_value: str = "",
+) -> None:
     with Field():
         FieldTitle(label)
         with FieldContent():
-            with Select(name=name):
+            with Select(name=name, value=selected_value or None):
                 for value, opt_label in options:
-                    SelectOption(opt_label, value=value)
+                    SelectOption(opt_label, value=value, selected=value == selected_value)
 
 
 # ── Action factories ─────────────────────────────────────────────────────────
@@ -270,27 +278,6 @@ def _refresh_connectors_action() -> CallTool:
         },
         on_success=[
             SetState("availableConnectors", RESULT.items),
-            SetState("loading", False),
-        ],
-        on_error=[SetState("loading", False), ShowToast(ERROR, variant="error")],
-    )
-
-
-def _select_job_type_action() -> CallTool:
-    return CallTool(
-        "get_form_schema",
-        arguments={"job_type": STATE.selectedJobType},
-        on_success=[
-            SetState("formSchema", RESULT),
-            SetState("config", RESULT.defaults_config),
-            SetState("params", RESULT.defaults_params),
-            SetState("kind", RESULT.kind),
-            SetState("selectedConnector", ""),
-            SetState("availableConnectors", []),
-            SetState(
-                "selectedConnectorType",
-                RESULT.connector_types.first().default(STATE.selectedJobType),
-            ),
             SetState("loading", False),
         ],
         on_error=[SetState("loading", False), ShowToast(ERROR, variant="error")],
@@ -343,12 +330,13 @@ def _trigger_run_action() -> CallTool:
 
 
 def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
-    job_type_action = _select_job_type_action()
+    job_type_action: CallTool | None = None
     refresh_types_action = _refresh_job_types_action()
     refresh_connectors_action = _refresh_connectors_action()
     create_action = _create_job_action()
     run_action = _trigger_run_action()
     selected_job_type = initial_state.get("selectedJobType") or ""
+    selected_environment = initial_state.get("environment") or "dev"
     static_job_types = list(initial_state.get("availableJobTypes") or [])
 
     def _async_btn(label: str, *, action: object, variant: str = "secondary") -> None:
@@ -378,11 +366,25 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                         with FieldContent():
                             with Select(
                                 name="selectedJobType",
+                                value=selected_job_type,
                                 on_change=[
                                     SetState("loading", True),
-                                    job_type_action,
+                                    CallTool(
+                                        "open_job_designer",
+                                        arguments={
+                                            "job_type": EVENT,
+                                            "environment": STATE.environment,
+                                        },
+                                    ),
                                 ],
-                            ):
+                            ) as job_type_select:
+                                job_type_action = CallTool(
+                                    "open_job_designer",
+                                    arguments={
+                                        "job_type": job_type_select.rx,
+                                        "environment": STATE.environment,
+                                    },
+                                )
                                 for jt in static_job_types:
                                     job_type = jt.get("type") or ""
                                     if not job_type:
@@ -397,9 +399,41 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                         jt.display_name.default(jt.type),
                                         value=jt.type,
                                     )
-                    _select_field("Kind", "kind", _KIND_OPTIONS)
-                    _select_field("Environment", "environment", _ENVIRONMENT_OPTIONS)
+                    _select_field(
+                        "Kind",
+                        "kind",
+                        _KIND_OPTIONS,
+                        selected_value=initial_state.get("kind", ""),
+                    )
+                    with Field():
+                        FieldTitle("Environment")
+                        with FieldContent():
+                            with Select(
+                                name="environment",
+                                value=selected_environment,
+                                on_change=[
+                                    SetState("loading", True),
+                                    CallTool(
+                                        "open_job_designer",
+                                        arguments={
+                                            "job_type": STATE.selectedJobType,
+                                            "environment": EVENT,
+                                        },
+                                    ),
+                                ],
+                            ):
+                                for value, opt_label in _ENVIRONMENT_OPTIONS:
+                                    SelectOption(
+                                        opt_label,
+                                        value=value,
+                                        selected=value == selected_environment,
+                                    )
                 with Row(gap=2, css_class="flex-wrap"):
+                    Button(
+                        "Load schema",
+                        variant="success",
+                        on_click=job_type_action,
+                    )
                     _async_btn("Refresh job types", action=refresh_types_action, variant="outline")
                     _async_btn("Refresh connectors", action=refresh_connectors_action, variant="outline")
                     with If(STATE.loading):
@@ -411,14 +445,17 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
         with If(STATE.formSchema.type):
             with Card(css_class="glass-card"):
                 with CardHeader():
-                    CardTitle(STATE.formSchema.display_name.default(STATE.formSchema.type))
+                    CardTitle(STATE.formSchema.display_name)
                     with If(STATE.formSchema.description):
                         CardDescription(STATE.formSchema.description)
                 with CardContent():
                     with Column(gap=2):
-                        Small("Required config: " + STATE.formSchema.required_config.join(", ").default("—"))
-                        Small("Required params: " + STATE.formSchema.required_params.join(", ").default("—"))
-                        Small("Allowed connector types: " + STATE.formSchema.connector_types.join(", ").default("any"))
+                        Small("Required config")
+                        Muted(STATE.formSchema.required_config.join(", ").default("—"))
+                        Small("Required params")
+                        Muted(STATE.formSchema.required_params.join(", ").default("—"))
+                        Small("Allowed connector types")
+                        Muted(STATE.formSchema.connector_types.join(", ").default("any"))
 
         # ── Connector picker ─────────────────────────────────────────────────
         with Card(css_class="glass-card"):
@@ -468,7 +505,12 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                         FieldTitle("Name")
                         with FieldContent():
                             Input(name="jobName", placeholder="Daily users export")
-                    _select_field("Data sensitivity", "dataSensitivity", _SENSITIVITY_OPTIONS)
+                    _select_field(
+                        "Data sensitivity",
+                        "dataSensitivity",
+                        _SENSITIVITY_OPTIONS,
+                        selected_value=initial_state.get("dataSensitivity", "low"),
+                    )
                 with Field():
                     FieldTitle("Tags")
                     FieldDescription("Comma-separated labels.")
@@ -746,8 +788,36 @@ def _coerce_field_values(fields: list[dict], data: dict) -> dict:
     return out
 
 
+def _normalize_job_type(value: Any) -> str:
+    """Normalize tool/renderer job type inputs into known contract keys.
+
+    FastMCP dev and Prefab may pass tool args through JSON/text boundaries, so
+    tolerate quoted JSON strings. If a renderer sends an unresolved template
+    expression like "{{ selectedJobType }}", return "" so callers do not hit the
+    dynamic API fallback with template text.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        value = str(value)
+    text = value.strip()
+    if not text or _TEMPLATE_EXPR_RE.match(text):
+        return ""
+    try:
+        decoded = json.loads(text)
+    except json.JSONDecodeError:
+        decoded = text
+    if isinstance(decoded, str):
+        text = decoded.strip()
+    while len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        text = text[1:-1].strip()
+    if not text or _TEMPLATE_EXPR_RE.match(text):
+        return ""
+    return text.lower()
+
+
 def _contract_payload(job_type: str) -> dict[str, Any]:
-    contract = KNOWN_CONTRACTS.get((job_type or "").strip().lower())
+    contract = KNOWN_CONTRACTS.get(_normalize_job_type(job_type))
     if contract is None:
         return {}
     return contract.model_dump(mode="json")
@@ -759,7 +829,9 @@ def _static_form_schema(job_type: str) -> dict[str, Any]:
 
 
 def _schema_for_job_type(job_type: str, *, allow_api_fallback: bool = False) -> dict[str, Any]:
-    normalized = (job_type or "").strip().lower()
+    normalized = _normalize_job_type(job_type)
+    if not normalized:
+        return _form_schema_payload({})
     static_schema = _static_form_schema(normalized)
     if static_schema.get("type"):
         return static_schema
@@ -810,6 +882,14 @@ def _job_type_items(response: Any) -> list[dict[str, Any]]:
             value = response.get(key)
             if isinstance(value, list):
                 return [item for item in value if isinstance(item, dict)]
+        keyed_contracts: list[dict[str, Any]] = []
+        for key, value in response.items():
+            if not isinstance(value, dict):
+                continue
+            if not value.get("type"):
+                value = {**value, "type": key}
+            keyed_contracts.append(value)
+        return keyed_contracts
     return []
 
 
@@ -830,7 +910,8 @@ def build_server() -> FastMCP:
 
     bootstrap_types = _prefetch_job_types()
     logger.info("Bootstrapped %d job types into the designer", len(bootstrap_types))
-    blank_app = _build_app(_initial_state(job_types=bootstrap_types))
+    current_initial_state = _initial_state(job_types=bootstrap_types)
+    blank_app = _build_app(current_initial_state)
 
     @mcp.resource(
         APP_RESOURCE_URI,
@@ -846,40 +927,28 @@ def build_server() -> FastMCP:
         ),
     )
     def control_center_job_designer_resource() -> str:
-        return blank_app.html(tool_resolver=_resolve_prefab_tool)
+        return _build_app(current_initial_state).html(tool_resolver=_resolve_prefab_tool)
 
     @mcp.tool(
         name="open_job_designer",
         description=(
-            "Open the interactive Control Center job designer. The embedded app "
-            "starts from built-in static contracts; job_type is echoed for "
-            "text clients but does not mutate the static resource state."
+            "Open the interactive Control Center job designer. Optionally "
+            "preselects a job type."
         ),
-        app=AppConfig(
-            resource_uri=APP_RESOURCE_URI,
-            prefers_border=True,
-        ),
+        app=True,
     )
     def open_job_designer(
         job_type: str = "",
         environment: Literal["dev", "semi-prod", "prod"] = "dev",
-    ) -> dict[str, Any]:
-        form_schema_payload: dict = {}
-        if job_type:
-            form_schema_payload = _schema_for_job_type(job_type, allow_api_fallback=True)
-
-        return {
-            "status": "opened",
-            "message": (
-                f"Job designer opened. Requested type '{job_type}' is available in the returned metadata."
-                if job_type
-                else "Job designer opened."
-            ),
-            "job_types": _static_job_types(),
-            "dynamic_job_types": [],
-            "form_schema": form_schema_payload,
-            "environment": environment,
-        }
+    ) -> PrefabApp:
+        nonlocal current_initial_state
+        normalized_job_type = _normalize_job_type(job_type) or "mcp"
+        current_initial_state = _initial_state(
+            job_types=bootstrap_types,
+            selected_type=normalized_job_type,
+            environment=environment,
+        )
+        return _build_app(current_initial_state)
 
     @mcp.tool(
         name="list_job_types",
@@ -904,7 +973,7 @@ def build_server() -> FastMCP:
         ),
     )
     def get_form_schema(job_type: str) -> dict[str, Any]:
-        normalized = (job_type or "").strip().lower()
+        normalized = _normalize_job_type(job_type)
         if not normalized:
             return _form_schema_payload({})
         return _schema_for_job_type(normalized, allow_api_fallback=True)
@@ -966,7 +1035,8 @@ def build_server() -> FastMCP:
     ) -> dict[str, Any]:
         if not name or not name.strip():
             raise ValueError("Job name is required.")
-        if not type or not type.strip():
+        normalized_type = _normalize_job_type(type)
+        if not normalized_type:
             raise ValueError("Job type is required — pick one from the job-type selector.")
         if not connector or not connector.strip():
             raise ValueError("Connector is required.")
@@ -974,7 +1044,7 @@ def build_server() -> FastMCP:
         merged_tags = list(tags or []) + _split_tags(tags_text)
 
         try:
-            schema = _schema_for_job_type(type, allow_api_fallback=True)
+            schema = _schema_for_job_type(normalized_type, allow_api_fallback=True)
             config = _coerce_field_values(schema["config_fields"], config or {})
         except Exception as exc:
             logger.warning("create_job: schema coercion skipped, sending raw config: %s", exc)
@@ -983,7 +1053,7 @@ def build_server() -> FastMCP:
         body = {
             "name": name.strip(),
             "kind": kind,
-            "type": type.strip().lower(),
+            "type": normalized_type,
             "connector": connector.strip(),
             "environment": environment,
             "config": config,

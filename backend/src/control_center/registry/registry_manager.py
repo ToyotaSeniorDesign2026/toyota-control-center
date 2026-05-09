@@ -105,7 +105,6 @@ class Registry(BaseModel):
 
     config_types: dict[str, ConfigTypeDef]
     environments: dict[str, EnvironmentDef]
-    universal_job_fields: dict[str, Any] = Field(default_factory=dict)
     approved_servers: dict[str, ApprovedServerDef]
     universal_job_fields: dict[str, Any] | None = None
 
