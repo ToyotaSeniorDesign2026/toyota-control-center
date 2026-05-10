@@ -33,7 +33,7 @@ from fastmcp.apps import AppConfig, ResourceCSP
 from prefab_ui import PrefabApp
 from prefab_ui.app import ResolvedTool
 from prefab_ui.actions import AppendState, PopState, SetState, ShowToast
-from prefab_ui.actions.mcp import CallTool, RequestDisplayMode
+from prefab_ui.actions.mcp import CallTool, RequestDisplayMode, SendMessage, UpdateContext
 from prefab_ui.components import (
     Alert,
     Badge,
@@ -319,15 +319,20 @@ def _select_field(
 
 # ── Action factories ─────────────────────────────────────────────────────────
 
-def _refresh_job_types_action() -> CallTool:
+def _refresh_job_types_action(*, set_loading: bool = True) -> CallTool:
+    on_success: list[Any] = [
+        SetState("availableJobTypes", RESULT.items),
+        SetState("apiJobTypes", RESULT.dynamic_items),
+    ]
+    if set_loading:
+        on_success.append(SetState("loading", False))
+    on_error: list[Any] = [ShowToast(ERROR, variant="error")]
+    if set_loading:
+        on_error.insert(0, SetState("loading", False))
     return CallTool(
         "list_job_types",
-        on_success=[
-            SetState("availableJobTypes", RESULT.items),
-            SetState("apiJobTypes", RESULT.dynamic_items),
-            SetState("loading", False),
-        ],
-        on_error=[SetState("loading", False), ShowToast(ERROR, variant="error")],
+        on_success=on_success,
+        on_error=on_error,
     )
 
 
@@ -420,12 +425,54 @@ def _trigger_run_action(*, environment_expr: Any | None = None) -> CallTool:
     )
 
 
+def _ai_context_payload(environment_expr: Any) -> dict[str, Any]:
+    return {
+        "control_center_job_designer": {
+            "selected_job_type": "{{ selectedJobType | ''}}",
+            "environment": environment_expr,
+            "job_name": "{{ jobName | ''}}",
+            "data_sensitivity": "{{ dataSensitivity | 'Unknown'}}",
+            "tags": "{{ tagsText | ''}}",
+            "selected_connectors": "{{ selected_connectors | ''}}",
+            "manual_connector": "{{ manual_connector | ''}}",
+            "config": "{{ config | ''}}",
+            "run_params": "{{ params | ''}}",
+            "schema": {
+                "type": STATE.formSchema.type,
+                "display_name": STATE.formSchema.display_name,
+                "required_config": STATE.formSchema.required_config,
+                "required_params": STATE.formSchema.required_params,
+                "connector_types": STATE.formSchema.connector_types,
+            }
+        }
+    }
+
+
+def _update_ai_context_action(environment_expr: Any) -> list[Any]:
+    return [
+        UpdateContext(structured_content=_ai_context_payload(environment_expr)),
+        ShowToast("AI context updated.", variant="success"),
+    ]
+
+
+def _review_setup_action(environment_expr: Any) -> list[Any]:
+    return [
+        UpdateContext(structured_content=_ai_context_payload(environment_expr)),
+        SendMessage(
+            "Please review the current Control Center job setup for job type "
+            "{{ selectedJobType || 'none selected' }} in "
+            f"{environment_expr}. Check connectors, required config, and missing fields "
+            "before I create it."
+        ),
+    ]
+
+
 def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
     selected_job_type = initial_state.get("selectedJobType") or ""
     selected_environment = initial_state.get("environment") or "dev"
     selected_job_type_ref = Rx("selectedJobType")
     environment_ref = f"{{{{ environment | '{selected_environment}' }}}}"
-    refresh_types_action = _refresh_job_types_action()
+    refresh_types_action = _refresh_job_types_action(set_loading=False)
     refresh_connectors_action = _refresh_connectors_action(
         job_type_expr=selected_job_type_ref,
         environment_expr=environment_ref,
@@ -435,9 +482,10 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
         environment_expr=EVENT,
     )
     load_schema_on_change = _load_schema_action(EVENT)
-    load_schema_for_selected = _load_schema_action(selected_job_type_ref)
     create_action = _create_job_action(environment_expr=environment_ref)
     run_action = _trigger_run_action(environment_expr=environment_ref)
+    update_ai_context_action = _update_ai_context_action(environment_ref)
+    review_setup_action = _review_setup_action(environment_ref)
     static_job_types = list(initial_state.get("availableJobTypes") or [])
 
     def _async_btn(label: str, *, action: object, variant: str = "secondary") -> None:
@@ -507,12 +555,19 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                         )
                     with Row(gap=3, css_class="flex-wrap pt-1"):
                         Button(
-                            "Load schema",
+                            "Update AI context",
                             variant="success",
-                            on_click=[SetState("loading", True), load_schema_for_selected],
+                            on_click=update_ai_context_action,
                         )
-                        _async_btn("Refresh job types", action=refresh_types_action, variant="outline")
-                        _async_btn("Refresh connectors", action=refresh_connectors_action, variant="outline")
+                        Button(
+                            "Refresh data",
+                            variant="outline",
+                            on_click=[
+                                SetState("loading", True),
+                                refresh_types_action,
+                                refresh_connectors_action,
+                            ],
+                        )
                         with If(STATE.loading):
                             with Row(gap=2, align="center"):
                                 Loader(variant="spin", size="sm")
@@ -649,6 +704,11 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                     _async_btn("Create job", action=create_action, variant="success")
                     with If(STATE.createdJob.id):
                         _async_btn("Trigger run", action=run_action, variant="success")
+                    Button(
+                        "Get AI feedback",
+                        variant="outline",
+                        on_click=review_setup_action,
+                    )
                     Button(
                         "Reset form",
                         variant="outline",
