@@ -82,8 +82,11 @@ class AccessPolicy(BaseModel):
         raise ValueError(f"Unknown access policy mode: {self.mode}")
 
 
+DEFAULT_APPROVAL_REQUIRED_ENVS: list[Environment] = ["prod"]
+
+
 class EnvironmentPolicy(BaseModel):
-    approval_required_in: list[Environment] = Field(default_factory=lambda: ["prod"])
+    approval_required_in: list[Environment] = Field(default_factory=lambda: list(DEFAULT_APPROVAL_REQUIRED_ENVS))
     blocked_in: list[Environment] = Field(default_factory=list)
 
 
@@ -148,13 +151,13 @@ class ExecutionRequirement(BaseModel):
     extensions: dict[str, Any] = Field(default_factory=dict)
 
 
-ArtifactBackend = Literal["github", "s3", "local", "gcs", "blob", "snowflake", "memory"]
-
-
 class VersioningPolicy(BaseModel):
     strategy: Literal["overwrite", "append_version", "snapshot", "partition"] = "append_version"
     version_format: Literal["semver", "timestamp", "run_id", "sequence"] = "timestamp"
     keep_last: int | None = None
+
+
+ArtifactBackend = Literal["github", "s3", "local", "gcs", "blob", "snowflake", "memory"]
 
 
 class ArtifactSpec(BaseModel):
@@ -270,10 +273,7 @@ class JobTypeContract(BaseModel):
     domain: str | None = None  # Visibility scope. None = global, otherwise restricted to that domain
 
     def form_schema(self) -> dict:
-        """Return a UI-renderable form schema derived from config.fields + params.fields.
-
-        This is what MCP App integrations will call to render a dynamic job creation form.
-        """
+        """Return a frontend UI-renderable form schema derived from config.fields + params.fields."""
         config_fields = [f.model_dump() for f in self.config.fields.values()]
         params_fields = [f.model_dump() for f in self.params.fields.values()]
         return {

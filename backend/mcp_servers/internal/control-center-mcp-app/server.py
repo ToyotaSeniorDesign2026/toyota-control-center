@@ -69,7 +69,7 @@ from prefab_ui.components import (
     Text,
     Textarea,
 )
-from prefab_ui.rx import ERROR, EVENT
+from prefab_ui.rx import ERROR, EVENT, Rx
 from prefab_ui.themes import Theme
 
 from control_center.specs import KNOWN_CONTRACTS
@@ -294,7 +294,9 @@ def _load_schema_action(job_type_expr: Any) -> CallTool:
     """Fetch the form schema for the given job type, then refresh connectors.
 
     `job_type_expr` is whatever the renderer should pass in — typically `EVENT`
-    (for a Select on_change) or `STATE.selectedJobType` (for a button).
+    (for a Select on_change) or a selectedJobType state reference (for a button).
+    Connector options are populated from the schema payload here; explicit
+    connector refreshes still call the backend connector API.
     """
     return CallTool(
         "get_form_schema",
@@ -305,21 +307,21 @@ def _load_schema_action(job_type_expr: Any) -> CallTool:
             SetState("params", RESULT.defaults_params),
             SetState("selectedConnector", ""),
             SetState("connectorText", ""),
-            _refresh_connectors_action(job_type_expr=job_type_expr, set_loading=False),
+            SetState("availableConnectors", RESULT.connector_items),
             SetState("loading", False),
         ],
         on_error=[SetState("loading", False), ShowToast(ERROR, variant="error")],
     )
 
 
-def _create_job_action() -> CallTool:
+def _create_job_action(*, environment_expr: Any | None = None) -> CallTool:
     return CallTool(
         "create_job",
         arguments={
             "name": STATE.jobName,
             "type": STATE.selectedJobType,
             "connector": STATE.selectedConnector.default(STATE.connectorText),
-            "environment": STATE.environment,
+            "environment": environment_expr if environment_expr is not None else STATE.environment,
             "config": STATE.config,
             "data_sensitivity": STATE.dataSensitivity,
             "tags_text": STATE.tagsText,
@@ -334,13 +336,13 @@ def _create_job_action() -> CallTool:
     )
 
 
-def _trigger_run_action() -> CallTool:
+def _trigger_run_action(*, environment_expr: Any | None = None) -> CallTool:
     return CallTool(
         "trigger_run",
         arguments={
             "job_id": STATE.createdJob.id,
             "action": "run",
-            "target_environment": STATE.environment,
+            "target_environment": environment_expr if environment_expr is not None else STATE.environment,
             "params": STATE.params,
             "prompt": STATE.runPrompt,
         },
@@ -353,18 +355,24 @@ def _trigger_run_action() -> CallTool:
     )
 
 
-# ── App builder ──────────────────────────────────────────────────────────────
-
 def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
-    refresh_types_action = _refresh_job_types_action()
-    refresh_connectors_action = _refresh_connectors_action()
-    refresh_connectors_on_environment_change = _refresh_connectors_action(environment_expr=EVENT)
-    load_schema_on_change = _load_schema_action(EVENT)
-    load_schema_for_selected = _load_schema_action(STATE.selectedJobType)
-    create_action = _create_job_action()
-    run_action = _trigger_run_action()
     selected_job_type = initial_state.get("selectedJobType") or ""
     selected_environment = initial_state.get("environment") or "dev"
+    selected_job_type_ref = Rx("selectedJobType")
+    environment_ref = f"{{{{ environment | '{selected_environment}' }}}}"
+    refresh_types_action = _refresh_job_types_action()
+    refresh_connectors_action = _refresh_connectors_action(
+        job_type_expr=selected_job_type_ref,
+        environment_expr=environment_ref,
+    )
+    refresh_connectors_on_environment_change = _refresh_connectors_action(
+        job_type_expr=selected_job_type_ref,
+        environment_expr=EVENT,
+    )
+    load_schema_on_change = _load_schema_action(EVENT)
+    load_schema_for_selected = _load_schema_action(selected_job_type_ref)
+    create_action = _create_job_action(environment_expr=environment_ref)
+    run_action = _trigger_run_action(environment_expr=environment_ref)
     static_job_types = list(initial_state.get("availableJobTypes") or [])
 
     def _async_btn(label: str, *, action: object, variant: str = "secondary") -> None:
@@ -393,7 +401,11 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                             with Select(
                                 name="selectedJobType",
                                 value=selected_job_type,
-                                on_change=[SetState("loading", True), load_schema_on_change],
+                                on_change=[
+                                    SetState("selectedJobType", EVENT),
+                                    SetState("loading", True),
+                                    load_schema_on_change,
+                                ],
                             ):
                                 for jt in static_job_types:
                                     job_type = jt.get("type") or ""
@@ -416,6 +428,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                 name="environment",
                                 value=selected_environment,
                                 on_change=[
+                                    SetState("environment", EVENT),
                                     SetState("loading", True),
                                     refresh_connectors_on_environment_change,
                                 ],
@@ -609,7 +622,6 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
         css_class="max-w-5xl px-4 py-6 md:px-6",
         stylesheets=[APP_STYLES],
         theme=Theme(mode="dark", gradient=False),
-        on_mount=_refresh_connectors_action(set_loading=False),
         view=view,
     )
 
@@ -626,7 +638,7 @@ def _initial_state(
     states = {
         "availableJobTypes": available_job_types,
         "apiJobTypes": [],
-        "availableConnectors": [],
+        "availableConnectors": selected_schema.get("connector_items", []),
         "selectedJobType": selected_type or "",
         "selectedConnector": "",
         "connectorText": "",
@@ -704,6 +716,7 @@ def _form_schema_payload(contract_schema: dict) -> dict:
 
     config_fields = _field_list(contract_schema, "config")
     params_fields = _field_list(contract_schema, "params")
+    connector_types = _extract_connector_types(contract_schema)
 
     def _defaults(fields: list[dict]) -> dict:
         out: dict[str, Any] = {}
@@ -724,7 +737,8 @@ def _form_schema_payload(contract_schema: dict) -> dict:
         "optional_config": _optional(contract_schema, "config"),
         "required_params": _required(contract_schema, "params"),
         "optional_params": _optional(contract_schema, "params"),
-        "connector_types": _extract_connector_types(contract_schema),
+        "connector_types": connector_types,
+        "connector_items": _connector_items_for_types(connector_types),
         "defaults_config": _defaults(config_fields),
         "defaults_params": _defaults(params_fields),
     }
@@ -805,37 +819,26 @@ def _normalize_job_type(value: Any) -> str:
     return text.lower()
 
 
-def _looks_like_template(value: Any) -> bool:
-    if value is None:
-        return False
-    if not isinstance(value, str):
-        value = str(value)
-    text = value.strip()
-    if _TEMPLATE_EXPR_RE.match(text):
-        return True
-    try:
-        decoded = json.loads(text)
-    except json.JSONDecodeError:
-        return False
-    return isinstance(decoded, str) and bool(_TEMPLATE_EXPR_RE.match(decoded.strip()))
-
-
 def _normalize_environment(value: Any, *, default: str = "") -> str:
     if value is None:
         return default
     if not isinstance(value, str):
         value = str(value)
     text = value.strip()
-    if not text or _TEMPLATE_EXPR_RE.match(text):
+    if not text:
         return default
+    if _TEMPLATE_EXPR_RE.match(text):
+        return ""
     try:
         decoded = json.loads(text)
     except json.JSONDecodeError:
         decoded = text
     if isinstance(decoded, str):
         text = decoded.strip()
-    if not text or _TEMPLATE_EXPR_RE.match(text):
+    if not text:
         return default
+    if _TEMPLATE_EXPR_RE.match(text):
+        return ""
     return text
 
 
@@ -965,11 +968,8 @@ def build_server() -> FastMCP:
         environment: str = "dev",
     ) -> dict[str, Any]:
         nonlocal current_initial_state
-        normalized_job_type = _normalize_job_type(job_type) or "mcp"
-        normalized_environment = _normalize_environment(
-            environment,
-            default="dev" if _looks_like_template(environment) else "dev",
-        )
+        normalized_job_type = _normalize_job_type(job_type)
+        normalized_environment = _normalize_environment(environment, default="dev") or "dev"
         current_initial_state = _initial_state(
             job_types=bootstrap_types,
             selected_type=normalized_job_type,
@@ -1022,18 +1022,16 @@ def build_server() -> FastMCP:
         connector_types: list[str] | None = None,
         environment: str = "",
     ) -> dict[str, Any]:
+        print(f"list_connectors called with job_type={job_type}, connector_type={connector_type}, "f"connector_types={connector_types}, environment={environment}")
         normalized_job_type = _normalize_job_type(job_type)
-        if not normalized_job_type and _looks_like_template(job_type):
-            normalized_job_type = "mcp"
         allowed_connector_types = _connector_types_for_job_type_or_values(
             job_type=normalized_job_type,
             connector_types=connector_types,
             connector_type=connector_type,
         )
-        normalized_environment = _normalize_environment(
-            environment,
-            default="dev" if _looks_like_template(environment) else "",
-        )
+        normalized_environment = _normalize_environment(environment)
+        if not allowed_connector_types:
+            return {"items": []}
         params: dict[str, str] = {}
         if len(allowed_connector_types) == 1:
             params["connector_type"] = allowed_connector_types[0]
@@ -1099,10 +1097,9 @@ def build_server() -> FastMCP:
             raise ValueError("Job type is required — pick one from the job-type selector.")
         if not connector or not connector.strip():
             raise ValueError("Connector is required.")
-        normalized_environment = _normalize_environment(
-            environment,
-            default="dev" if _looks_like_template(environment) else "dev",
-        )
+        normalized_environment = _normalize_environment(environment, default="dev")
+        if not normalized_environment:
+            raise ValueError("Environment is required — pick one from the environment selector.")
 
         merged_tags = list(tags or []) + _split_tags(tags_text)
 
@@ -1148,12 +1145,11 @@ def build_server() -> FastMCP:
 
         body: dict[str, Any] = {
             "action": action,
-            "target_environment": _normalize_environment(
-                target_environment,
-                default="dev" if _looks_like_template(target_environment) else "dev",
-            ),
+            "target_environment": _normalize_environment(target_environment, default="dev"),
             "params": params,
         }
+        if not body["target_environment"]:
+            raise ValueError("Target environment is required.")
         if prompt and prompt.strip():
             body["prompt"] = prompt.strip()
         return _api_post(f"/jobs/{job_id}/runs", body)
@@ -1240,6 +1236,26 @@ def _connector_value(connector: dict[str, Any]) -> str:
         if value:
             return str(value)
     return ""
+
+
+def _connector_items_for_types(
+    connector_types: list[str],
+    environment: str = "",
+) -> list[dict[str, Any]]:
+    """Build UI-ready connector options from contract-declared connector names."""
+    return [
+        {
+            "id": c.get("id"),
+            "name": c.get("name"),
+            "connector_type": c.get("connector_type"),
+            "environment": c.get("environment"),
+            "status": c.get("status"),
+            "is_shared": c.get("is_shared", False),
+            "label": _connector_label(c),
+            "value": _connector_value(c),
+        }
+        for c in _merge_connector_items([], connector_types, environment)
+    ]
 
 
 def _merge_connector_items(
