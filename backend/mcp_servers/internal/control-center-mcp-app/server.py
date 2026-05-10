@@ -46,6 +46,8 @@ from prefab_ui.components import (
     CardTitle,
     Checkbox,
     Column,
+    Combobox,
+    ComboboxOption,
     Elif,
     Else,
     Field,
@@ -236,6 +238,39 @@ def _render_field_loop(state_root: str, fields_path: str) -> None:
                         name=f"{state_root}.{field.name}",
                         placeholder=field.placeholder,
                     )
+
+
+MAX_CONNECTOR_OPTIONS = 10
+
+
+def _render_connector_combobox(option_count: int) -> None:
+    """Render one Combobox with direct ComboboxOption children only."""
+    with Combobox(name="selectedConnector", placeholder="Add a connector..."):
+        for i in range(option_count):
+            ComboboxOption(
+                label=f"{{{{ availableConnectors.{i}.label }}}}",
+                value=f"{{{{ availableConnectors.{i}.value }}}}",
+            )
+
+
+def _render_connectors_combobox() -> None:
+    """Render a connector Combobox whose direct option count matches state length.
+
+    Combobox does not materialize options produced by ForEach/If children. The
+    Condition must wrap the whole Combobox, not individual options.
+    """
+    with If(STATE.availableConnectors.length() == 1):
+        _render_connector_combobox(1)
+    for count in range(2, MAX_CONNECTOR_OPTIONS + 1):
+        with Elif(STATE.availableConnectors.length() == count):
+            _render_connector_combobox(count)
+    with Elif(STATE.availableConnectors.length() > MAX_CONNECTOR_OPTIONS):
+        _render_connector_combobox(MAX_CONNECTOR_OPTIONS)
+        Alert(
+            variant="warning",
+            title="Connector list truncated",
+            description=f"Showing the first {MAX_CONNECTOR_OPTIONS} connector options.",
+        )
 
 
 def _select_field(
@@ -467,22 +502,16 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
         # ── Connector picker ─────────────────────────────────────────────────
         with Card(css_class="glass-card"):
             with CardHeader():
-                CardTitle("Connector")
+                CardTitle("Connectors")
                 CardDescription(
                     "Existing connectors filtered by the selected job type's required connector type."
                 )
             with CardContent():
                 with Column(gap=3):
                     with If(STATE.availableConnectors.length() > 0):
-                        with Field():
-                            FieldTitle("Use existing connector")
-                            with FieldContent():
-                                with Select(name="selectedConnector"):
-                                    with ForEach("availableConnectors") as conn:
-                                        SelectOption(
-                                            conn.label,
-                                            value=conn.value,
-                                        )
+                        with Row(gap=2):
+                            _render_connectors_combobox()
+                            Button("Add")
                     with Else():
                         Alert(
                             variant="info",
@@ -1022,7 +1051,6 @@ def build_server() -> FastMCP:
         connector_types: list[str] | None = None,
         environment: str = "",
     ) -> dict[str, Any]:
-        print(f"list_connectors called with job_type={job_type}, connector_type={connector_type}, "f"connector_types={connector_types}, environment={environment}")
         normalized_job_type = _normalize_job_type(job_type)
         allowed_connector_types = _connector_types_for_job_type_or_values(
             job_type=normalized_job_type,
@@ -1245,13 +1273,7 @@ def _connector_items_for_types(
     """Build UI-ready connector options from contract-declared connector names."""
     return [
         {
-            "id": c.get("id"),
-            "name": c.get("name"),
-            "connector_type": c.get("connector_type"),
-            "environment": c.get("environment"),
-            "status": c.get("status"),
-            "is_shared": c.get("is_shared", False),
-            "label": _connector_label(c),
+            "label": _connector_value(c),
             "value": _connector_value(c),
         }
         for c in _merge_connector_items([], connector_types, environment)
