@@ -419,7 +419,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
             on_click=[SetState("loading", True), action],
         )
 
-    with Column(gap=5) as view:
+    with Column(gap=4) as view:
         # ── Hero ─────────────────────────────────────────────────────────────
         with Card(css_class="designer-hero"):
             with CardHeader():
@@ -431,63 +431,64 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                         "selected contract."
                     )
             with CardContent():
-                with Grid(columns={"md": 3}, gap=4):
-                    with Field():
-                        FieldTitle("Job type")
-                        with FieldContent():
-                            with Select(
-                                name="selectedJobType",
-                                value=selected_job_type,
-                                on_change=[
-                                    SetState("selectedJobType", EVENT),
-                                    SetState("loading", True),
-                                    load_schema_on_change,
-                                ],
-                            ):
-                                for jt in static_job_types:
-                                    job_type = jt.get("type") or ""
-                                    if not job_type:
-                                        continue
-                                    SelectOption(
-                                        jt.get("display_name") or job_type,
-                                        value=job_type,
-                                        selected=job_type == selected_job_type,
-                                    )
-                                with ForEach("apiJobTypes") as jt:
-                                    SelectOption(
-                                        jt.display_name.default(jt.type),
-                                        value=jt.type,
-                                    )
-                    with Field():
-                        FieldTitle("Environment")
-                        with FieldContent():
-                            with Select(
-                                name="environment",
-                                value=selected_environment,
-                                on_change=[
-                                    SetState("environment", EVENT),
-                                    SetState("loading", True),
-                                    refresh_connectors_on_environment_change,
-                                ],
-                            ):
-                                for value, opt_label in _ENVIRONMENT_OPTIONS:
-                                    SelectOption(
-                                        opt_label,
-                                        value=value,
-                                        selected=value == selected_environment,
-                                    )
-                with Row(gap=2, css_class="flex-wrap"):
-                    Button(
-                        "Load schema",
-                        variant="success",
-                        on_click=[SetState("loading", True), load_schema_for_selected],
-                    )
-                    _async_btn("Refresh job types", action=refresh_types_action, variant="outline")
-                    _async_btn("Refresh connectors", action=refresh_connectors_action, variant="outline")
-                    with If(STATE.loading):
-                        with Row(gap=2, align="center"):
-                            Loader(variant="spin", size="sm")
-                            Muted("Working…")
+                with Column(gap=3):
+                    with Grid(columns={"md": 3}, gap=4):
+                        with Field():
+                            FieldTitle("Job type")
+                            with FieldContent():
+                                with Select(
+                                    name="selectedJobType",
+                                    value=selected_job_type,
+                                    on_change=[
+                                        SetState("selectedJobType", EVENT),
+                                        SetState("loading", True),
+                                        load_schema_on_change,
+                                    ],
+                                ):
+                                    for jt in static_job_types:
+                                        job_type = jt.get("type") or ""
+                                        if not job_type:
+                                            continue
+                                        SelectOption(
+                                            jt.get("display_name") or job_type,
+                                            value=job_type,
+                                            selected=job_type == selected_job_type,
+                                        )
+                                    with ForEach("apiJobTypes") as jt:
+                                        SelectOption(
+                                            jt.display_name.default(jt.type),
+                                            value=jt.type,
+                                        )
+                        with Field():
+                            FieldTitle("Environment")
+                            with FieldContent():
+                                with Select(
+                                    name="environment",
+                                    value=selected_environment,
+                                    on_change=[
+                                        SetState("environment", EVENT),
+                                        SetState("loading", True),
+                                        refresh_connectors_on_environment_change,
+                                    ],
+                                ):
+                                    for value, opt_label in _ENVIRONMENT_OPTIONS:
+                                        SelectOption(
+                                            opt_label,
+                                            value=value,
+                                            selected=value == selected_environment,
+                                        )
+                    with Row(gap=3, css_class="flex-wrap pt-1"):
+                        Button(
+                            "Load schema",
+                            variant="success",
+                            on_click=[SetState("loading", True), load_schema_for_selected],
+                        )
+                        _async_btn("Refresh job types", action=refresh_types_action, variant="outline")
+                        _async_btn("Refresh connectors", action=refresh_connectors_action, variant="outline")
+                        with If(STATE.loading):
+                            with Row(gap=2, align="center"):
+                                Loader(variant="spin", size="sm")
+                                Muted("Working…")
 
         # ── Job type contract summary ────────────────────────────────────────
         with If(STATE.formSchema.type):
@@ -560,22 +561,23 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
             with CardHeader():
                 CardTitle("Job basics")
             with CardContent():
-                with Grid(columns={"md": 2}, gap=4):
+                with Column(gap=5):
+                    with Grid(columns={"md": 2}, gap=5):
+                        with Field():
+                            FieldTitle("Name")
+                            with FieldContent():
+                                Input(name="jobName", placeholder="Daily users export")
+                        _select_field(
+                            "Data sensitivity",
+                            "dataSensitivity",
+                            _SENSITIVITY_OPTIONS,
+                            selected_value=initial_state.get("dataSensitivity", "low"),
+                        )
                     with Field():
-                        FieldTitle("Name")
+                        FieldTitle("Tags")
+                        FieldDescription("Comma-separated labels.")
                         with FieldContent():
-                            Input(name="jobName", placeholder="Daily users export")
-                    _select_field(
-                        "Data sensitivity",
-                        "dataSensitivity",
-                        _SENSITIVITY_OPTIONS,
-                        selected_value=initial_state.get("dataSensitivity", "low"),
-                    )
-                with Field():
-                    FieldTitle("Tags")
-                    FieldDescription("Comma-separated labels.")
-                    with FieldContent():
-                        Input(name="tagsText", placeholder="finance, daily")
+                            Input(name="tagsText", placeholder="finance, daily")
 
         # ── Dynamic config form (driven by the selected JobTypeContract) ─────
         with If(STATE.formSchema.config_fields.length() > 0):
