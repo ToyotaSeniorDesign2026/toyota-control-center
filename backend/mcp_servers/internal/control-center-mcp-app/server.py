@@ -944,12 +944,18 @@ def build_server() -> FastMCP:
             "Open the interactive Control Center job designer. Optionally "
             "preselects a job type."
         ),
-        app=True,
+        # Route the host to our resource HTML (carrying stylesheets= and the
+        # baked-in initial wire data) instead of the shared Prefab renderer
+        # iframe — `app=True` would skip our HTML and our custom CSS with it.
+        app=AppConfig(
+            resource_uri=APP_RESOURCE_URI,
+            prefers_border=True,
+        ),
     )
     def open_job_designer(
         job_type: str = "",
         environment: Literal["dev", "semi-prod", "prod"] = "dev",
-    ) -> PrefabApp:
+    ) -> dict[str, Any]:
         nonlocal current_initial_state
         normalized_job_type = _normalize_job_type(job_type) or "mcp"
         current_initial_state = _initial_state(
@@ -957,7 +963,11 @@ def build_server() -> FastMCP:
             selected_type=normalized_job_type,
             environment=environment,
         )
-        return _build_app(current_initial_state)
+        return {
+            "status": "opened",
+            "selectedJobType": current_initial_state["selectedJobType"],
+            "environment": current_initial_state["environment"],
+        }
 
     @mcp.tool(
         name="list_job_types",
