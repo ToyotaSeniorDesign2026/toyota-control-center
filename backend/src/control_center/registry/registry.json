@@ -56,8 +56,7 @@
       "config_type": "standard",
       "version": "1.0",
       "tags": ["internal", "control-center", "orchestration", "ui", "app", "mcp-app"],
-      "active": true,
-      "job_type": "mcp"
+      "active": true
     },
 
     "arxiv-research": {

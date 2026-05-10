@@ -57,7 +57,6 @@ from prefab_ui.components import (
     H1,
     If,
     Input,
-    Label,
     Loader,
     Muted,
     P,
@@ -92,7 +91,6 @@ _TEMPLATE_EXPR_RE = re.compile(r"^\s*\{\{.*\}\}\s*$")
 
 
 # ── Backend HTTP helpers ─────────────────────────────────────────────────────
-
 
 def _headers() -> dict[str, str]:
     h = {"Content-Type": "application/json"}
@@ -183,14 +181,8 @@ _SENSITIVITY_OPTIONS: list[tuple[str, str]] = [
     ("high", "High"),
 ]
 
-_KIND_OPTIONS: list[tuple[str, str]] = [
-    ("runtime", "Runtime"),
-    ("artifact", "Artifact"),
-]
-
 
 # ── Dynamic form rendering ───────────────────────────────────────────────────
-
 
 def _render_field_loop(state_root: str, fields_path: str) -> None:
     """Render a list of FieldSpec entries as a dynamic form.
@@ -263,7 +255,6 @@ def _select_field(
 
 # ── Action factories ─────────────────────────────────────────────────────────
 
-
 def _refresh_job_types_action() -> CallTool:
     return CallTool(
         "list_job_types",
@@ -310,10 +301,8 @@ def _load_schema_action(job_type_expr: Any) -> CallTool:
         arguments={"job_type": job_type_expr},
         on_success=[
             SetState("formSchema", RESULT),
-            SetState("selectedConnectorType", RESULT.connector_types.first().default("")),
             SetState("config", RESULT.defaults_config),
             SetState("params", RESULT.defaults_params),
-            SetState("kind", RESULT.kind),
             SetState("selectedConnector", ""),
             SetState("connectorText", ""),
             _refresh_connectors_action(job_type_expr=job_type_expr, set_loading=False),
@@ -328,7 +317,6 @@ def _create_job_action() -> CallTool:
         "create_job",
         arguments={
             "name": STATE.jobName,
-            "kind": STATE.kind,
             "type": STATE.selectedJobType,
             "connector": STATE.selectedConnector.default(STATE.connectorText),
             "environment": STATE.environment,
@@ -366,7 +354,6 @@ def _trigger_run_action() -> CallTool:
 
 
 # ── App builder ──────────────────────────────────────────────────────────────
-
 
 def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
     refresh_types_action = _refresh_job_types_action()
@@ -422,12 +409,6 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                         jt.display_name.default(jt.type),
                                         value=jt.type,
                                     )
-                    _select_field(
-                        "Kind",
-                        "kind",
-                        _KIND_OPTIONS,
-                        selected_value=initial_state.get("kind", ""),
-                    )
                     with Field():
                         FieldTitle("Environment")
                         with FieldContent():
@@ -641,20 +622,14 @@ def _initial_state(
 ) -> dict[str, Any]:
     available_job_types = job_types or _static_job_types()
     selected_schema = _static_form_schema(selected_type) or {}
-    if selected_schema:
-        selected_connector_types = _connector_types_for(selected_schema)
-    else:
-        selected_connector_types = []
 
     states = {
         "availableJobTypes": available_job_types,
         "apiJobTypes": [],
         "availableConnectors": [],
         "selectedJobType": selected_type or "",
-        "selectedConnectorType": selected_connector_types[0] if selected_connector_types else "",
         "selectedConnector": "",
         "connectorText": "",
-        "kind": selected_schema.get("kind", "runtime"),
         "environment": environment,
         "dataSensitivity": "low",
         "jobName": "",
@@ -671,7 +646,6 @@ def _initial_state(
 
 
 # ── CSP helper (mirrors the prototype) ───────────────────────────────────────
-
 
 def _resource_csp_for(app: PrefabApp) -> ResourceCSP:
     csp = app.csp()
@@ -699,7 +673,6 @@ def _resolve_prefab_tool(tool_ref: Any) -> ResolvedTool:
 
 
 # ── Form-schema serialization for the UI ─────────────────────────────────────
-
 
 def _form_schema_payload(contract_schema: dict) -> dict:
     """Normalize a form-schema or full JobTypeContract response for the UI."""
@@ -745,7 +718,6 @@ def _form_schema_payload(contract_schema: dict) -> dict:
         "type": contract_schema.get("type", ""),
         "display_name": contract_schema.get("display_name") or contract_schema.get("type", ""),
         "description": contract_schema.get("description"),
-        "kind": contract_schema.get("kind") or ("artifact" if contract_schema.get("artifact") else "runtime"),
         "config_fields": config_fields,
         "params_fields": params_fields,
         "required_config": _required(contract_schema, "config"),
@@ -770,7 +742,6 @@ def _mark_required_fields(fields: list[dict], required: list[str]) -> list[dict]
 
 
 # ── Tag/JSON normalization helpers for create_job ────────────────────────────
-
 
 def _split_tags(tags_text: str | None) -> list[str]:
     if not tags_text:
@@ -951,16 +922,10 @@ def _api_job_type_summaries() -> list[dict[str, Any]]:
 
 # ── Server build ─────────────────────────────────────────────────────────────
 
-
-def _prefetch_job_types() -> list[dict]:
-    """Static initial job types; API refresh happens through list_job_types."""
-    return _static_job_types()
-
-
 def build_server() -> FastMCP:
     mcp = FastMCP(SERVER_NAME, instructions=SERVER_DESCRIPTION)
 
-    bootstrap_types = _prefetch_job_types()
+    bootstrap_types = _static_job_types()
     logger.info("Bootstrapped %d job types into the designer", len(bootstrap_types))
     current_initial_state = _initial_state(job_types=bootstrap_types)
     blank_app = _build_app(current_initial_state)
@@ -1121,7 +1086,6 @@ def build_server() -> FastMCP:
         name: str,
         type: str,
         connector: str,
-        kind: Literal["runtime", "artifact"] = "runtime",
         environment: str = "dev",
         config: dict | None = None,
         data_sensitivity: str = "low",
@@ -1151,7 +1115,6 @@ def build_server() -> FastMCP:
 
         body = {
             "name": name.strip(),
-            "kind": kind,
             "type": normalized_type,
             "connector": connector.strip(),
             "environment": normalized_environment,
@@ -1247,7 +1210,7 @@ def _connector_types_for_job_type_or_values(
     normalized_job_type = _normalize_job_type(job_type)
     if normalized_job_type:
         schema = _schema_for_job_type(normalized_job_type, allow_api_fallback=True)
-        resolved = _connector_types_for(schema)
+        resolved = _extract_connector_types(schema)
         if resolved:
             return resolved
     if connector_types is not None:
@@ -1369,26 +1332,18 @@ def _job_type_summary(contract: dict) -> dict[str, Any]:
         "type": contract.get("type"),
         "display_name": contract.get("display_name") or contract.get("type"),
         "description": contract.get("description"),
-        "kind": contract.get("kind") or ("artifact" if contract.get("artifact") else "runtime"),
         "connector_types": _extract_connector_types(contract),
     }
 
 
-def _connector_types_for(form_schema: dict) -> list[str]:
-    """Derive connector types for a fallback API form-schema payload."""
-    return _extract_connector_types(form_schema)
-
-
 def _job_type_metadata_for(form_schema: dict) -> dict[str, Any]:
     connector_types = _extract_connector_types(form_schema)
-    embedded_kind = form_schema.get("kind")
-    if connector_types and embedded_kind:
-        return {"connector_types": connector_types, "kind": embedded_kind}
+    if connector_types:
+        return {"connector_types": connector_types}
 
     job_type = form_schema.get("type")
     fallback = {
         "connector_types": connector_types,
-        "kind": embedded_kind or ("artifact" if form_schema.get("artifact") else "runtime"),
     }
     if not job_type:
         return fallback
@@ -1402,7 +1357,6 @@ def _job_type_metadata_for(form_schema: dict) -> dict[str, Any]:
             summary = _job_type_summary(c)
             return {
                 "connector_types": summary["connector_types"],
-                "kind": summary["kind"],
             }
     return fallback
 
