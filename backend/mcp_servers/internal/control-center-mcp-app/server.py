@@ -279,6 +279,7 @@ def _refresh_job_types_action() -> CallTool:
 def _refresh_connectors_action(
     *,
     job_type_expr: Any | None = None,
+    environment_expr: Any | None = None,
     set_loading: bool = True,
 ) -> CallTool:
     on_success: list[Any] = [SetState("availableConnectors", RESULT.items)]
@@ -291,7 +292,7 @@ def _refresh_connectors_action(
         "list_connectors",
         arguments={
             "job_type": job_type_expr if job_type_expr is not None else STATE.selectedJobType,
-            "environment": STATE.environment,
+            "environment": environment_expr if environment_expr is not None else STATE.environment,
         },
         on_success=on_success,
         on_error=on_error,
@@ -370,6 +371,7 @@ def _trigger_run_action() -> CallTool:
 def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
     refresh_types_action = _refresh_job_types_action()
     refresh_connectors_action = _refresh_connectors_action()
+    refresh_connectors_on_environment_change = _refresh_connectors_action(environment_expr=EVENT)
     load_schema_on_change = _load_schema_action(EVENT)
     load_schema_for_selected = _load_schema_action(STATE.selectedJobType)
     create_action = _create_job_action()
@@ -434,7 +436,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                 value=selected_environment,
                                 on_change=[
                                     SetState("loading", True),
-                                    refresh_connectors_action,
+                                    refresh_connectors_on_environment_change,
                                 ],
                             ):
                                 for value, opt_label in _ENVIRONMENT_OPTIONS:
@@ -485,7 +487,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                     with ForEach("availableConnectors") as conn:
                                         SelectOption(
                                             conn.label,
-                                            value=conn.id,
+                                            value=conn.value,
                                         )
                     with Else():
                         Alert(
@@ -999,10 +1001,14 @@ def build_server() -> FastMCP:
     ) -> dict[str, Any]:
         nonlocal current_initial_state
         normalized_job_type = _normalize_job_type(job_type) or "mcp"
+        normalized_environment = _normalize_environment(
+            environment,
+            default="dev" if _looks_like_template(environment) else "dev",
+        )
         current_initial_state = _initial_state(
             job_types=bootstrap_types,
             selected_type=normalized_job_type,
-            environment=environment,
+            environment=normalized_environment,
         )
         return {
             "status": "opened",
@@ -1098,6 +1104,7 @@ def build_server() -> FastMCP:
                     "status": c.get("status"),
                     "is_shared": c.get("is_shared", False),
                     "label": _connector_label(c),
+                    "value": _connector_value(c),
                 }
                 for c in items
             ]
@@ -1128,6 +1135,10 @@ def build_server() -> FastMCP:
             raise ValueError("Job type is required — pick one from the job-type selector.")
         if not connector or not connector.strip():
             raise ValueError("Connector is required.")
+        normalized_environment = _normalize_environment(
+            environment,
+            default="dev" if _looks_like_template(environment) else "dev",
+        )
 
         merged_tags = list(tags or []) + _split_tags(tags_text)
 
@@ -1143,7 +1154,7 @@ def build_server() -> FastMCP:
             "kind": kind,
             "type": normalized_type,
             "connector": connector.strip(),
-            "environment": environment,
+            "environment": normalized_environment,
             "config": config,
             "data_sensitivity": data_sensitivity,
             "tags": sorted({t for t in merged_tags if t}),
@@ -1174,7 +1185,10 @@ def build_server() -> FastMCP:
 
         body: dict[str, Any] = {
             "action": action,
-            "target_environment": target_environment,
+            "target_environment": _normalize_environment(
+                target_environment,
+                default="dev" if _looks_like_template(target_environment) else "dev",
+            ),
             "params": params,
         }
         if prompt and prompt.strip():
@@ -1250,6 +1264,21 @@ def _connector_label(connector: dict[str, Any]) -> str:
     return " · ".join(str(part) for part in parts if part)
 
 
+def _connector_value(connector: dict[str, Any]) -> str:
+    """Return the value to persist as Job.connector.
+
+    Execution resolves Job.connector as an MCP server name, so registered
+    connector row ids such as "conn-..." are UI metadata, not valid job values.
+    Prefer a contract/server name carried on the item, then fall back to common
+    connector row fields.
+    """
+    for key in ("value", "server_name", "connector_type", "name", "id"):
+        value = connector.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
 def _merge_connector_items(
     items: list[dict[str, Any]],
     allowed_connector_names: list[str],
@@ -1288,6 +1317,7 @@ def _merge_connector_items(
                 "id": name,
                 "name": name,
                 "connector_type": name,
+                "value": name,
                 "environment": environment or None,
                 "status": "available",
                 "is_shared": True,
