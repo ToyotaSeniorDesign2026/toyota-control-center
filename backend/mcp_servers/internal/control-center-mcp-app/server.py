@@ -184,8 +184,41 @@ _SENSITIVITY_OPTIONS: list[tuple[str, str]] = [
     ("high", "High"),
 ]
 
+MAX_CONNECTOR_OPTIONS = 24
+MAX_ENUM_OPTIONS = 12
+
 
 # ── Dynamic form rendering ───────────────────────────────────────────────────
+
+def _rx_path(value: Any) -> str:
+    text = str(value).strip()
+    if text.startswith("{{") and text.endswith("}}"):
+        return text[2:-2].strip()
+    return text
+
+
+def _render_enum_select(state_root: str, field: Any, option_count: int) -> None:
+    enum_path = _rx_path(field.enum)
+    with Select(name=f"{state_root}.{field.name}"):
+        for i in range(option_count):
+            option = f"{{{{ {enum_path}.{i} }}}}"
+            SelectOption(option, value=option)
+
+
+def _render_enum_select_for_field(state_root: str, field: Any) -> None:
+    """Render enum select options as direct SelectOption children.
+
+    Select does not reliably materialize SelectOption children nested under a
+    ForEach when the enum list belongs to a loop-scoped field object.
+    """
+    with If(field.enum.length() == 1):
+        _render_enum_select(state_root, field, 1)
+    for count in range(2, MAX_ENUM_OPTIONS + 1):
+        with Elif(field.enum.length() == count):
+            _render_enum_select(state_root, field, count)
+    with Elif(field.enum.length() > MAX_ENUM_OPTIONS):
+        _render_enum_select(state_root, field, MAX_ENUM_OPTIONS)
+
 
 def _render_field_loop(state_root: str, fields_path: str) -> None:
     """Render a list of FieldSpec entries as a dynamic form.
@@ -206,9 +239,7 @@ def _render_field_loop(state_root: str, fields_path: str) -> None:
             with FieldContent():
                 # 1. enum -> select
                 with If(field.enum):
-                    with Select(name=f"{state_root}.{field.name}"):
-                        with ForEach(field.enum) as opt:
-                            SelectOption(opt, value=opt)
+                    _render_enum_select_for_field(state_root, field)
                 # 2. boolean -> checkbox
                 with Elif(field.type == "boolean"):
                     Checkbox(name=f"{state_root}.{field.name}", label=field.name)
@@ -239,9 +270,6 @@ def _render_field_loop(state_root: str, fields_path: str) -> None:
                         name=f"{state_root}.{field.name}",
                         placeholder=field.placeholder,
                     )
-
-
-MAX_CONNECTOR_OPTIONS = 10
 
 
 def _render_connector_combobox(option_count: int) -> None:
