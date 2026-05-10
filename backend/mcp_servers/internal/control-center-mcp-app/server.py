@@ -506,25 +506,27 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
             with CardHeader():
                 CardTitle("Connectors")
                 CardDescription(
-                    "Existing connectors filtered by the selected job type's required connector type."
+                    "Add one or more approved connectors for the selected job type and environment."
                 )
             with CardContent():
-                with Column(gap=3):
+                with Column(gap=5):
                     with If(STATE.availableConnectors.length() > 0):
-                        with Row(gap=2, align="center", css_class="w-full"):
-                            with Div(css_class="flex-1 min-w-0"):
-                                _render_connectors_combobox()
-                            Button(
-                                "Add",
-                                css_class="shrink-0 min-w-24",
-                                disabled="{{ !selectedConnector }}",
-                                on_click=[
-                                    AppendState("selectedConnectors", STATE.selectedConnector),
-                                    SetState("selectedConnector", ""),
-                                ],
-                            )
+                        with Field():
+                            with FieldContent():
+                                with Row(gap=2, align="center", css_class="w-full"):
+                                    with Div(css_class="flex-1 min-w-0"):
+                                        _render_connectors_combobox()
+                                    Button(
+                                        "Add",
+                                        css_class="shrink-0 min-w-24",
+                                        disabled="{{ !selectedConnector }}",
+                                        on_click=[
+                                            AppendState("selectedConnectors", STATE.selectedConnector),
+                                            SetState("selectedConnector", ""),
+                                        ],
+                                    )
                         with If(STATE.selectedConnectors.length() > 0):
-                            with Column(gap=2):
+                            with Column(gap=2, css_class="pt-1"):
                                 Small("Selected connectors")
                                 with ForEach("selectedConnectors") as connector:
                                     with Row(gap=2, align="center", css_class="justify-between"):
@@ -540,18 +542,18 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                             variant="info",
                             title="No connectors found",
                             description=(
-                                "No connectors match the selected type/environment. "
-                                "Enter a connector name below to use as a free-form label, "
-                                "or register one via /connectors first."
+                                "No registered connectors match this job type and environment. "
+                                "Use the manual connector field below or register a connector first."
                             ),
                         )
-                    with Field():
-                        FieldDescription("Or enter connector identifier (free-form fallback)")
-                        with FieldContent():
-                            Input(
-                                name="connectorText",
-                                placeholder="github / sql-mcp / control-center",
-                            )
+                    with Div(css_class="border-t border-emerald-200/10 pt-4"):
+                        with Field():
+                            FieldDescription("Manual fallback for a connector that is not listed above.")
+                            with FieldContent():
+                                Input(
+                                    name="connectorText",
+                                    placeholder="github / sql-mcp / control-center",
+                                )
 
         # ── Job basics ───────────────────────────────────────────────────────
         with Card(css_class="glass-card"):
