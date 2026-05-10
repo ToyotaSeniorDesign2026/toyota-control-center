@@ -32,7 +32,7 @@ from fastmcp import FastMCP
 from fastmcp.apps import AppConfig, ResourceCSP
 from prefab_ui import PrefabApp
 from prefab_ui.app import ResolvedTool
-from prefab_ui.actions import SetState, ShowToast
+from prefab_ui.actions import AppendState, PopState, SetState, ShowToast
 from prefab_ui.actions.mcp import CallTool, RequestDisplayMode
 from prefab_ui.components import (
     Alert,
@@ -48,6 +48,7 @@ from prefab_ui.components import (
     Column,
     Combobox,
     ComboboxOption,
+    Div,
     Elif,
     Else,
     Field,
@@ -341,6 +342,7 @@ def _load_schema_action(job_type_expr: Any) -> CallTool:
             SetState("config", RESULT.defaults_config),
             SetState("params", RESULT.defaults_params),
             SetState("selectedConnector", ""),
+            SetState("selectedConnectors", []),
             SetState("connectorText", ""),
             SetState("availableConnectors", RESULT.connector_items),
             SetState("loading", False),
@@ -355,7 +357,7 @@ def _create_job_action(*, environment_expr: Any | None = None) -> CallTool:
         arguments={
             "name": STATE.jobName,
             "type": STATE.selectedJobType,
-            "connector": STATE.selectedConnector.default(STATE.connectorText),
+            "connector": "{{ selectedConnectors.0 || selectedConnector || connectorText }}",
             "environment": environment_expr if environment_expr is not None else STATE.environment,
             "config": STATE.config,
             "data_sensitivity": STATE.dataSensitivity,
@@ -509,9 +511,30 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
             with CardContent():
                 with Column(gap=3):
                     with If(STATE.availableConnectors.length() > 0):
-                        with Row(gap=2):
-                            _render_connectors_combobox()
-                            Button("Add")
+                        with Row(gap=2, align="center", css_class="w-full"):
+                            with Div(css_class="flex-1 min-w-0"):
+                                _render_connectors_combobox()
+                            Button(
+                                "Add",
+                                css_class="shrink-0 min-w-24",
+                                disabled="{{ !selectedConnector }}",
+                                on_click=[
+                                    AppendState("selectedConnectors", STATE.selectedConnector),
+                                    SetState("selectedConnector", ""),
+                                ],
+                            )
+                        with If(STATE.selectedConnectors.length() > 0):
+                            with Column(gap=2):
+                                Small("Selected connectors")
+                                with ForEach("selectedConnectors") as connector:
+                                    with Row(gap=2, align="center", css_class="justify-between"):
+                                        Badge(connector, variant="outline")
+                                        Button(
+                                            "Remove",
+                                            variant="outline",
+                                            size="sm",
+                                            on_click=PopState("selectedConnectors", index="{{ $index }}"),
+                                        )
                     with Else():
                         Alert(
                             variant="info",
@@ -523,8 +546,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                             ),
                         )
                     with Field():
-                        FieldTitle("Or enter connector identifier")
-                        FieldDescription("Free-form fallback when no registered connector matches.")
+                        FieldDescription("Or enter connector identifier (free-form fallback)")
                         with FieldContent():
                             Input(
                                 name="connectorText",
@@ -606,6 +628,8 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                             SetState("runPrompt", ""),
                             SetState("jobName", ""),
                             SetState("tagsText", ""),
+                            SetState("selectedConnector", ""),
+                            SetState("selectedConnectors", []),
                             SetState("connectorText", ""),
                         ],
                     )
@@ -670,6 +694,7 @@ def _initial_state(
         "availableConnectors": selected_schema.get("connector_items", []),
         "selectedJobType": selected_type or "",
         "selectedConnector": "",
+        "selectedConnectors": [],
         "connectorText": "",
         "environment": environment,
         "dataSensitivity": "low",
