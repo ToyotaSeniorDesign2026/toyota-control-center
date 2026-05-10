@@ -30,6 +30,7 @@ from typing import Any, Literal
 import httpx
 from fastmcp import FastMCP
 from fastmcp.apps import AppConfig, ResourceCSP
+from fastmcp.apps.approval import Approval
 from prefab_ui import PrefabApp
 from prefab_ui.app import ResolvedTool
 from prefab_ui.actions import AppendState, PopState, SetState, ShowToast
@@ -448,8 +449,22 @@ def _ai_context_payload(environment_expr: Any) -> dict[str, Any]:
     }
 
 
+def _capture_current_draft_action(
+    environment_expr: Any,
+    *,
+    on_success: list[Any] | None = None,
+) -> CallTool:
+    return CallTool(
+        "capture_current_draft",
+        arguments={"current_state": _current_designer_state_payload(environment_expr)},
+        on_success=on_success,
+        on_error=ShowToast(ERROR, variant="error"),
+    )
+
+
 def _update_ai_context_action(environment_expr: Any) -> list[Any]:
     return [
+        _capture_current_draft_action(environment_expr),
         UpdateContext(structured_content=_ai_context_payload(environment_expr)),
         ShowToast("AI context updated.", variant="success"),
     ]
@@ -457,14 +472,265 @@ def _update_ai_context_action(environment_expr: Any) -> list[Any]:
 
 def _review_setup_action(environment_expr: Any) -> list[Any]:
     return [
-        UpdateContext(structured_content=_ai_context_payload(environment_expr)),
-        SendMessage(
-            "Please review the current Control Center job setup for job type "
-            "{{ selectedJobType || 'none selected' }} in "
-            f"{environment_expr}. Check connectors, required config, and missing fields "
-            "before I create it."
+        _capture_current_draft_action(
+            environment_expr,
+            on_success=[
+                UpdateContext(structured_content={"control_center_job_designer": RESULT.draft}),
+                SendMessage(
+                    "Please review the current Control Center job setup. Check connectors, "
+                    "required config, and missing fields before I create it.\n\n"
+                    "Current draft JSON:\n```json\n{{ $result.draft_json }}\n```"
+                ),
+            ],
         ),
     ]
+
+
+def _current_designer_state_payload(environment_expr: Any) -> dict[str, Any]:
+    return {
+        "selectedJobType": "{{ selectedJobType | '' }}",
+        "selectedConnector": "{{ selectedConnector | '' }}",
+        "selectedConnectors": "{{ selectedConnectors | [] }}",
+        "connectorText": "{{ connectorText | '' }}",
+        "environment": environment_expr,
+        "dataSensitivity": "{{ dataSensitivity | 'low' }}",
+        "jobName": "{{ jobName | '' }}",
+        "tagsText": "{{ tagsText | '' }}",
+        "config": "{{ config | {} }}",
+        "params": "{{ params | {} }}",
+        "runPrompt": "{{ runPrompt | '' }}",
+        "formSchema": STATE.formSchema,
+        "availableConnectors": "{{ availableConnectors | [] }}",
+    }
+
+
+def _patch_value(patch: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in patch:
+            return patch[key]
+    return None
+
+
+def _patch_list(value: Any) -> list[Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            decoded = json.loads(text)
+        except json.JSONDecodeError:
+            return [part.strip() for part in text.split(",") if part.strip()]
+        if isinstance(decoded, list):
+            return decoded
+        return [decoded]
+    if isinstance(value, (tuple, set)):
+        return list(value)
+    return [value]
+
+
+def _patch_dict(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            decoded = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        return decoded if isinstance(decoded, dict) else None
+    return None
+
+
+def _draft_snapshot_from_state(current_state: dict[str, Any] | None) -> dict[str, Any]:
+    current = current_state or {}
+    form_schema = _patch_dict(current.get("formSchema")) or _form_schema_payload({})
+    selected_connectors = _patch_list(current.get("selectedConnectors")) or []
+    available_connectors = _patch_list(current.get("availableConnectors")) or []
+    config = _patch_dict(current.get("config")) or {}
+    params = _patch_dict(current.get("params")) or {}
+    selected_job_type = _normalize_job_type(current.get("selectedJobType")) or str(
+        form_schema.get("type") or ""
+    )
+    environment = _normalize_environment(current.get("environment"), default="dev") or "dev"
+    draft = {
+        "selected_job_type": selected_job_type,
+        "environment": environment,
+        "job_name": str(current.get("jobName") or ""),
+        "data_sensitivity": str(current.get("dataSensitivity") or "low"),
+        "tags_text": str(current.get("tagsText") or ""),
+        "selected_connector": str(current.get("selectedConnector") or ""),
+        "selected_connectors": selected_connectors,
+        "manual_connector": str(current.get("connectorText") or ""),
+        "config": config,
+        "params": params,
+        "run_prompt": str(current.get("runPrompt") or ""),
+        "available_connectors": available_connectors,
+        "form_schema": form_schema,
+    }
+    return {
+        "status": "captured",
+        "draft": draft,
+        "draft_json": json.dumps(draft, indent=2, sort_keys=True),
+    }
+
+
+def _apply_designer_patch(current_state: dict[str, Any] | None, patch: dict[str, Any] | None) -> dict[str, Any]:
+    current = current_state or {}
+    patch = patch or {}
+    applied: list[str] = []
+
+    selected_type = str(current.get("selectedJobType") or "")
+    environment = _normalize_environment(current.get("environment"), default="dev") or "dev"
+    data_sensitivity = str(current.get("dataSensitivity") or "low")
+    job_name = str(current.get("jobName") or "")
+    tags_text = str(current.get("tagsText") or "")
+    selected_connector = str(current.get("selectedConnector") or "")
+    connector_text = str(current.get("connectorText") or "")
+    run_prompt = str(current.get("runPrompt") or "")
+    selected_connectors = _patch_list(current.get("selectedConnectors")) or []
+    available_connectors = _patch_list(current.get("availableConnectors")) or []
+    config = _patch_dict(current.get("config")) or {}
+    params = _patch_dict(current.get("params")) or {}
+    form_schema = _patch_dict(current.get("formSchema")) or _form_schema_payload({})
+
+    next_type = _patch_value(patch, "selectedJobType", "selected_job_type", "job_type", "type")
+    if next_type is not None:
+        selected_type = _normalize_job_type(next_type)
+        applied.append("selectedJobType")
+
+    next_schema = _patch_value(patch, "formSchema", "form_schema")
+    schema_replaced = False
+    if isinstance(next_schema, dict):
+        form_schema = _form_schema_payload(next_schema)
+        selected_type = form_schema.get("type") or selected_type
+        available_connectors = form_schema.get("connector_items", [])
+        schema_replaced = True
+        applied.extend(["formSchema", "availableConnectors"])
+    elif selected_type and selected_type != current.get("selectedJobType"):
+        form_schema = _schema_for_job_type(selected_type, allow_api_fallback=True)
+        available_connectors = form_schema.get("connector_items", [])
+        schema_replaced = True
+        applied.extend(["formSchema", "availableConnectors"])
+
+    for patch_key, attr_name in (
+        (("environment",), "environment"),
+        (("dataSensitivity", "data_sensitivity"), "data_sensitivity"),
+        (("jobName", "job_name", "name"), "job_name"),
+        (("tagsText", "tags_text", "tags"), "tags_text"),
+        (("selectedConnector", "selected_connector"), "selected_connector"),
+        (("connectorText", "connector_text", "manual_connector"), "connector_text"),
+        (("runPrompt", "run_prompt"), "run_prompt"),
+    ):
+        value = _patch_value(patch, *patch_key)
+        if value is None:
+            continue
+        if attr_name == "environment":
+            environment = _normalize_environment(value, default=environment) or environment
+        elif attr_name == "data_sensitivity":
+            data_sensitivity = str(value)
+        elif attr_name == "job_name":
+            job_name = str(value)
+        elif attr_name == "tags_text":
+            tags_text = ", ".join(value) if isinstance(value, list) else str(value)
+        elif attr_name == "selected_connector":
+            selected_connector = str(value)
+        elif attr_name == "connector_text":
+            connector_text = str(value)
+        elif attr_name == "run_prompt":
+            run_prompt = str(value)
+        applied.append(attr_name)
+
+    next_selected_connectors = _patch_list(
+        _patch_value(patch, "selectedConnectors", "selected_connectors", "connectors")
+    )
+    if next_selected_connectors is not None:
+        selected_connectors = next_selected_connectors
+        applied.append("selectedConnectors")
+
+    next_available_connectors = _patch_list(
+        _patch_value(patch, "availableConnectors", "available_connectors")
+    )
+    if next_available_connectors is not None:
+        available_connectors = next_available_connectors
+        applied.append("availableConnectors")
+
+    replace_config = _patch_dict(_patch_value(patch, "replace_config"))
+    config_update = _patch_dict(_patch_value(patch, "config", "config_updates"))
+    if replace_config is not None:
+        config = replace_config
+        applied.append("config")
+    elif config_update is not None:
+        config = {**({} if schema_replaced else config), **config_update}
+        applied.append("config")
+    elif schema_replaced:
+        config = form_schema.get("defaults_config", {})
+
+    replace_params = _patch_dict(_patch_value(patch, "replace_params"))
+    params_update = _patch_dict(_patch_value(patch, "params", "run_params", "params_updates"))
+    if replace_params is not None:
+        params = replace_params
+        applied.append("params")
+    elif params_update is not None:
+        params = {**({} if schema_replaced else params), **params_update}
+        applied.append("params")
+    elif schema_replaced:
+        params = form_schema.get("defaults_params", {})
+
+    return {
+        "status": "applied",
+        "message": (
+            f"Applied AI changes: {', '.join(dict.fromkeys(applied))}."
+            if applied
+            else "No AI changes were pending."
+        ),
+        "applied": list(dict.fromkeys(applied)),
+        "selected_job_type": selected_type,
+        "selected_connector": selected_connector,
+        "selected_connectors": selected_connectors,
+        "connector_text": connector_text,
+        "available_connectors": available_connectors,
+        "environment": environment,
+        "data_sensitivity": data_sensitivity,
+        "job_name": job_name,
+        "tags_text": tags_text,
+        "config": config,
+        "params": params,
+        "run_prompt": run_prompt,
+        "form_schema": form_schema,
+    }
+
+
+def _apply_ai_changes_action(environment_expr: Any) -> CallTool:
+    return CallTool(
+        "apply_pending_designer_patch",
+        arguments={"current_state": _current_designer_state_payload(environment_expr)},
+        on_success=[
+            SetState("selectedJobType", RESULT.selected_job_type),
+            SetState("selectedConnector", RESULT.selected_connector),
+            SetState("selectedConnectors", RESULT.selected_connectors),
+            SetState("connectorText", RESULT.connector_text),
+            SetState("availableConnectors", RESULT.available_connectors),
+            SetState("environment", RESULT.environment),
+            SetState("dataSensitivity", RESULT.data_sensitivity),
+            SetState("jobName", RESULT.job_name),
+            SetState("tagsText", RESULT.tags_text),
+            SetState("config", RESULT.config),
+            SetState("params", RESULT.params),
+            SetState("runPrompt", RESULT.run_prompt),
+            SetState("formSchema", RESULT.form_schema),
+            SetState("loading", False),
+            ShowToast(RESULT.message, variant="success"),
+        ],
+        on_error=[SetState("loading", False), ShowToast(ERROR, variant="error")],
+    )
 
 
 def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
@@ -486,6 +752,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
     run_action = _trigger_run_action(environment_expr=environment_ref)
     update_ai_context_action = _update_ai_context_action(environment_ref)
     review_setup_action = _review_setup_action(environment_ref)
+    apply_ai_changes_action = _apply_ai_changes_action(environment_ref)
     static_job_types = list(initial_state.get("availableJobTypes") or [])
 
     def _async_btn(label: str, *, action: object, variant: str = "secondary") -> None:
@@ -709,6 +976,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                         variant="outline",
                         on_click=review_setup_action,
                     )
+                    _async_btn("Apply AI changes", action=apply_ai_changes_action, variant="outline")
                     Button(
                         "Reset form",
                         variant="outline",
@@ -1073,10 +1341,20 @@ def _api_job_type_summaries() -> list[dict[str, Any]]:
 
 def build_server() -> FastMCP:
     mcp = FastMCP(SERVER_NAME, instructions=SERVER_DESCRIPTION)
+    mcp.add_provider(
+        Approval(
+            title="Apply AI Changes?",
+            approve_text="Approve",
+            reject_text="Cancel",
+            approve_variant="success",
+        )
+    )
 
     bootstrap_types = _static_job_types()
     logger.info("Bootstrapped %d job types into the designer", len(bootstrap_types))
     current_initial_state = _initial_state(job_types=bootstrap_types)
+    pending_designer_patch: dict[str, Any] | None = None
+    current_draft_snapshot: dict[str, Any] = _draft_snapshot_from_state(current_initial_state)
     blank_app = _build_app(current_initial_state)
 
     @mcp.resource(
@@ -1113,7 +1391,7 @@ def build_server() -> FastMCP:
         job_type: str = "",
         environment: str = "dev",
     ) -> dict[str, Any]:
-        nonlocal current_initial_state
+        nonlocal current_draft_snapshot, current_initial_state
         normalized_job_type = _normalize_job_type(job_type)
         normalized_environment = _normalize_environment(environment, default="dev") or "dev"
         current_initial_state = _initial_state(
@@ -1121,6 +1399,7 @@ def build_server() -> FastMCP:
             selected_type=normalized_job_type,
             environment=normalized_environment,
         )
+        current_draft_snapshot = _draft_snapshot_from_state(current_initial_state)
         return {
             "status": "opened",
             "selectedJobType": current_initial_state["selectedJobType"],
@@ -1217,6 +1496,103 @@ def build_server() -> FastMCP:
                 for c in items
             ]
         }
+
+    @mcp.tool(
+        name="capture_current_draft",
+        description=(
+            "Capture the current Control Center job designer draft from the app UI. "
+            "This is called by app buttons before updating AI context or asking for feedback."
+        ),
+    )
+    def capture_current_draft(current_state: dict[str, Any]) -> dict[str, Any]:
+        nonlocal current_draft_snapshot
+        current_draft_snapshot = _draft_snapshot_from_state(current_state)
+        return current_draft_snapshot
+
+    @mcp.tool(
+        name="get_current_draft",
+        description=(
+            "Return the latest captured Control Center job designer draft. Use this "
+            "when the client does not support UpdateContext or when you need to inspect "
+            "the current app state before proposing changes."
+        ),
+    )
+    def get_current_draft() -> dict[str, Any]:
+        return current_draft_snapshot
+
+    @mcp.tool(
+        name="queue_designer_patch",
+        description=(
+            "Queue AI-proposed changes for the open Control Center job designer. "
+            "Use this for normal field changes (config, params, connectors, name, "
+            "environment) or for a full form_schema replacement. The browser UI "
+            "will not change until the user clicks Apply AI changes."
+        ),
+    )
+    def queue_designer_patch(
+        patch: dict[str, Any],
+        summary: str = "",
+    ) -> dict[str, Any]:
+        nonlocal pending_designer_patch
+        if not isinstance(patch, dict):
+            raise ValueError("patch must be an object.")
+        pending_designer_patch = patch
+        return {
+            "status": "queued",
+            "message": "AI changes queued. Click Apply AI changes in the app to update the form.",
+            "summary": summary,
+            "patch": patch,
+        }
+
+    @mcp.tool(
+        name="get_pending_designer_patch",
+        description="Return the currently queued AI patch for the Control Center job designer.",
+    )
+    def get_pending_designer_patch() -> dict[str, Any]:
+        return {
+            "has_patch": pending_designer_patch is not None,
+            "patch": pending_designer_patch or {},
+        }
+
+    @mcp.tool(
+        name="clear_pending_designer_patch",
+        description="Clear the queued AI patch without applying it to the app.",
+    )
+    def clear_pending_designer_patch() -> dict[str, Any]:
+        nonlocal pending_designer_patch
+        pending_designer_patch = None
+        return {"status": "cleared"}
+
+    @mcp.tool(
+        name="apply_pending_designer_patch",
+        description=(
+            "Apply the queued AI patch to the current app state and return concrete "
+            "Prefab state values for the UI to write with SetState."
+        ),
+    )
+    def apply_pending_designer_patch(current_state: dict[str, Any] | None = None) -> dict[str, Any]:
+        nonlocal current_draft_snapshot, pending_designer_patch
+        result = _apply_designer_patch(current_state, pending_designer_patch)
+        pending_designer_patch = None
+        current_draft_snapshot = {
+            "status": "captured",
+            "draft": {
+                "selected_job_type": result["selected_job_type"],
+                "environment": result["environment"],
+                "job_name": result["job_name"],
+                "data_sensitivity": result["data_sensitivity"],
+                "tags_text": result["tags_text"],
+                "selected_connector": result["selected_connector"],
+                "selected_connectors": result["selected_connectors"],
+                "manual_connector": result["connector_text"],
+                "config": result["config"],
+                "params": result["params"],
+                "run_prompt": result["run_prompt"],
+                "available_connectors": result["available_connectors"],
+                "form_schema": result["form_schema"],
+            },
+        }
+        return result
 
     @mcp.tool(
         name="create_job",
