@@ -276,18 +276,23 @@ def _refresh_job_types_action() -> CallTool:
     )
 
 
-def _refresh_connectors_action(*, set_loading: bool = True) -> CallTool:
+def _refresh_connectors_action(
+    *,
+    job_type_expr: Any | None = None,
+    set_loading: bool = True,
+) -> CallTool:
     on_success: list[Any] = [SetState("availableConnectors", RESULT.items)]
     if set_loading:
         on_success.append(SetState("loading", False))
     on_error: list[Any] = [ShowToast(ERROR, variant="error")]
     if set_loading:
         on_error.append(SetState("loading", False))
-    # Don't filter by connector_type: most contracts allow several types, and
-    # the list_connectors API only accepts one — filtering would hide valid options.
     return CallTool(
         "list_connectors",
-        arguments={"environment": STATE.environment},
+        arguments={
+            "job_type": job_type_expr if job_type_expr is not None else STATE.selectedJobType,
+            "environment": STATE.environment,
+        },
         on_success=on_success,
         on_error=on_error,
     )
@@ -304,11 +309,13 @@ def _load_schema_action(job_type_expr: Any) -> CallTool:
         arguments={"job_type": job_type_expr},
         on_success=[
             SetState("formSchema", RESULT),
-            SetState("selectedConnectorType", RESULT.connector_types[0]),
+            SetState("selectedConnectorType", RESULT.connector_types.first().default("")),
             SetState("config", RESULT.defaults_config),
             SetState("params", RESULT.defaults_params),
             SetState("kind", RESULT.kind),
-            _refresh_connectors_action(set_loading=False),
+            SetState("selectedConnector", ""),
+            SetState("connectorText", ""),
+            _refresh_connectors_action(job_type_expr=job_type_expr, set_loading=False),
             SetState("loading", False),
         ],
         on_error=[SetState("loading", False), ShowToast(ERROR, variant="error")],
@@ -322,7 +329,7 @@ def _create_job_action() -> CallTool:
             "name": STATE.jobName,
             "kind": STATE.kind,
             "type": STATE.selectedJobType,
-            "connector": STATE.selectedConnector,
+            "connector": STATE.selectedConnector.default(STATE.connectorText),
             "environment": STATE.environment,
             "config": STATE.config,
             "data_sensitivity": STATE.dataSensitivity,
@@ -458,10 +465,6 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                         CardDescription(STATE.formSchema.description)
                 with CardContent():
                     with Column(gap=2):
-                        Small("Required config")
-                        Muted(STATE.formSchema.required_config.join(", ").default("—"))
-                        Small("Required params")
-                        Muted(STATE.formSchema.required_params.join(", ").default("—"))
                         Small("Allowed connector types")
                         Muted(STATE.formSchema.connector_types.join(", ").default("any"))
 
@@ -481,7 +484,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                 with Select(name="selectedConnector"):
                                     with ForEach("availableConnectors") as conn:
                                         SelectOption(
-                                            conn.name + " · " + conn.connector_type + " · " + conn.environment,
+                                            conn.label,
                                             value=conn.id,
                                         )
                     with Else():
@@ -499,7 +502,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                         FieldDescription("Free-form fallback when no registered connector matches.")
                         with FieldContent():
                             Input(
-                                name="selectedConnector",
+                                name="connectorText",
                                 placeholder="github / sql-mcp / control-center",
                             )
 
@@ -578,6 +581,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                             SetState("runPrompt", ""),
                             SetState("jobName", ""),
                             SetState("tagsText", ""),
+                            SetState("connectorText", ""),
                         ],
                     )
 
@@ -630,22 +634,24 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
 def _initial_state(
     *,
     job_types: list[dict] | None = None,
-    selected_type: str = "mcp",
+    selected_type: str = "",
     environment: str = "dev",
 ) -> dict[str, Any]:
     available_job_types = job_types or _static_job_types()
-    selected_schema = _static_form_schema(selected_type)
-    if not selected_schema.get("type") and available_job_types:
-        selected_type = available_job_types[0].get("type") or ""
-        selected_schema = _static_form_schema(selected_type)
+    selected_schema = _static_form_schema(selected_type) or {}
+    if selected_schema:
+        selected_connector_types = _connector_types_for(selected_schema)
+    else:
+        selected_connector_types = []
 
-    return {
+    states = {
         "availableJobTypes": available_job_types,
         "apiJobTypes": [],
         "availableConnectors": [],
-        "selectedJobType": selected_type,
-        "selectedConnectorType": (selected_schema.get("connector_types") or [selected_type])[0],
+        "selectedJobType": selected_type or "",
+        "selectedConnectorType": selected_connector_types[0] if selected_connector_types else "",
         "selectedConnector": "",
+        "connectorText": "",
         "kind": selected_schema.get("kind", "runtime"),
         "environment": environment,
         "dataSensitivity": "low",
@@ -659,6 +665,7 @@ def _initial_state(
         "lastRun": None,
         "loading": False,
     }
+    return states
 
 
 # ── CSP helper (mirrors the prototype) ───────────────────────────────────────
@@ -825,6 +832,40 @@ def _normalize_job_type(value: Any) -> str:
     return text.lower()
 
 
+def _looks_like_template(value: Any) -> bool:
+    if value is None:
+        return False
+    if not isinstance(value, str):
+        value = str(value)
+    text = value.strip()
+    if _TEMPLATE_EXPR_RE.match(text):
+        return True
+    try:
+        decoded = json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(decoded, str) and bool(_TEMPLATE_EXPR_RE.match(decoded.strip()))
+
+
+def _normalize_environment(value: Any, *, default: str = "") -> str:
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        value = str(value)
+    text = value.strip()
+    if not text or _TEMPLATE_EXPR_RE.match(text):
+        return default
+    try:
+        decoded = json.loads(text)
+    except json.JSONDecodeError:
+        decoded = text
+    if isinstance(decoded, str):
+        text = decoded.strip()
+    if not text or _TEMPLATE_EXPR_RE.match(text):
+        return default
+    return text
+
+
 def _contract_payload(job_type: str) -> dict[str, Any]:
     contract = KNOWN_CONTRACTS.get(_normalize_job_type(job_type))
     if contract is None:
@@ -954,7 +995,7 @@ def build_server() -> FastMCP:
     )
     def open_job_designer(
         job_type: str = "",
-        environment: Literal["dev", "semi-prod", "prod"] = "dev",
+        environment: str = "dev",
     ) -> dict[str, Any]:
         nonlocal current_initial_state
         normalized_job_type = _normalize_job_type(job_type) or "mcp"
@@ -1005,14 +1046,28 @@ def build_server() -> FastMCP:
         ),
     )
     def list_connectors(
+        job_type: str = "",
         connector_type: str = "",
+        connector_types: list[str] | None = None,
         environment: str = "",
     ) -> dict[str, Any]:
+        normalized_job_type = _normalize_job_type(job_type)
+        if not normalized_job_type and _looks_like_template(job_type):
+            normalized_job_type = "mcp"
+        allowed_connector_types = _connector_types_for_job_type_or_values(
+            job_type=normalized_job_type,
+            connector_types=connector_types,
+            connector_type=connector_type,
+        )
+        normalized_environment = _normalize_environment(
+            environment,
+            default="dev" if _looks_like_template(environment) else "",
+        )
         params: dict[str, str] = {}
-        if connector_type.strip():
-            params["connector_type"] = connector_type.strip()
-        if environment.strip():
-            params["env"] = environment.strip()
+        if len(allowed_connector_types) == 1:
+            params["connector_type"] = allowed_connector_types[0]
+        if normalized_environment:
+            params["env"] = normalized_environment
         try:
             response = _api_get("/connectors", params=params or None)
         except Exception as exc:
@@ -1020,6 +1075,19 @@ def build_server() -> FastMCP:
             response = {"items": []}
 
         items = response.get("items", []) if isinstance(response, dict) else (response or [])
+        if len(allowed_connector_types) > 1:
+            allowed = set(allowed_connector_types)
+            items = [
+                c
+                for c in items
+                if isinstance(c, dict)
+                and (
+                    c.get("connector_type") in allowed
+                    or c.get("id") in allowed
+                    or c.get("name") in allowed
+                )
+            ]
+        items = _merge_connector_items(items, allowed_connector_types, normalized_environment)
         return {
             "items": [
                 {
@@ -1029,6 +1097,7 @@ def build_server() -> FastMCP:
                     "environment": c.get("environment"),
                     "status": c.get("status"),
                     "is_shared": c.get("is_shared", False),
+                    "label": _connector_label(c),
                 }
                 for c in items
             ]
@@ -1115,6 +1184,119 @@ def build_server() -> FastMCP:
     return mcp
 
 
+def _normalize_connector_type_list(value: Any) -> list[str]:
+    """Normalize connector type inputs from contracts, API payloads, or Prefab args."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or _TEMPLATE_EXPR_RE.match(text):
+            return []
+        try:
+            decoded = json.loads(text)
+        except json.JSONDecodeError:
+            decoded = text
+        if isinstance(decoded, list):
+            value = decoded
+        elif isinstance(decoded, str):
+            value = [part.strip() for part in decoded.split(",")]
+        else:
+            value = [decoded]
+    elif not isinstance(value, list):
+        value = list(value) if isinstance(value, (tuple, set)) else [value]
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if item is None:
+            continue
+        name = str(item).strip()
+        if not name or _TEMPLATE_EXPR_RE.match(name) or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+def _connector_types_for_job_type_or_values(
+    *,
+    job_type: str = "",
+    connector_types: Any = None,
+    connector_type: str = "",
+) -> list[str]:
+    """Resolve allowed connector types from the job contract first.
+
+    Prefab action arguments can serialize arrays as reactive template strings,
+    so UI actions pass job_type and let the server derive connector names from
+    KNOWN_CONTRACTS. Explicit connector_types remains for direct MCP callers.
+    """
+    normalized_job_type = _normalize_job_type(job_type)
+    if normalized_job_type:
+        schema = _schema_for_job_type(normalized_job_type, allow_api_fallback=True)
+        resolved = _connector_types_for(schema)
+        if resolved:
+            return resolved
+    if connector_types is not None:
+        return _normalize_connector_type_list(connector_types)
+    return _normalize_connector_type_list(connector_type)
+
+
+def _connector_label(connector: dict[str, Any]) -> str:
+    parts = [
+        connector.get("name") or connector.get("id"),
+        connector.get("connector_type"),
+        connector.get("environment"),
+    ]
+    return " · ".join(str(part) for part in parts if part)
+
+
+def _merge_connector_items(
+    items: list[dict[str, Any]],
+    allowed_connector_names: list[str],
+    environment: str,
+) -> list[dict[str, Any]]:
+    """Merge registered connector rows with contract-declared MCP server names.
+
+    `/connectors` stores user-registered connection records with coarse
+    connector_type values. Job contracts, especially `mcp`, declare approved MCP
+    server names. When no row exists for a server name, synthesize an option
+    whose id is the server name so job creation can still send the correct
+    connector value.
+    """
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        aliases = {
+            str(value).strip()
+            for value in (item.get("id"), item.get("name"), item.get("connector_type"))
+            if value
+        }
+        if not aliases or aliases & seen:
+            continue
+        seen.update(aliases)
+        merged.append(item)
+
+    for name in allowed_connector_names:
+        if name in seen:
+            continue
+        seen.add(name)
+        merged.append(
+            {
+                "id": name,
+                "name": name,
+                "connector_type": name,
+                "environment": environment or None,
+                "status": "available",
+                "is_shared": True,
+            }
+        )
+
+    return merged
+
+
 def _extract_connector_types(contract: dict) -> list[str]:
     """Walk the new JobTypeContract.requires shape and return a flat list of names.
 
@@ -1127,27 +1309,29 @@ def _extract_connector_types(contract: dict) -> list[str]:
     For UI purposes "connector type" = the union of `names` across all requirements,
     deduplicated, preserving order.
     """
-    embedded = contract.get("connector_types")
-    if embedded:
-        return list(embedded)
-
     requires = contract.get("requires")
-    if not requires:
-        return []
     # Old shape (single ExecutionRequirement dict) — extract names directly.
     if isinstance(requires, dict):
-        return list(requires.get("names") or requires.get("connector_types") or [])
+        names = _normalize_connector_type_list(requires.get("names"))
+        if names:
+            return names
+        return _normalize_connector_type_list(requires.get("connector_types"))
     # New shape (list of ExecutionRequirement dicts).
     out: list[str] = []
     seen: set[str] = set()
-    for req in requires:
-        if not isinstance(req, dict):
-            continue
-        for name in (req.get("names") or []):
-            if name and name not in seen:
-                seen.add(name)
-                out.append(name)
-    return out
+    if isinstance(requires, list):
+        for req in requires:
+            if not isinstance(req, dict):
+                continue
+            for name in _normalize_connector_type_list(req.get("names")):
+                if name and name not in seen:
+                    seen.add(name)
+                    out.append(name)
+    if out:
+        return out
+    # Legacy fallback for API-discovered contracts that have not adopted
+    # JobTypeContract.requires yet.
+    return _normalize_connector_type_list(contract.get("connector_types"))
 
 
 def _job_type_summary(contract: dict) -> dict[str, Any]:
@@ -1162,18 +1346,18 @@ def _job_type_summary(contract: dict) -> dict[str, Any]:
 
 def _connector_types_for(form_schema: dict) -> list[str]:
     """Derive connector types for a fallback API form-schema payload."""
-    return _job_type_metadata_for(form_schema).get("connector_types", [])
+    return _extract_connector_types(form_schema)
 
 
 def _job_type_metadata_for(form_schema: dict) -> dict[str, Any]:
-    embedded_connectors = form_schema.get("connector_types")
+    connector_types = _extract_connector_types(form_schema)
     embedded_kind = form_schema.get("kind")
-    if embedded_connectors is not None and embedded_kind:
-        return {"connector_types": list(embedded_connectors or []), "kind": embedded_kind}
+    if connector_types and embedded_kind:
+        return {"connector_types": connector_types, "kind": embedded_kind}
 
     job_type = form_schema.get("type")
     fallback = {
-        "connector_types": list(embedded_connectors or []),
+        "connector_types": connector_types,
         "kind": embedded_kind or ("artifact" if form_schema.get("artifact") else "runtime"),
     }
     if not job_type:
