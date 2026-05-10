@@ -428,22 +428,22 @@ def _trigger_run_action(*, environment_expr: Any | None = None) -> CallTool:
 def _ai_context_payload(environment_expr: Any) -> dict[str, Any]:
     return {
         "control_center_job_designer": {
-            "selected_job_type": "{{ selectedJobType | ''}}",
+            "selected_job_type": "{{ selectedJobType | '' }}",
             "environment": environment_expr,
-            "job_name": "{{ jobName | ''}}",
-            "data_sensitivity": "{{ dataSensitivity | 'Unknown'}}",
-            "tags": "{{ tagsText | ''}}",
-            "selected_connectors": "{{ selected_connectors | ''}}",
-            "manual_connector": "{{ manual_connector | ''}}",
-            "config": "{{ config | ''}}",
-            "run_params": "{{ params | ''}}",
+            "job_name": "{{ jobName | '' }}",
+            "data_sensitivity": "{{ dataSensitivity | 'unknown' }}",
+            "tags": "{{ tagsText | '' }}",
+            "selected_connectors": "{{ selectedConnectors | [] }}",
+            "manual_connector": "{{ connectorText | '' }}",
+            "config": "{{ config | {} }}",
+            "run_params": "{{ params | {} }}",
             "schema": {
-                "type": STATE.formSchema.type,
-                "display_name": STATE.formSchema.display_name,
-                "required_config": STATE.formSchema.required_config,
-                "required_params": STATE.formSchema.required_params,
-                "connector_types": STATE.formSchema.connector_types,
-            }
+                "type": "{{ formSchema.type | '' }}",
+                "display_name": "{{ formSchema.display_name | '' }}",
+                "required_config": "{{ formSchema.required_config | [] }}",
+                "required_params": "{{ formSchema.required_params | [] }}",
+                "connector_types": "{{ formSchema.connector_types | [] }}",
+            },
         }
     }
 
