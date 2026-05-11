@@ -40,6 +40,8 @@ from prefab_ui.app import ResolvedTool
 from prefab_ui.actions import PopState, SetState, ShowToast, CallHandler, CloseOverlay
 from prefab_ui.actions.mcp import CallTool, RequestDisplayMode, SendMessage, UpdateContext
 from prefab_ui.components import (
+    Accordion,
+    AccordionItem,
     Alert,
     Badge,
     Button,
@@ -51,6 +53,7 @@ from prefab_ui.components import (
     CardTitle,
     Checkbox,
     ChoiceCard,
+    Code,
     Column,
     Combobox,
     ComboboxOption,
@@ -780,6 +783,7 @@ def _preview_ai_suggested_changes_action() -> CallHandler:
             arguments={"current_state": RESULT},
             on_success=[
                 SetState("pendingAiSuggestions", RESULT.changes),
+                SetState("rawAiPatchText", RESULT.raw_changes_text),
                 SetState("suggestionsPending", True),
                 SetState("loading", False),
             ],
@@ -898,13 +902,13 @@ def _flatten_draft_changes(
 
         # Determine the status of the change
         is_addition = before in (_MISSING, None, "", [], {})
-        before_css = "text-muted-foreground opacity-40" if is_addition else "text-red-400/80 line-through decoration-red-500/50"
         is_deletion = after in (_MISSING, None, "", [], {})
+        before_css = "text-muted-foreground opacity-40" if is_addition else "text-red-400/80 line-through decoration-red-500/50"
         after_css = "text-muted-foreground opacity-40" if is_deletion else "text-emerald-400 font-medium"
 
         before_text = _display_value(before)
         after_text = _display_value(after)
-        is_long = len(before_text) > 40 or len(after_text) > 40
+        is_long = len(before_text) > 35 or len(after_text) > 35
 
         changes.append(
             {
@@ -1371,10 +1375,9 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                     preview_ai_suggested_changes_action,
                                 ],
                             )
-                            with Column(gap=3):
+                            with Column(gap=3, css_class="max-h-[60vh] overflow-y-auto pr-2"):
                                 with If("{{ pendingAiSuggestions.length > 0 }}"):
                                     with ForEach("pendingAiSuggestions") as (i, item):
-
                                         with ChoiceCard(css_class="hover:bg-emerald-500/5 transition-colors"):
                                             with Row(gap=4, css_class="w-full justify-between items-center"):
 
@@ -1406,7 +1409,16 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                                         Span(item.after, css_class=item.after_css)
 
                                 with If("{{ !(pendingAiSuggestions | length) }}"):
-                                    Muted("No AI changes are available to apply.", css_class="text-center py-4")
+                                    Muted("No AI changes are available to apply.")
+
+                            # NEW FEATURE: JSON Deep Dive Accordion
+                            with If("{{ pendingAiSuggestions.length > 0 }}"):
+                                with Accordion(css_class="mt-2 border-t border-white/10 pt-2"):
+                                    with AccordionItem(value="raw_json_patch", title="View Raw JSON Payload"):
+                                        Code(
+                                            content="{{ rawAiPatchText }}", language="json",
+                                            css_class="max-h-64 overflow-y-auto text-xs"
+                                        )
 
                             with Row(gap=2, css_class="justify-end"):
                                 Button(
@@ -1657,6 +1669,7 @@ def _initial_state(
         "loading": False,
         "lastDraftCapturedAt": "",
         "pendingAiSuggestions": [],
+        "rawAiPatchText": "",
         "suggestionsPending": False,
         "createdJob": None,
         "lastRun": None,
@@ -2207,10 +2220,22 @@ def build_server() -> FastMCP:
         current_draft = _ui_state_to_draft(current_state)
         proposed_draft = latest_draft_snapshot.get("draft") or {}
         changes = _flatten_draft_changes(current_draft, proposed_draft)
+
+        clean_display_payload = [
+            {
+                "label": item["label"],
+                "current_value": item["before"],
+                "proposed_update": item["updates"]
+            }
+            for item in changes
+        ]
+        raw_changes_text = json.dumps(clean_display_payload, indent=2)
+
         return {
             "status": "ready",
             "change_count": len(changes),
             "changes": changes,
+            "raw_changes_text": raw_changes_text,
         }
 
     @mcp.tool(
