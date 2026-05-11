@@ -4,6 +4,7 @@ from enum import Enum, StrEnum
 from typing import Any, Annotated, Literal
 from pydantic import BaseModel, Field, model_validator, field_validator
 from fnmatch import fnmatch
+import re
 
 from .field_formats import FORMAT_REGISTRY
 from .environment import Environment
@@ -29,7 +30,10 @@ BASE_TYPE_MAP: dict[FieldType, Any] = {
 
 
 class FieldSpec(BaseModel):
-    name: str
+    name: str = Field(
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+        description="Name must be a safe identifier using letters, numbers, and underscores.",
+    )
     type: FieldType
     format: str | None = None
 

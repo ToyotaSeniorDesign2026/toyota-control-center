@@ -123,6 +123,118 @@ JS_ACTIONS = {
             availableConnectors: asArray(s.availableConnectors),
         };
     }""",
+
+    "addSelectedConnector": """(ctx) => {
+        const s = ctx.state || {};
+        const selected = s.selectedConnector || "";
+
+        if (!selected) {
+            return {};
+        }
+
+        const current = Array.isArray(s.selectedConnectors)
+            ? s.selectedConnectors
+            : [];
+
+        if (current.includes(selected)) {
+            return {
+                selectedConnector: "",
+            };
+        }
+
+        return {
+            selectedConnectors: [...current, selected],
+            selectedConnector: "",
+        };
+    }""",
+
+    "resetDesignerForm": """(ctx) => {
+        const s = ctx.state || {};
+        const schema = s.formSchema || {};
+
+        const asObject = (value) =>
+            value && typeof value === "object" && !Array.isArray(value)
+                ? value
+                : {};
+
+        const hasDefault = (field, defaults) => {
+            if (!field || !field.name) return false;
+
+            return (
+                Object.prototype.hasOwnProperty.call(defaults, field.name) ||
+                (field.default !== undefined && field.default !== null)
+            );
+        };
+
+        const defaultValueForField = (field, defaults) => {
+            if (Object.prototype.hasOwnProperty.call(defaults, field.name)) {
+                return defaults[field.name];
+            }
+
+            return field.default;
+        };
+
+        const emptyValueForField = (field) => {
+            if (!field) return "";
+
+            if (field.sensitive || field.write_only || field.format === "secret") {
+                return "";
+            }
+
+            switch (field.type) {
+                case "boolean":
+                    return false;
+                case "integer":
+                case "number":
+                case "array":
+                case "object":
+                    return "";
+                default:
+                    return "";
+            }
+        };
+
+        const resetSection = (fields, defaults, currentValues) => {
+            const out = {};
+            const safeDefaults = asObject(defaults);
+            const safeCurrent = asObject(currentValues);
+
+            for (const field of Array.isArray(fields) ? fields : []) {
+                if (!field || !field.name) continue;
+
+                const isEnum = Array.isArray(field.enum) && field.enum.length > 0;
+
+                if (hasDefault(field, safeDefaults)) {
+                    out[field.name] = defaultValueForField(field, safeDefaults);
+                    continue;
+                }
+
+                if (isEnum) {
+                    // Preserve enum/select values unless the schema provides a default.
+                    out[field.name] = safeCurrent[field.name] ?? "";
+                    continue;
+                }
+
+                out[field.name] = emptyValueForField(field);
+            }
+
+            return out;
+        };
+
+        return {
+            config: resetSection(schema.config_fields, schema.defaults_config, s.config),
+            params: resetSection(schema.params_fields, schema.defaults_params, s.params),
+            createdJob: null,
+            lastRun: null,
+            runPrompt: "",
+            jobName: "",
+            tagsText: "",
+            selectedConnector: "",
+            selectedConnectors: [],
+            connectorText: "",
+            lastDraftCapturedAt: "",
+        };
+    }""",
 }
 
 
@@ -561,10 +673,11 @@ def _capture_current_draft_action(
     )
 
 
-def _update_ai_context_action(environment_expr: Any) -> list[Any]:
+def _update_ai_context_action() -> list[Any]:
     return [
         _capture_current_draft_action(
             on_success=[
+                SetState("lastDraftCapturedAt", RESULT.captured_at),
                 UpdateContext(structured_content={"control_center_job_designer": RESULT.draft}),
                 ShowToast("AI context updated.", variant="success"),
             ],
@@ -572,10 +685,11 @@ def _update_ai_context_action(environment_expr: Any) -> list[Any]:
     ]
 
 
-def _review_setup_action(environment_expr: Any) -> list[Any]:
+def _review_setup_action() -> list[Any]:
     return [
         _capture_current_draft_action(
             on_success=[
+                SetState("lastDraftCapturedAt", RESULT.captured_at),
                 UpdateContext(structured_content={"control_center_job_designer": RESULT.draft}),
                 SendMessage(
                     "Please review the current Control Center job setup. Check connectors, "
@@ -587,24 +701,6 @@ def _review_setup_action(environment_expr: Any) -> list[Any]:
             ],
         ),
     ]
-
-
-def _current_designer_state_payload(environment_expr: Any) -> dict[str, Any]:
-    return {
-        "selectedJobType": "{{ selectedJobType | '' }}",
-        "selectedConnector": "{{ selectedConnector | '' }}",
-        "selectedConnectors": "{{ selectedConnectors | [] }}",
-        "connectorText": "{{ connectorText | '' }}",
-        "environment": environment_expr,
-        "dataSensitivity": "{{ dataSensitivity | 'low' }}",
-        "jobName": "{{ jobName | '' }}",
-        "tagsText": "{{ tagsText | '' }}",
-        "config": "{{ config | {} }}",
-        "params": "{{ params | {} }}",
-        "runPrompt": "{{ runPrompt | '' }}",
-        "formSchema": STATE.formSchema,
-        "availableConnectors": "{{ availableConnectors | [] }}",
-    }
 
 
 def _patch_value(patch: dict[str, Any], *keys: str) -> Any:
@@ -883,8 +979,8 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
     load_schema_on_change = _load_schema_action(EVENT)
     create_action = _create_job_action(environment_expr=environment_ref)
     run_action = _trigger_run_action(environment_expr=environment_ref)
-    update_ai_context_action = _update_ai_context_action(environment_ref)
-    review_setup_action = _review_setup_action(environment_ref)
+    update_ai_context_action = _update_ai_context_action()
+    review_setup_action = _review_setup_action()
     sync_ai_draft_action = _sync_ai_draft_to_form_action()
     static_job_types = list(initial_state.get("availableJobTypes") or [])
 
@@ -977,6 +1073,8 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                             with Row(gap=2, align="center"):
                                 Loader(variant="spin", size="sm")
                                 Muted("Working…")
+                    with If(STATE.lastDraftCapturedAt):
+                        Muted(f"Last AI context update: {STATE.lastDraftCapturedAt.datetime()}")
 
         # ── Job type contract summary ────────────────────────────────────────
         with If(STATE.formSchema.type):
@@ -1009,10 +1107,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                         "Add",
                                         css_class="shrink-0 min-w-24",
                                         disabled="{{ !selectedConnector }}",
-                                        on_click=[
-                                            AppendState("selectedConnectors", STATE.selectedConnector),
-                                            SetState("selectedConnector", ""),
-                                        ],
+                                        on_click=CallHandler("addSelectedConnector"),
                                     )
                         with If(STATE.selectedConnectors.length() > 0):
                             with Column(gap=2, css_class="pt-1"):
@@ -1117,18 +1212,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                     Button(
                         "Reset form",
                         variant="outline",
-                        on_click=[
-                            SetState("config", {}),
-                            SetState("params", {}),
-                            SetState("createdJob", None),
-                            SetState("lastRun", None),
-                            SetState("runPrompt", ""),
-                            SetState("jobName", ""),
-                            SetState("tagsText", ""),
-                            SetState("selectedConnector", ""),
-                            SetState("selectedConnectors", []),
-                            SetState("connectorText", ""),
-                        ],
+                        on_click=CallHandler("resetDesignerForm"),
                     )
 
         # ── Created job summary ──────────────────────────────────────────────
@@ -1202,9 +1286,12 @@ def _initial_state(
         "params": selected_schema.get("defaults_params", {}),
         "runPrompt": "",
         "formSchema": selected_schema,
+
+        # UI / Status Metadata
+        "loading": False,
+        "lastDraftCapturedAt": "",
         "createdJob": None,
         "lastRun": None,
-        "loading": False,
     }
     return states
 
@@ -1647,9 +1734,9 @@ def build_server() -> FastMCP:
 
         if not isinstance(current_state, dict):
             raise ValueError("current_state must be an object supplied by the Prefab UI.")
-        if not current_state.get("formSchema") and not current_state.get("selectedJobType"):
+        if not _REQUIRED_UI_STATE_KEYS.issubset(current_state):
             raise ValueError(
-                "capture_current_draft requires a live UI state object from the Prefab app. "
+                "capture_current_draft requires a Prefab UI state payload. "
                 "Use get_draft_snapshot to read drafts or patch_draft_snapshot to edit them."
             )
 
