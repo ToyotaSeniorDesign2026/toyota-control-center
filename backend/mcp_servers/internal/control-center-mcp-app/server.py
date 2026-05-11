@@ -94,8 +94,8 @@ APP_RESOURCE_DOMAIN = "https://control-center-job-creator.local"
 _API_BASE = os.environ.get("CC_API_BASE_URL", "http://localhost:8000").rstrip("/")
 _API_TOKEN = os.environ.get("CC_SERVICE_TOKEN", "")
 _HTTP_TIMEOUT = 30
-_TEMPLATE_EXPR_RE = re.compile(r"^\s*\{\{.*\}\}\s*$")
 
+_TEMPLATE_EXPR_RE = re.compile(r"^\s*\{\{.*}}\s*$")
 _REQUIRED_UI_STATE_KEYS = {"environment", "config", "params", "formSchema"}
 
 
@@ -741,6 +741,36 @@ def _review_setup_action() -> list[Any]:
     ]
 
 
+def _is_template_expr(value: Any) -> bool:
+    return isinstance(value, str) and bool(_TEMPLATE_EXPR_RE.match(value.strip()))
+
+
+def _decode_jsonish_string(value: str) -> Any:
+    text = value.strip()
+
+    if not text:
+        return ""
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+
+def _filter_template_items(items: Iterable[Any]) -> tuple[list[Any], bool]:
+    result: list[Any] = []
+    removed_any = False
+
+    for item in items:
+        if _is_template_expr(item):
+            removed_any = True
+            continue
+
+        result.append(item)
+
+    return result, removed_any
+
+
 def _patch_value(patch: dict[str, Any], *keys: str) -> Any:
     for key in keys:
         if key in patch:
@@ -749,40 +779,79 @@ def _patch_value(patch: dict[str, Any], *keys: str) -> Any:
 
 
 def _patch_list(value: Any) -> list[Any] | None:
-    if value is None:
+    """Normalize patch/UI values into a list.
+
+    Returns None when the value is unusable/unresolved, so callers can preserve
+    an existing value instead of accidentally overwriting with bad data.
+    """
+    if value is None or _is_template_expr(value):
         return None
+
     if isinstance(value, list):
-        return value
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return []
-        try:
-            decoded = json.loads(text)
-        except json.JSONDecodeError:
-            return [part.strip() for part in text.split(",") if part.strip()]
-        if isinstance(decoded, list):
-            return decoded
-        return [decoded]
+        result, removed_any = _filter_template_items(value)
+        return None if removed_any and not result else result
+
     if isinstance(value, (tuple, set)):
-        return list(value)
+        result, removed_any = _filter_template_items(value)
+        return None if removed_any and not result else result
+
+    if isinstance(value, str):
+
+        decoded = _decode_jsonish_string(value)
+        if decoded == "":
+            return []
+        if _is_template_expr(decoded):
+            return None
+        if isinstance(decoded, list):
+            result, removed_any = _filter_template_items(decoded)
+            return None if removed_any and not result else result
+        if isinstance(decoded, (tuple, set)):
+            result, removed_any = _filter_template_items(decoded)
+            return None if removed_any and not result else result
+        if isinstance(decoded, str):
+            return [part.strip() for part in decoded.split(",") if part.strip()]
+
+        return [decoded]
+
     return [value]
 
 
 def _patch_dict(value: Any) -> dict[str, Any] | None:
-    if value is None:
+    """Normalize patch/UI values into a dict.
+
+    Returns None when the value is unusable/unresolved, so callers can preserve
+    an existing value instead of accidentally overwriting with bad data.
+    """
+    if value is None or _is_template_expr(value):
         return None
-    if isinstance(value, dict):
-        return value
+
     if isinstance(value, str):
-        text = value.strip()
-        if not text:
+
+        decoded = _decode_jsonish_string(value)
+        if decoded == "":
             return {}
-        try:
-            decoded = json.loads(text)
-        except json.JSONDecodeError:
+        if _is_template_expr(decoded):
             return None
-        return decoded if isinstance(decoded, dict) else None
+        value = decoded
+
+    if isinstance(value, dict):
+
+        result: dict[str, Any] = {}
+        removed_any = False
+
+        for key, item in value.items():
+
+            if not isinstance(key, str):
+                removed_any = True
+                continue
+            if _is_template_expr(key) or _is_template_expr(item):
+                removed_any = True
+                continue
+
+            result[key] = item
+
+        return None if removed_any and not result else result
+
     return None
 
 
@@ -1103,7 +1172,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                             ],
                         )
                         _async_btn(
-                            "Sync AI draft to form",
+                            "Apply AI draft",
                             action=sync_ai_draft_action,
                             variant="outline",
                         )
