@@ -34,7 +34,7 @@ from fastmcp.apps import AppConfig, ResourceCSP
 from fastmcp.apps.approval import Approval
 from prefab_ui import PrefabApp
 from prefab_ui.app import ResolvedTool
-from prefab_ui.actions import AppendState, PopState, SetState, ShowToast
+from prefab_ui.actions import AppendState, PopState, SetState, ShowToast, CallHandler
 from prefab_ui.actions.mcp import CallTool, RequestDisplayMode, SendMessage, UpdateContext
 from prefab_ui.components import (
     Alert,
@@ -95,6 +95,35 @@ _HTTP_TIMEOUT = 30
 _TEMPLATE_EXPR_RE = re.compile(r"^\s*\{\{.*\}\}\s*$")
 
 _REQUIRED_UI_STATE_KEYS = {"environment", "config", "params", "formSchema"}
+
+JS_ACTIONS = {
+    "buildDraftCapture": """(ctx) => {
+        const s = ctx.state || {};
+
+        const asArray = (value) => Array.isArray(value) ? value : [];
+        const asObject = (value) => {
+            return value && typeof value === "object" && !Array.isArray(value)
+                ? value
+                : {};
+        };
+
+        return {
+            selectedJobType: s.selectedJobType || "",
+            selectedConnector: s.selectedConnector || "",
+            selectedConnectors: asArray(s.selectedConnectors),
+            connectorText: s.connectorText || "",
+            environment: s.environment || "dev",
+            dataSensitivity: s.dataSensitivity || "low",
+            jobName: s.jobName || "",
+            tagsText: s.tagsText || "",
+            config: asObject(s.config),
+            params: asObject(s.params),
+            runPrompt: s.runPrompt || "",
+            formSchema: asObject(s.formSchema),
+            availableConnectors: asArray(s.availableConnectors),
+        };
+    }""",
+}
 
 
 # ── Backend HTTP helpers ─────────────────────────────────────────────────────
@@ -517,22 +546,24 @@ def _trigger_run_action(*, environment_expr: Any | None = None) -> CallTool:
 
 
 def _capture_current_draft_action(
-    environment_expr: Any,
     *,
     on_success: list[Any] | None = None,
-) -> CallTool:
-    return CallTool(
-        "capture_current_draft",
-        arguments={"current_state": _current_designer_state_payload(environment_expr)},
-        on_success=on_success,
-        on_error=ShowToast(ERROR, variant="error"),
+) -> CallHandler:
+    return CallHandler(
+        "buildDraftCapture",
+        on_success=CallTool(
+            "capture_current_draft",
+            arguments={"current_state": RESULT},
+            on_success=on_success or [],
+            on_error=[ShowToast(ERROR, variant="error")],
+        ),
+        on_error=[ShowToast(ERROR, variant="error")],
     )
 
 
 def _update_ai_context_action(environment_expr: Any) -> list[Any]:
     return [
         _capture_current_draft_action(
-            environment_expr,
             on_success=[
                 UpdateContext(structured_content={"control_center_job_designer": RESULT.draft}),
                 ShowToast("AI context updated.", variant="success"),
@@ -544,7 +575,6 @@ def _update_ai_context_action(environment_expr: Any) -> list[Any]:
 def _review_setup_action(environment_expr: Any) -> list[Any]:
     return [
         _capture_current_draft_action(
-            environment_expr,
             on_success=[
                 UpdateContext(structured_content={"control_center_job_designer": RESULT.draft}),
                 SendMessage(
@@ -1142,6 +1172,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
         css_class="max-w-5xl px-4 py-6 md:px-6",
         stylesheets=[APP_STYLES],
         theme=Theme(mode="dark", gradient=False),
+        js_actions=JS_ACTIONS,
         view=view,
     )
 
