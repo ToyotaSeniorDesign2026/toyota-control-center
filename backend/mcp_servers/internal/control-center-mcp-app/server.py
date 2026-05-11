@@ -32,11 +32,12 @@ from collections.abc import Iterable
 
 import httpx
 from fastmcp import FastMCP
+from fastmcp.tools import ToolResult
 from fastmcp.apps import AppConfig, ResourceCSP
 from fastmcp.apps.approval import Approval
 from prefab_ui import PrefabApp
 from prefab_ui.app import ResolvedTool
-from prefab_ui.actions import PopState, SetState, ShowToast, CallHandler
+from prefab_ui.actions import PopState, SetState, ShowToast, CallHandler, CloseOverlay
 from prefab_ui.actions.mcp import CallTool, RequestDisplayMode, SendMessage, UpdateContext
 from prefab_ui.components import (
     Alert,
@@ -49,9 +50,11 @@ from prefab_ui.components import (
     CardHeader,
     CardTitle,
     Checkbox,
+    ChoiceCard,
     Column,
     Combobox,
     ComboboxOption,
+    Dialog,
     Div,
     Elif,
     Else,
@@ -76,6 +79,8 @@ from prefab_ui.components import (
     Text,
     Textarea,
 )
+from prefab_ui.define import Define
+from prefab_ui.use import Use
 from prefab_ui.rx import ERROR, EVENT, Rx
 from prefab_ui.themes import Theme
 
@@ -278,6 +283,50 @@ JS_ACTIONS = {
                 ...resetDesignerSections(schema, s),
             }};
         }}
+    """),
+
+    "applySelectedAiSuggestions": js_handler("""
+        (ctx) => {
+            const s = ctx.state || {};
+            const changes = Array.isArray(s.pendingAiSuggestions)
+                ? s.pendingAiSuggestions
+                : [];
+    
+            const asObject = (value) =>
+                value && typeof value === "object" && !Array.isArray(value)
+                    ? value
+                    : {};
+    
+            const output = {};
+    
+            const mergeSection = (section, updates) => {
+                output[section] = {
+                    ...asObject(output[section] !== undefined ? output[section] : s[section]),
+                    ...asObject(updates),
+                };
+            };
+    
+            for (const change of changes) {
+                if (!change || !change.selected) continue;
+    
+                const updates = asObject(change.updates);
+    
+                for (const [key, value] of Object.entries(updates)) {
+                    if (key === "config" || key === "params") {
+                        mergeSection(key, value);
+                    } else {
+                        output[key] = value;
+                    }
+                }
+            }
+    
+            return {
+                ...output,
+                suggestionsPending: false,
+                pendingAiSuggestions: [],
+                loading: false,
+            };
+        }
     """),
 }
 
@@ -723,6 +772,29 @@ def _update_ai_context_action() -> list[Any]:
     ]
 
 
+def _preview_ai_suggested_changes_action() -> CallHandler:
+    return CallHandler(
+        "buildDraftCapture",
+        on_success=CallTool(
+            "preview_ai_suggested_changes",
+            arguments={"current_state": RESULT},
+            on_success=[
+                SetState("pendingAiSuggestions", RESULT.changes),
+                SetState("suggestionsPending", True),
+                SetState("loading", False),
+            ],
+            on_error=[
+                SetState("loading", False),
+                ShowToast(ERROR, variant="error"),
+            ],
+        ),
+        on_error=[
+            SetState("loading", False),
+            ShowToast(ERROR, variant="error"),
+        ],
+    )
+
+
 def _review_setup_action() -> list[Any]:
     return [
         _capture_current_draft_action(
@@ -739,6 +811,96 @@ def _review_setup_action() -> list[Any]:
             ],
         ),
     ]
+
+
+# ── AI Draft Preview / Diff Helpers ──────────────────────────────────────────
+
+_MISSING = object()
+
+
+def _display_key(key: str) -> str:
+    return key.replace("_", " ").title()
+
+
+def _display_value(value: Any, *, limit: int = 180) -> str:
+    if value is _MISSING or value is None or value == "":
+        return "—"
+    if isinstance(value, (dict, list)):
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    else:
+        text = str(value)
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def _get_diff_items(current: dict, proposed: dict):
+    """Yield (item_id, label, ui_key, field_key, before, after)."""
+    top_level_map = {
+        "selected_job_type": ("selectedJobType", "Job type"),
+        "environment": ("environment", "Environment"),
+        "job_name": ("jobName", "Job name"),
+        "data_sensitivity": ("dataSensitivity", "Data sensitivity"),
+        "tags_text": ("tagsText", "Tags"),
+        "selected_connector": ("selectedConnector", "Selected connector"),
+        "selected_connectors": ("selectedConnectors", "Selected connectors"),
+        "manual_connector": ("connectorText", "Manual connector"),
+        "run_prompt": ("runPrompt", "Run prompt"),
+    }
+
+    for draft_key, (ui_key, label) in top_level_map.items():
+        yield (
+            draft_key,
+            label,
+            ui_key,
+            None,
+            current.get(draft_key, _MISSING),
+            proposed.get(draft_key, _MISSING),
+        )
+
+    for section in ("config", "params"):
+        before_section = _patch_dict(current.get(section)) or {}
+        after_section = _patch_dict(proposed.get(section)) or {}
+
+        for field_key, after in after_section.items():
+            yield (
+                f"{section}.{field_key}",
+                f"{section.title()}: {_display_key(field_key)}",
+                section,
+                field_key,
+                before_section.get(field_key, _MISSING),
+                after,
+            )
+
+
+def _flatten_draft_changes(
+    current_draft: dict[str, Any],
+    proposed_draft: dict[str, Any],
+) -> list[dict[str, Any]]:
+    changes: list[dict[str, Any]] = []
+
+    for item_id, label, ui_key, field_key, before, after in _get_diff_items(
+        current_draft,
+        proposed_draft,
+    ):
+        if after is _MISSING or before == after:
+            continue
+
+        updates = (
+            {ui_key: {field_key: after}}
+            if field_key is not None
+            else {ui_key: after}
+        )
+
+        changes.append(
+            {
+                "id": item_id,
+                "label": label,
+                "preview": f"{_display_value(before)} → {_display_value(after)}",
+                "selected": True,
+                "updates": updates,
+            }
+        )
+
+    return changes
 
 
 def _is_template_expr(value: Any) -> bool:
@@ -1089,6 +1251,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
     update_ai_context_action = _update_ai_context_action()
     review_setup_action = _review_setup_action()
     sync_ai_draft_action = _sync_ai_draft_to_form_action()
+    preview_ai_suggested_changes_action = _preview_ai_suggested_changes_action()
     static_job_types = list(initial_state.get("availableJobTypes") or [])
 
     def _async_btn(label: str, *, action: object, variant: str = "secondary") -> None:
@@ -1097,6 +1260,16 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
             variant=variant,
             on_click=[SetState("loading", True), action],
         )
+
+    with Define("ai-changes-card") as ai_changes_card:
+        with ChoiceCard():
+            with FieldContent():
+                FieldTitle("{{ label }}")
+                FieldDescription("{{ preview }}")
+            Checkbox(
+                name="pendingAiSuggestions.{{ change_idx }}.selected",
+                value="{{ selected }}",
+            )
 
     with Column(gap=4) as view:
         # ── Hero ─────────────────────────────────────────────────────────────
@@ -1159,11 +1332,13 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                     with Row(gap=3, css_class="flex-wrap pt-1"):
                         Button(
                             "Update AI context",
+                            icon="speech",
                             variant="success",
                             on_click=update_ai_context_action,
                         )
                         Button(
                             "Refresh data",
+                            icon="cloud-sync",
                             variant="outline",
                             on_click=[
                                 SetState("loading", True),
@@ -1171,11 +1346,49 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                 refresh_connectors_action,
                             ],
                         )
-                        _async_btn(
-                            "Apply AI draft",
-                            action=sync_ai_draft_action,
-                            variant="outline",
-                        )
+                        with Dialog(
+                            title="AI Suggestion",
+                            description="Choose which AI-proposed changes to apply.",
+                            dismissible=False,
+                            name="suggestionsPending"
+                        ):
+                            Button(
+                                "Apply AI draft",
+                                variant="outline",
+                                icon="square-pen",
+                                on_click=[
+                                    SetState("loading", True),
+                                    preview_ai_suggested_changes_action,
+                                ],
+                            )
+                            with Column(gap=3):
+                                with If("{{ pendingAiSuggestions | length }}"):
+                                    with ForEach("pendingAiSuggestions"):
+                                        Use("ai-changes-card", change_idx="{{ $index }}")
+
+                                with If("{{ !(pendingAiSuggestions | length) }}"):
+                                    Muted("No AI changes are available to apply.")
+
+                            with Row(gap=2, css_class="justify-end"):
+                                Button(
+                                    "Cancel",
+                                    variant="outline",
+                                    on_click=[
+                                        SetState("suggestionsPending", False),
+                                        SetState("pendingAiSuggestions", []),
+                                        CloseOverlay(),
+                                    ]
+                                )
+                                Button(
+                                    "Confirm",
+                                    variant="destructive",
+                                    disabled="{{ !(pendingAiSuggestions | selectattr:'selected' | length) }}",
+                                    on_click=[
+                                        CallHandler("applySelectedAiSuggestions"),
+                                        CloseOverlay(),
+                                        ShowToast("Selected AI changes applied.", variant="success"),
+                                    ],
+                                )
                         with If(STATE.loading):
                             with Row(gap=2, align="center"):
                                 Loader(variant="spin", size="sm")
@@ -1313,11 +1526,13 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                         _async_btn("Trigger run", action=run_action, variant="success")
                     Button(
                         "Get AI feedback",
+                        icon="lightbulb",
                         variant="outline",
                         on_click=review_setup_action,
                     )
                     Button(
                         "Reset form",
+                        icon="trash-2",
                         variant="outline",
                         on_click=CallHandler("resetDesignerForm"),
                     )
@@ -1358,13 +1573,14 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                             Alert(variant="error", title="Run error", description=STATE.lastRun.error)
 
     return PrefabApp(
-        title="Control Center Job Designer",
-        state=initial_state,
-        css_class="max-w-5xl px-4 py-6 md:px-6",
-        stylesheets=[APP_STYLES],
-        theme=Theme(mode="dark", gradient=False),
-        js_actions=JS_ACTIONS,
         view=view,
+        state=initial_state,
+        theme=Theme(mode="dark", gradient=False),
+        css_class="max-w-5xl px-4 py-6 md:px-6",
+        defs=[ai_changes_card],
+        stylesheets=[APP_STYLES],
+        title="Control Center Job Designer",
+        js_actions=JS_ACTIONS,
     )
 
 
@@ -1375,17 +1591,22 @@ def _initial_state(
     environment: str = "dev",
 ) -> dict[str, Any]:
     available_job_types = job_types or _static_job_types()
-    selected_schema = _static_form_schema(selected_type) or {}
+    selected_schema = _initial_form_schema(selected_type)
 
-    states = {
+    resolved_selected_type = (selected_schema.get("type") or _normalize_job_type(selected_type) or "")
+
+    if selected_schema.get("type"):
+        available_job_types = _merge_job_type_summaries(available_job_types, [_job_type_summary(selected_schema)])
+
+    return {
         "availableJobTypes": available_job_types,
         "apiJobTypes": [],
         "availableConnectors": selected_schema.get("connector_items", []),
-        "selectedJobType": selected_type or "",
+        "selectedJobType": resolved_selected_type,
         "selectedConnector": "",
         "selectedConnectors": [],
         "connectorText": "",
-        "environment": environment,
+        "environment": _normalize_environment(environment, default="dev") or "dev",
         "dataSensitivity": "low",
         "jobName": "",
         "tagsText": "",
@@ -1397,10 +1618,11 @@ def _initial_state(
         # UI / Status Metadata
         "loading": False,
         "lastDraftCapturedAt": "",
+        "pendingAiSuggestions": [],
+        "suggestionsPending": False,
         "createdJob": None,
         "lastRun": None,
     }
-    return states
 
 
 # ── CSP helper (mirrors the prototype) ───────────────────────────────────────
@@ -1621,6 +1843,22 @@ def _schema_for_job_type(job_type: str, *, allow_api_fallback: bool = False) -> 
 
 def _static_job_types() -> list[dict[str, Any]]:
     return [_job_type_summary(contract.model_dump(mode="json")) for contract in KNOWN_CONTRACTS.values()]
+
+
+def _initial_form_schema(job_type: str) -> dict[str, Any]:
+    """Resolve the initial schema for a preselected job type.
+
+    This allows API fallback so open_job_designer(job_type=...) can preload dynamic job types correctly.
+    """
+    normalized = _normalize_job_type(job_type)
+    if not normalized:
+        return _form_schema_payload({})
+
+    try:
+        return _schema_for_job_type(normalized, allow_api_fallback=True)
+    except Exception as exc:
+        logger.warning("Failed to preload schema for %s: %s", normalized, exc)
+        return _static_form_schema(normalized)
 
 
 def _dynamic_job_type_summaries(api_job_types: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1892,8 +2130,6 @@ def build_server() -> FastMCP:
 
         latest_draft_snapshot = _capture_draft_snapshot(result)
 
-        _sync_ui_result_to_form_actions()
-
         return {
             **result,
             "draft": latest_draft_snapshot["draft"],
@@ -1920,6 +2156,23 @@ def build_server() -> FastMCP:
             "message": "Loaded latest AI draft into the form.",
             "applied": [],
             **state,
+        }
+
+    @mcp.tool(
+        name="preview_ai_suggested_changes",
+        description="Compare the visible form state to the latest AI draft and return selectable proposed changes.",
+    )
+    def preview_ai_suggested_changes(current_state: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(current_state, dict):
+            raise ValueError("current_state must be a Prefab UI state object.")
+
+        current_draft = _ui_state_to_draft(current_state)
+        proposed_draft = latest_draft_snapshot.get("draft") or {}
+        changes = _flatten_draft_changes(current_draft, proposed_draft)
+        return {
+            "status": "ready",
+            "change_count": len(changes),
+            "changes": changes,
         }
 
     @mcp.tool(
