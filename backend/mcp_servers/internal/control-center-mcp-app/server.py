@@ -64,6 +64,7 @@ from prefab_ui.components import (
     FieldTitle,
     ForEach,
     Grid,
+    HoverCard,
     H1,
     If,
     Input,
@@ -821,14 +822,20 @@ def _display_key(key: str) -> str:
     return key.replace("_", " ").title()
 
 
-def _display_value(value: Any, *, limit: int = 180) -> str:
+def _display_value(value: Any, *, limit: int | None = 180) -> str:
+
     if value is _MISSING or value is None or value == "":
         return "—"
+
     if isinstance(value, (dict, list)):
         text = json.dumps(value, ensure_ascii=False, sort_keys=True)
     else:
         text = str(value)
-    return text[:limit] + ("…" if len(text) > limit else "")
+
+    if limit is None:
+        return text  # Return the whole text if limit is explicitly None
+
+    return text[:limit] + ("…" if len(text) > limit else "")  # Add ellipsis if truncated
 
 
 def _get_diff_items(current: dict, proposed: dict):
@@ -1368,18 +1375,29 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                 with If("{{ pendingAiSuggestions.length > 0 }}"):
                                     with ForEach("pendingAiSuggestions") as (i, item):
                                         with ChoiceCard():
-                                            # The name prop establishes the two-way binding to the state path
-                                            Checkbox(
-                                                name=f"pendingAiSuggestions.{i}.selected",
-                                                label=item.label,
-                                                # on_change is optional if you only need the state to update,
-                                                # but you can add it if you need side effects (like a toast).
-                                            )
 
-                                            with Row(gap=2, align="center"):
+                                            with If(item.is_long):
+                                                Checkbox(name=f"pendingAiSuggestions.{i}.selected")
+                                                with HoverCard():
+                                                    Button(item.label, variant="ghost", icon="text-wrap")
+                                                    with Column(gap=2):
+                                                        Text(content=item.label)
+                                                        Textarea(value=item.after, rows=3, disabled=True, css_class=item.after_css)
+                                                        Textarea(value=item.before, rows=3, disabled=True, css_class=item.before_css)
                                                 Span(item.before, css_class=item.before_css)
                                                 Span("→", css_class="opacity-30 text-xs")
                                                 Span(item.after, css_class=item.after_css)
+
+                                            with Else():
+                                                # The name prop establishes the two-way binding to the state path
+                                                Checkbox(
+                                                    name=f"pendingAiSuggestions.{i}.selected", label=item.label,
+                                                )
+
+                                                with Row(gap=2, align="center"):
+                                                    Span(item.before, css_class=item.before_css)
+                                                    Span("→", css_class="opacity-30 text-xs")
+                                                    Span(item.after, css_class=item.after_css)
 
                                 with If("{{ !(pendingAiSuggestions | length) }}"):
                                     Muted("No AI changes are available to apply.")
