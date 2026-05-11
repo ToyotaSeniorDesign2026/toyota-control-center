@@ -26,15 +26,17 @@ import logging
 import os
 import re
 from typing import Any
+from textwrap import dedent, indent
+from datetime import datetime, timezone
+from collections.abc import Iterable
 
 import httpx
-from datetime import datetime, timezone
 from fastmcp import FastMCP
 from fastmcp.apps import AppConfig, ResourceCSP
 from fastmcp.apps.approval import Approval
 from prefab_ui import PrefabApp
 from prefab_ui.app import ResolvedTool
-from prefab_ui.actions import AppendState, PopState, SetState, ShowToast, CallHandler
+from prefab_ui.actions import PopState, SetState, ShowToast, CallHandler
 from prefab_ui.actions.mcp import CallTool, RequestDisplayMode, SendMessage, UpdateContext
 from prefab_ui.components import (
     Alert,
@@ -96,145 +98,187 @@ _TEMPLATE_EXPR_RE = re.compile(r"^\s*\{\{.*\}\}\s*$")
 
 _REQUIRED_UI_STATE_KEYS = {"environment", "config", "params", "formSchema"}
 
-JS_ACTIONS = {
-    "buildDraftCapture": """(ctx) => {
-        const s = ctx.state || {};
 
-        const asArray = (value) => Array.isArray(value) ? value : [];
-        const asObject = (value) => {
-            return value && typeof value === "object" && !Array.isArray(value)
-                ? value
-                : {};
-        };
+def js_handler(body: str) -> str:
+    return dedent(body).strip()
 
-        return {
-            selectedJobType: s.selectedJobType || "",
-            selectedConnector: s.selectedConnector || "",
-            selectedConnectors: asArray(s.selectedConnectors),
-            connectorText: s.connectorText || "",
-            environment: s.environment || "dev",
-            dataSensitivity: s.dataSensitivity || "low",
-            jobName: s.jobName || "",
-            tagsText: s.tagsText || "",
-            config: asObject(s.config),
-            params: asObject(s.params),
-            runPrompt: s.runPrompt || "",
-            formSchema: asObject(s.formSchema),
-            availableConnectors: asArray(s.availableConnectors),
-        };
-    }""",
 
-    "addSelectedConnector": """(ctx) => {
-        const s = ctx.state || {};
-        const selected = s.selectedConnector || "";
+def js_indent(source: str, prefix: str = "    ") -> str:
+    return indent(source, prefix)
 
-        if (!selected) {
-            return {};
+
+JS_DESIGNER_RESET_HELPERS = js_handler("""
+    const asArray = (value) => Array.isArray(value) ? value : [];
+
+    const asObject = (value) =>
+        value && typeof value === "object" && !Array.isArray(value)
+            ? value
+            : {};
+
+    const hasDefault = (field, defaults) => {
+        if (!field || !field.name) return false;
+
+        return (
+            Object.prototype.hasOwnProperty.call(defaults, field.name) ||
+            (field.default !== undefined && field.default !== null)
+        );
+    };
+
+    const defaultValueForField = (field, defaults) => {
+        if (Object.prototype.hasOwnProperty.call(defaults, field.name)) {
+            return defaults[field.name];
         }
 
-        const current = Array.isArray(s.selectedConnectors)
-            ? s.selectedConnectors
-            : [];
+        return field.default;
+    };
 
-        if (current.includes(selected)) {
+    const emptyValueForField = (field) => {
+        if (!field) return "";
+
+        if (field.sensitive || field.write_only || field.format === "secret") {
+            return "";
+        }
+
+        switch (field.type) {
+            case "boolean":
+                return false;
+            case "integer":
+            case "number":
+            case "array":
+            case "object":
+                return "";
+            default:
+                return "";
+        }
+    };
+
+    const resetSection = (fields, defaults, currentValues) => {
+        const out = {};
+        const safeDefaults = asObject(defaults);
+        const safeCurrent = asObject(currentValues);
+
+        for (const field of Array.isArray(fields) ? fields : []) {
+            if (!field || !field.name) continue;
+
+            const isEnum = Array.isArray(field.enum) && field.enum.length > 0;
+
+            if (hasDefault(field, safeDefaults)) {
+                out[field.name] = defaultValueForField(field, safeDefaults);
+                continue;
+            }
+
+            if (isEnum) {
+                // Preserve enum/select values unless the schema provides a default.
+                out[field.name] = safeCurrent[field.name] ?? "";
+                continue;
+            }
+
+            out[field.name] = emptyValueForField(field);
+        }
+
+        return out;
+    };
+
+    const resetDesignerSections = (schema, state) => ({
+        config: resetSection(schema.config_fields, schema.defaults_config, state.config),
+        params: resetSection(schema.params_fields, schema.defaults_params, state.params),
+        selectedConnector: "",
+        selectedConnectors: [],
+        connectorText: "",
+        runPrompt: "",
+        createdJob: null,
+        lastRun: null,
+        lastDraftCapturedAt: "",
+    });
+""")
+
+JS_ACTIONS = {
+    "buildDraftCapture": js_handler("""
+        (ctx) => {
+            const s = ctx.state || {};
+
+            const asArray = (value) => Array.isArray(value) ? value : [];
+            const asObject = (value) => {
+                return value && typeof value === "object" && !Array.isArray(value)
+                    ? value
+                    : {};
+            };
+
             return {
+                selectedJobType: s.selectedJobType || "",
+                selectedConnector: s.selectedConnector || "",
+                selectedConnectors: asArray(s.selectedConnectors),
+                connectorText: s.connectorText || "",
+                environment: s.environment || "dev",
+                dataSensitivity: s.dataSensitivity || "low",
+                jobName: s.jobName || "",
+                tagsText: s.tagsText || "",
+                config: asObject(s.config),
+                params: asObject(s.params),
+                runPrompt: s.runPrompt || "",
+                formSchema: asObject(s.formSchema),
+                availableConnectors: asArray(s.availableConnectors),
+            };
+        }
+    """),
+
+    "addSelectedConnector": js_handler("""
+        (ctx) => {
+            const s = ctx.state || {};
+            const selected = s.selectedConnector || "";
+
+            if (!selected) {
+                return {};
+            }
+
+            const current = Array.isArray(s.selectedConnectors)
+                ? s.selectedConnectors
+                : [];
+
+            if (current.includes(selected)) {
+                return {
+                    selectedConnector: "",
+                };
+            }
+
+            return {
+                selectedConnectors: [...current, selected],
                 selectedConnector: "",
             };
         }
+    """),
 
-        return {
-            selectedConnectors: [...current, selected],
-            selectedConnector: "",
-        };
-    }""",
+    "resetDesignerForm": js_handler(f"""
+        (ctx) => {{
+            const s = ctx.state || {{}};
+            const schema = s.formSchema || {{}};
 
-    "resetDesignerForm": """(ctx) => {
-        const s = ctx.state || {};
-        const schema = s.formSchema || {};
+{js_indent(JS_DESIGNER_RESET_HELPERS, "            ")}
 
-        const asObject = (value) =>
-            value && typeof value === "object" && !Array.isArray(value)
-                ? value
-                : {};
+            return {{
+                ...resetDesignerSections(schema, s),
+                jobName: "",
+                tagsText: "",
+            }};
+        }}
+    """),
 
-        const hasDefault = (field, defaults) => {
-            if (!field || !field.name) return false;
+    "applySchemaChange": js_handler(f"""
+        (ctx) => {{
+            const s = ctx.state || {{}};
+            const args = ctx.arguments || {{}};
+            const schema = args.schema || {{}};
 
-            return (
-                Object.prototype.hasOwnProperty.call(defaults, field.name) ||
-                (field.default !== undefined && field.default !== null)
-            );
-        };
+{js_indent(JS_DESIGNER_RESET_HELPERS, "            ")}
 
-        const defaultValueForField = (field, defaults) => {
-            if (Object.prototype.hasOwnProperty.call(defaults, field.name)) {
-                return defaults[field.name];
-            }
-
-            return field.default;
-        };
-
-        const emptyValueForField = (field) => {
-            if (!field) return "";
-
-            if (field.sensitive || field.write_only || field.format === "secret") {
-                return "";
-            }
-
-            switch (field.type) {
-                case "boolean":
-                    return false;
-                case "integer":
-                case "number":
-                case "array":
-                case "object":
-                    return "";
-                default:
-                    return "";
-            }
-        };
-
-        const resetSection = (fields, defaults, currentValues) => {
-            const out = {};
-            const safeDefaults = asObject(defaults);
-            const safeCurrent = asObject(currentValues);
-
-            for (const field of Array.isArray(fields) ? fields : []) {
-                if (!field || !field.name) continue;
-
-                const isEnum = Array.isArray(field.enum) && field.enum.length > 0;
-
-                if (hasDefault(field, safeDefaults)) {
-                    out[field.name] = defaultValueForField(field, safeDefaults);
-                    continue;
-                }
-
-                if (isEnum) {
-                    // Preserve enum/select values unless the schema provides a default.
-                    out[field.name] = safeCurrent[field.name] ?? "";
-                    continue;
-                }
-
-                out[field.name] = emptyValueForField(field);
-            }
-
-            return out;
-        };
-
-        return {
-            config: resetSection(schema.config_fields, schema.defaults_config, s.config),
-            params: resetSection(schema.params_fields, schema.defaults_params, s.params),
-            createdJob: null,
-            lastRun: null,
-            runPrompt: "",
-            jobName: "",
-            tagsText: "",
-            selectedConnector: "",
-            selectedConnectors: [],
-            connectorText: "",
-            lastDraftCapturedAt: "",
-        };
-    }""",
+            return {{
+                selectedJobType: schema.type || s.selectedJobType || "",
+                formSchema: schema,
+                availableConnectors: asArray(schema.connector_items),
+                ...resetDesignerSections(schema, s),
+            }};
+        }}
+    """),
 }
 
 
@@ -327,8 +371,8 @@ def _capture_draft_snapshot(current_state: dict[str, Any] | None) -> dict[str, A
     }
 
 
-def _write_ui_state_to_form_actions() -> list[Any]:
-    """Prefab actions for writing a UI-shaped tool result back into the live form."""
+def _sync_ui_result_to_form_actions() -> list[Any]:
+    """Prefab actions for syncing a UI-shaped tool result into the live form."""
     return [
         SetState("selectedJobType", RESULT.selectedJobType),
         SetState("selectedConnector", RESULT.selectedConnector),
@@ -592,24 +636,18 @@ def _refresh_connectors_action(
 
 
 def _load_schema_action(job_type_expr: Any) -> CallTool:
-    """Fetch the form schema for the given job type, then refresh connectors.
-
-    `job_type_expr` is whatever the renderer should pass in — typically `EVENT`
-    (for a Select on_change) or a selectedJobType state reference (for a button).
-    Connector options are populated from the schema payload here; explicit
-    connector refreshes still call the backend connector API.
-    """
     return CallTool(
         "get_form_schema",
         arguments={"job_type": job_type_expr},
         on_success=[
-            SetState("formSchema", RESULT),
-            SetState("config", RESULT.defaults_config),
-            SetState("params", RESULT.defaults_params),
-            SetState("selectedConnector", ""),
-            SetState("selectedConnectors", []),
-            SetState("connectorText", ""),
-            SetState("availableConnectors", RESULT.connector_items),
+            CallHandler(
+                "applySchemaChange",
+                arguments={"schema": RESULT},
+                on_error=[
+                    SetState("loading", False),
+                    ShowToast(ERROR, variant="error"),
+                ],
+            ),
             SetState("loading", False),
         ],
         on_error=[SetState("loading", False), ShowToast(ERROR, variant="error")],
@@ -957,7 +995,7 @@ def _apply_designer_patch(
 def _sync_ai_draft_to_form_action() -> CallTool:
     return CallTool(
         "get_current_draft_ui_state",
-        on_success=_write_ui_state_to_form_actions(),
+        on_success=_sync_ui_result_to_form_actions(),
         on_error=[SetState("loading", False), ShowToast(ERROR, variant="error")],
     )
 
@@ -1785,11 +1823,7 @@ def build_server() -> FastMCP:
 
         latest_draft_snapshot = _capture_draft_snapshot(result)
 
-        CallTool(
-            "get_current_draft_ui_state",  # Tool that tells app to load the latest draft snapshot into the visible form
-            on_success=_write_ui_state_to_form_actions(),
-            on_error=[SetState("loading", False), ShowToast(ERROR, variant="error")],
-        )
+        _sync_ui_result_to_form_actions()
 
         return {
             **result,
