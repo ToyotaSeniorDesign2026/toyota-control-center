@@ -51,7 +51,6 @@ from prefab_ui.components import (
     CardTitle,
     Checkbox,
     ChoiceCard,
-    Code,
     Column,
     Combobox,
     ComboboxOption,
@@ -77,11 +76,10 @@ from prefab_ui.components import (
     Select,
     SelectOption,
     Small,
+    Span,
     Text,
     Textarea,
 )
-from prefab_ui.define import Define
-from prefab_ui.use import Use
 from prefab_ui.rx import ERROR, EVENT, Rx
 from prefab_ui.themes import Theme
 
@@ -891,13 +889,25 @@ def _flatten_draft_changes(
             else {ui_key: after}
         )
 
+        # Determine the status of the change
+        is_addition = before in (_MISSING, None, "", [], {})
+        before_css = "text-muted-foreground opacity-40" if is_addition else "text-red-400/80 line-through decoration-red-500/50"
+        is_deletion = after in (_MISSING, None, "", [], {})
+        after_css = "text-muted-foreground opacity-40" if is_deletion else "text-emerald-400 font-medium"
+
+        before_text = _display_value(before)
+        after_text = _display_value(after)
+        is_long = len(before_text) > 40 or len(after_text) > 40
+
         changes.append(
             {
                 "id": item_id,
                 "label": label,
-                "preview": f"{_display_value(before)} → {_display_value(after)}",
-                "before": f"{_display_value(before)}",
-                "after": f"{_display_value(after)}",
+                "before": before_text,
+                "after": after_text,
+                "before_css": before_css,
+                "after_css": after_css,
+                "is_long": is_long,
                 "selected": True,
                 "updates": updates,
             }
@@ -1264,16 +1274,6 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
             on_click=[SetState("loading", True), action],
         )
 
-    with Define("ai-changes-card") as ai_changes_card:
-        with ChoiceCard():
-            with FieldContent():
-                FieldTitle("{{ label }}")
-                FieldDescription("{{ preview }}")
-            Checkbox(
-                name="pendingAiSuggestions.{{ change_idx }}.selected",
-                value="{{ selected }}",
-            )
-
     with Column(gap=4) as view:
         # ── Hero ─────────────────────────────────────────────────────────────
         with Card(css_class="designer-hero"):
@@ -1350,8 +1350,8 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                             ],
                         )
                         with Dialog(
-                            title="AI Suggestion",
-                            description="Choose which AI-proposed changes to apply.",
+                            title="Review AI Suggestions",
+                            description="Review and approve the proposed updates to your job draft.",
                             dismissible=False,
                             name="suggestionsPending"
                         ):
@@ -1376,9 +1376,10 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                                 # but you can add it if you need side effects (like a toast).
                                             )
 
-                                            with FieldContent():
-                                                FieldTitle(item.label)
-                                                FieldDescription(item.preview)
+                                            with Row(gap=2, align="center"):
+                                                Span(item.before, css_class=item.before_css)
+                                                Span("→", css_class="opacity-30 text-xs")
+                                                Span(item.after, css_class=item.after_css)
 
                                 with If("{{ !(pendingAiSuggestions | length) }}"):
                                     Muted("No AI changes are available to apply.")
@@ -1394,7 +1395,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                     ]
                                 )
                                 Button(
-                                    "Confirm",
+                                    "Apply Changes",
                                     variant="destructive",
                                     disabled="{{ !(pendingAiSuggestions | selectattr:'selected' | length) }}",
                                     on_click=[
@@ -1591,7 +1592,6 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
         state=initial_state,
         theme=Theme(mode="dark", gradient=False),
         css_class="max-w-5xl px-4 py-6 md:px-6",
-        defs=[ai_changes_card],
         stylesheets=[APP_STYLES],
         title="Control Center Job Designer",
         js_actions=JS_ACTIONS,
