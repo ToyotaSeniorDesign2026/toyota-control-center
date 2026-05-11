@@ -1374,33 +1374,39 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                             with Column(gap=3):
                                 with If("{{ pendingAiSuggestions.length > 0 }}"):
                                     with ForEach("pendingAiSuggestions") as (i, item):
-                                        with ChoiceCard():
 
-                                            with If(item.is_long):
-                                                Checkbox(name=f"pendingAiSuggestions.{i}.selected")
-                                                with HoverCard():
-                                                    Button(item.label, variant="ghost", icon="text-wrap")
-                                                    with Column(gap=2):
-                                                        Text(content=item.label)
-                                                        Textarea(value=item.after, rows=3, disabled=True, css_class=item.after_css)
-                                                        Textarea(value=item.before, rows=3, disabled=True, css_class=item.before_css)
-                                                Span(item.before, css_class=item.before_css)
-                                                Span("→", css_class="opacity-30 text-xs")
-                                                Span(item.after, css_class=item.after_css)
+                                        with ChoiceCard(css_class="hover:bg-emerald-500/5 transition-colors"):
+                                            with Row(gap=4, css_class="w-full justify-between items-center"):
 
-                                            with Else():
-                                                # The name prop establishes the two-way binding to the state path
-                                                Checkbox(
-                                                    name=f"pendingAiSuggestions.{i}.selected", label=item.label,
-                                                )
+                                                with If(item.is_long):
+                                                    # LEFT SIDE: Checkbox + Button acting as label
+                                                    with Row(gap=2, align="center", css_class="min-w-0 flex-shrink"):
+                                                        Checkbox(name=f"pendingAiSuggestions.{i}.selected")
+                                                        with HoverCard():
+                                                            Button(item.label, variant="ghost", icon="text-wrap", size="sm")
+                                                            with Column(gap=3, css_class="p-4 bg-neutral-900 border border-emerald-500/20 rounded-xl max-w-md"):
+                                                                Text(content=item.label, css_class="font-bold text-xs uppercase opacity-50")
+                                                                Text(content=item.before, css_class=f"{item.before_css} block whitespace-pre-wrap text-xs max-h-40 overflow-y-auto")
+                                                                Span("↓", css_class="opacity-30 mx-auto text-xs")
+                                                                Text(content=item.after, css_class=f"{item.after_css} block whitespace-pre-wrap text-xs max-h-40 overflow-y-auto")
+                                                    # RIGHT SIDE: Truncated Diff
+                                                    with Row(gap=2, align="center", css_class="flex-shrink-0"):
+                                                        Span(item.before, css_class=f"{item.before_css} truncate max-w-[120px]")
+                                                        Span("→", css_class="opacity-30 text-xs")
+                                                        Span(item.after, css_class=f"{item.after_css} truncate max-w-[120px]")
 
-                                                with Row(gap=2, align="center"):
-                                                    Span(item.before, css_class=item.before_css)
-                                                    Span("→", css_class="opacity-30 text-xs")
-                                                    Span(item.after, css_class=item.after_css)
+                                                with Else():
+                                                    # LEFT SIDE: Standard Checkbox with label
+                                                    with Row(align="center", css_class="min-w-0 flex-shrink"):
+                                                        Checkbox(name=f"pendingAiSuggestions.{i}.selected", label=item.label)
+                                                    # RIGHT SIDE: Un-truncated Diff
+                                                    with Row(gap=2, align="center", css_class="flex-shrink-0"):
+                                                        Span(item.before, css_class=item.before_css)
+                                                        Span("→", css_class="opacity-30 text-xs")
+                                                        Span(item.after, css_class=item.after_css)
 
                                 with If("{{ !(pendingAiSuggestions | length) }}"):
-                                    Muted("No AI changes are available to apply.")
+                                    Muted("No AI changes are available to apply.", css_class="text-center py-4")
 
                             with Row(gap=2, css_class="justify-end"):
                                 Button(
