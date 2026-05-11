@@ -51,6 +51,7 @@ from prefab_ui.components import (
     CardTitle,
     Checkbox,
     ChoiceCard,
+    Code,
     Column,
     Combobox,
     ComboboxOption,
@@ -895,6 +896,8 @@ def _flatten_draft_changes(
                 "id": item_id,
                 "label": label,
                 "preview": f"{_display_value(before)} → {_display_value(after)}",
+                "before": f"{_display_value(before)}",
+                "after": f"{_display_value(after)}",
                 "selected": True,
                 "updates": updates,
             }
@@ -1362,9 +1365,20 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                 ],
                             )
                             with Column(gap=3):
-                                with If("{{ pendingAiSuggestions | length }}"):
-                                    with ForEach("pendingAiSuggestions"):
-                                        Use("ai-changes-card", change_idx="{{ $index }}")
+                                with If("{{ pendingAiSuggestions.length > 0 }}"):
+                                    with ForEach("pendingAiSuggestions") as (i, item):
+                                        with ChoiceCard():
+                                            # The name prop establishes the two-way binding to the state path
+                                            Checkbox(
+                                                name=f"pendingAiSuggestions.{i}.selected",
+                                                label=item.label,
+                                                # on_change is optional if you only need the state to update,
+                                                # but you can add it if you need side effects (like a toast).
+                                            )
+
+                                            with FieldContent():
+                                                FieldTitle(item.label)
+                                                FieldDescription(item.preview)
 
                                 with If("{{ !(pendingAiSuggestions | length) }}"):
                                     Muted("No AI changes are available to apply.")
