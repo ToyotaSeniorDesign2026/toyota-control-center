@@ -199,8 +199,8 @@ JS_DESIGNER_RESET_HELPERS = js_handler("""
     const resetDesignerSections = (schema) => ({
         config: resetSection(schema.config_fields, schema.defaults_config),
         params: resetSection(schema.params_fields, schema.defaults_params),
-        selectedConnector: "",
         selectedConnectors: [],
+        connectorPickerValue: "",
         connectorText: "",
         runPrompt: "",
         createdJob: null,
@@ -224,7 +224,6 @@ JS_ACTIONS = {
             return {
                 intent: s.intent || "",
                 selectedJobType: s.selectedJobType || "",
-                selectedConnector: s.selectedConnector || "",
                 selectedConnectors: asArray(s.selectedConnectors),
                 connectorText: s.connectorText || "",
                 environment: s.environment || "dev",
@@ -240,12 +239,15 @@ JS_ACTIONS = {
         }
     """),
 
-    "addSelectedConnector": js_handler("""
+    # Picker staging: the Combobox writes its current pick to `connectorPickerValue`
+    # (a transient UI-only key, never serialized into the draft); This handler
+    # chips that value onto the canonical `selectedConnectors` list and clears the picker.
+    "pushConnectorToList": js_handler("""
         (ctx) => {
             const s = ctx.state || {};
-            const selected = s.selectedConnector || "";
+            const picked = s.connectorPickerValue || "";
 
-            if (!selected) {
+            if (!picked) {
                 return {};
             }
 
@@ -253,15 +255,13 @@ JS_ACTIONS = {
                 ? s.selectedConnectors
                 : [];
 
-            if (current.includes(selected)) {
-                return {
-                    selectedConnector: "",
-                };
+            if (current.includes(picked)) {
+                return { connectorPickerValue: "" };
             }
 
             return {
-                selectedConnectors: [...current, selected],
-                selectedConnector: "",
+                selectedConnectors: [...current, picked],
+                connectorPickerValue: "",
             };
         }
     """),
@@ -388,9 +388,11 @@ _SCALAR_FIELDS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
     ("dataSensitivity",  "data_sensitivity",  "Data sensitivity",   ("dataSensitivity", "data_sensitivity"),                       "low"),
     ("jobName",          "job_name",          "Job name",           ("jobName", "job_name", "name"),                               ""),
     ("tagsText",         "tags_text",         "Tags",               ("tagsText", "tags_text", "tags"),                             ""),
-    ("selectedConnector","selected_connector","Selected connector", ("selectedConnector", "selected_connector"),                   ""),
     ("connectorText",    "manual_connector",  "Manual connector",   ("connectorText", "connector_text", "manual_connector"),      ""),
     ("runPrompt",        "run_prompt",        "Run prompt",         ("runPrompt", "run_prompt", "prompt"),                         ""),
+    # selectedConnector (singular) was retired when Control Center switched to multi-connector jobs;
+    # _create_job_action falls back to "connector": "{{ selectedConnectors.0 || connectorText }}"
+    # to preserve API layer compatibility: its singular connector shape works until its own refactor lands.
 )
 
 
@@ -422,7 +424,6 @@ class JobDraft(BaseModel):
     data_sensitivity: str = "low"
     job_name: str = ""
     tags_text: str = ""
-    selected_connector: str = ""
     selected_connectors: list[str] = PydanticField(default_factory=list)
     manual_connector: str = ""
     run_prompt: str = ""
@@ -720,8 +721,13 @@ def _render_field_loop(state_root: str, fields_path: str) -> None:
 
 
 def _render_connector_combobox(option_count: int) -> None:
-    """Render one Combobox with direct ComboboxOption children only."""
-    with Combobox(name="selectedConnector", placeholder="Add a connector..."):
+    """Render one Combobox with direct ComboboxOption children only.
+
+    Binds to `connectorPickerValue` — a transient UI staging slot, NOT a draft field.
+    The Add button's `pushConnectorToList` handler chips the picked value onto
+    `selectedConnectors` (the canonical multi-connector list) and clears this staging slot.
+    """
+    with Combobox(name="connectorPickerValue", placeholder="Add a connector..."):
         for i in range(option_count):
             ComboboxOption(
                 label=f"{{{{ availableConnectors.{i}.label }}}}",
@@ -819,7 +825,7 @@ def _create_job_action(*, environment_expr: Any | None = None) -> CallTool:
         arguments={
             "name": STATE.jobName,
             "type": STATE.selectedJobType,
-            "connector": "{{ selectedConnectors.0 || selectedConnector || connectorText }}",
+            "connector": "{{ selectedConnectors.0 || connectorText }}",
             "environment": environment_expr if environment_expr is not None else STATE.environment,
             "config": STATE.config,
             "data_sensitivity": STATE.dataSensitivity,
@@ -1223,7 +1229,6 @@ def _apply_designer_patch(
     next_selected = _patch_list(_patch_value(patch, "selectedConnectors", "selected_connectors", "connectors"))
     if next_selected is not None:
         selected_connectors = next_selected
-        scalars["selectedConnector"] = ""
         applied.append("selectedConnectors")
 
     next_available = _patch_list(_patch_value(patch, "availableConnectors", "available_connectors"))
@@ -1344,8 +1349,8 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                         # before applySchemaChange runs.
                                         SetState("config", {}),
                                         SetState("params", {}),
-                                        SetState("selectedConnector", ""),
                                         SetState("selectedConnectors", []),
+                                        SetState("connectorPickerValue", ""),
                                         SetState("connectorText", ""),
                                         SetState("runPrompt", ""),
                                         SetState("loading", True),
@@ -1614,8 +1619,8 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                     Button(
                                         "Add",
                                         css_class="shrink-0 min-w-24",
-                                        disabled="{{ !selectedConnector }}",
-                                        on_click=CallHandler("addSelectedConnector"),
+                                        disabled="{{ !connectorPickerValue }}",
+                                        on_click=CallHandler("pushConnectorToList"),
                                     )
                         with If(STATE.selectedConnectors.length() > 0):
                             with Column(gap=2, css_class="pt-1"):
@@ -1782,7 +1787,7 @@ def _initial_state(
         "apiJobTypes": [],
         "availableConnectors": selected_schema.get("connector_items", []),
         "selectedJobType": resolved_selected_type,
-        "selectedConnector": "",
+        "connectorPickerValue": "",  # Transient UI staging slot for the connector Combobox; never serialized into draft
         "selectedConnectors": [],
         "connectorText": "",
         "intent": "",
@@ -2327,10 +2332,6 @@ def build_server() -> FastMCP:
             "draft": redacted["draft"],
             "draft_json": redacted["draft_json"],
             "meta": patch.get("meta"),
-            "note": (
-                "Generated a full AI draft. Click Apply AI draft to review the proposed "
-                "changes, or Sync AI draft to form to apply them directly."
-            ),
         }
 
     @mcp.tool(
