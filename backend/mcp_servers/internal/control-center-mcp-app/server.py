@@ -2075,7 +2075,6 @@ def build_server() -> FastMCP:
             connector_types=connector_types,
             connector_type=connector_type,
         )
-        normalized_environment = _normalize_environment(environment)
         if not allowed_connector_types:
             return {"items": []}
         params: dict[str, str] = {}
