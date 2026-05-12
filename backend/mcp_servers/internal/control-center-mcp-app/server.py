@@ -27,6 +27,8 @@ import os
 import re
 from typing import Any
 from textwrap import dedent, indent
+
+from pydantic import BaseModel, Field as PydanticField
 from datetime import datetime, timezone
 from collections.abc import Iterable
 
@@ -156,24 +158,17 @@ JS_DESIGNER_RESET_HELPERS = js_handler("""
         }
     };
 
-    const resetSection = (fields, defaults, currentValues) => {
+    // Build the section from scratch (no key carry-over from previous schema).
+    // Defaults from the schema win; otherwise empty per field type.
+    const resetSection = (fields, defaults) => {
         const out = {};
         const safeDefaults = asObject(defaults);
-        const safeCurrent = asObject(currentValues);
 
         for (const field of Array.isArray(fields) ? fields : []) {
             if (!field || !field.name) continue;
 
-            const isEnum = Array.isArray(field.enum) && field.enum.length > 0;
-
             if (hasDefault(field, safeDefaults)) {
                 out[field.name] = defaultValueForField(field, safeDefaults);
-                continue;
-            }
-
-            if (isEnum) {
-                // Preserve enum/select values unless the schema provides a default.
-                out[field.name] = safeCurrent[field.name] ?? "";
                 continue;
             }
 
@@ -183,9 +178,9 @@ JS_DESIGNER_RESET_HELPERS = js_handler("""
         return out;
     };
 
-    const resetDesignerSections = (schema, state) => ({
-        config: resetSection(schema.config_fields, schema.defaults_config, state.config),
-        params: resetSection(schema.params_fields, schema.defaults_params, state.params),
+    const resetDesignerSections = (schema) => ({
+        config: resetSection(schema.config_fields, schema.defaults_config),
+        params: resetSection(schema.params_fields, schema.defaults_params),
         selectedConnector: "",
         selectedConnectors: [],
         connectorText: "",
@@ -209,6 +204,7 @@ JS_ACTIONS = {
             };
 
             return {
+                intent: s.intent || "",
                 selectedJobType: s.selectedJobType || "",
                 selectedConnector: s.selectedConnector || "",
                 selectedConnectors: asArray(s.selectedConnectors),
@@ -260,7 +256,7 @@ JS_ACTIONS = {
 {indent(JS_DESIGNER_RESET_HELPERS, "            ")}
 
             return {{
-                ...resetDesignerSections(schema, s),
+                ...resetDesignerSections(schema),
                 jobName: "",
                 tagsText: "",
             }};
@@ -279,7 +275,7 @@ JS_ACTIONS = {
                 selectedJobType: schema.type || s.selectedJobType || "",
                 formSchema: schema,
                 availableConnectors: asArray(schema.connector_items),
-                ...resetDesignerSections(schema, s),
+                ...resetDesignerSections(schema),
             }};
         }}
     """),
@@ -368,6 +364,7 @@ def _api_post(path: str, body: dict) -> Any:
 # each has bespoke patch semantics (replace_X, schema reload, list filtering).
 _SCALAR_FIELDS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
     # ui_key, draft_key, label, patch_aliases, default
+    ("intent",           "intent",            "Intent",             ("intent",),                                                   ""),
     ("selectedJobType",  "selected_job_type", "Job type",           ("selectedJobType", "selected_job_type", "job_type", "type"), ""),
     ("environment",      "environment",       "Environment",        ("environment",),                                              "dev"),
     ("dataSensitivity",  "data_sensitivity",  "Data sensitivity",   ("dataSensitivity", "data_sensitivity"),                       "low"),
@@ -377,6 +374,42 @@ _SCALAR_FIELDS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
     ("connectorText",    "manual_connector",  "Manual connector",   ("connectorText", "connector_text", "manual_connector"),      ""),
     ("runPrompt",        "run_prompt",        "Run prompt",         ("runPrompt", "run_prompt", "prompt"),                         ""),
 )
+
+
+# ── Pydantic schema for AI structured output ────────────────────────────────
+#
+# This is the type a backend caller can pass to an LLM as `response_model=`
+# (Instructor / Anthropic / OpenAI structured-output / FastMCP `ctx.sample(...,
+# result_type=JobDraft)`). Get a JobDraft back, dump it with .model_dump(),
+# and feed it straight into `patch_draft_snapshot` — the draft_key names line
+# up with what _apply_designer_patch accepts.
+#
+# Container fields (config/params/selected_connectors) stay loose dicts/lists
+# because their shapes are JobTypeContract-dependent. Add a per-contract
+# Pydantic sub-model later if you want validated structured output for those.
+
+
+class JobDraft(BaseModel):
+    """Mirror of the AI-visible draft shape. Single source of truth for LLM
+    structured output that targets `patch_draft_snapshot`.
+    """
+
+    intent: str = PydanticField(
+        default="",
+        description="Plain-English statement of what this job should accomplish. "
+                    "Drives downstream auto-fill: pick JobType, connectors, config.",
+    )
+    selected_job_type: str = ""
+    environment: str = "dev"
+    data_sensitivity: str = "low"
+    job_name: str = ""
+    tags_text: str = ""
+    selected_connector: str = ""
+    selected_connectors: list[str] = PydanticField(default_factory=list)
+    manual_connector: str = ""
+    run_prompt: str = ""
+    config: dict[str, Any] = PydanticField(default_factory=dict)
+    params: dict[str, Any] = PydanticField(default_factory=dict)
 
 
 def _ui_state_to_draft(state: dict[str, Any] | None) -> dict[str, Any]:
@@ -422,13 +455,74 @@ def _draft_to_ui_state(draft: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _capture_draft_snapshot(current_state: dict[str, Any] | None) -> dict[str, Any]:
-    """Capture Prefab/UI state as the latest AI-visible draft snapshot."""
+    """Capture Prefab/UI state as the latest AI-visible draft snapshot.
+
+    The stored draft holds FULL values (including secrets). Redaction is
+    applied at MCP tool return time so the iframe sync path keeps real
+    values while AI/print surfaces see masks. See `_redact_snapshot`.
+    """
     draft = _ui_state_to_draft(current_state)
     return {
         "status": "captured",
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "draft": draft,
         "draft_json": json.dumps(draft, indent=2, sort_keys=True),
+    }
+
+
+# ── Secret redaction for AI-visible / printed snapshots ──────────────────────
+
+SECRET_MARKER = "•••"
+
+
+def _secret_field_names(fields: Any) -> set[str]:
+    """Field names flagged sensitive / write-only / format=secret in a FieldSpec list."""
+    if not isinstance(fields, list):
+        return set()
+    return {
+        f["name"]
+        for f in fields
+        if isinstance(f, dict)
+        and f.get("name")
+        and (f.get("sensitive") or f.get("write_only") or f.get("format") == "secret")
+    }
+
+
+def _mask_secrets(values: Any, secret_names: set[str]) -> dict[str, Any]:
+    """Return a copy of `values` with secret entries replaced by SECRET_MARKER."""
+    if not isinstance(values, dict):
+        return {}
+    return {
+        k: (SECRET_MARKER if k in secret_names and v not in ("", None) else v)
+        for k, v in values.items()
+    }
+
+
+def _redact_draft(draft: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a copy of `draft` with secret config/params values masked."""
+    if not isinstance(draft, dict):
+        return {}
+    schema = draft.get("form_schema") or {}
+    return {
+        **draft,
+        "config": _mask_secrets(draft.get("config"), _secret_field_names(schema.get("config_fields"))),
+        "params": _mask_secrets(draft.get("params"), _secret_field_names(schema.get("params_fields"))),
+    }
+
+
+def _redact_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a snapshot with both `draft` and `draft_json` redacted.
+
+    The server-side store keeps the full snapshot; this function builds the
+    safe-for-AI view at tool return time.
+    """
+    if not isinstance(snapshot, dict):
+        return {}
+    redacted = _redact_draft(snapshot.get("draft", {}))
+    return {
+        **snapshot,
+        "draft": redacted,
+        "draft_json": json.dumps(redacted, indent=2, sort_keys=True),
     }
 
 
@@ -1231,6 +1325,15 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                     value=selected_job_type,
                                     on_change=[
                                         SetState("selectedJobType", EVENT),
+                                        # Wipe contract-shaped state up front so stale values from
+                                        # the previous JobType can't bleed into matching field names
+                                        # before applySchemaChange runs.
+                                        SetState("config", {}),
+                                        SetState("params", {}),
+                                        SetState("selectedConnector", ""),
+                                        SetState("selectedConnectors", []),
+                                        SetState("connectorText", ""),
+                                        SetState("runPrompt", ""),
                                         SetState("loading", True),
                                         load_schema_on_change,
                                     ],
@@ -1381,10 +1484,11 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                     CardTitle(STATE.formSchema.display_name)
                     with If(STATE.formSchema.description):
                         CardDescription(STATE.formSchema.description)
-                with CardContent():
-                    with Column(gap=2):
-                        Small("Allowed connector types")
-                        Muted(STATE.formSchema.connector_types.join(", ").default("any"))
+                with If(STATE.formSchema.connector_types.length() > 0):
+                    with CardContent():
+                        with Column(gap=2):
+                            Small("Allowed connector types")
+                            Muted(STATE.formSchema.connector_types.join(", ").default("any"))
 
         # ── Connector picker ─────────────────────────────────────────────────
         with Card(css_class="glass-card"):
@@ -1443,6 +1547,18 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                 CardTitle("Job basics")
             with CardContent():
                 with Column(gap=5):
+                    # Full-row "Intent" field — the human-readable seed an LLM can
+                    # consume (via the JobDraft Pydantic model) to auto-fill the
+                    # rest of the form.
+                    with Field():
+                        FieldTitle("Intent")
+                        FieldDescription("What should this job accomplish? Plain English is fine.")
+                        with FieldContent():
+                            Textarea(
+                                name="intent",
+                                placeholder="e.g. Pull the daily Toyota Financial special-deals page for Dallas dealers and email a summary.",
+                                rows=2,
+                            )
                     with Grid(columns={"md": 2}, gap=5):
                         with Field():
                             FieldTitle("Name")
@@ -1583,6 +1699,7 @@ def _initial_state(
         "selectedConnector": "",
         "selectedConnectors": [],
         "connectorText": "",
+        "intent": "",
         "environment": environment,
         "dataSensitivity": "low",
         "jobName": "",
@@ -2033,14 +2150,16 @@ def build_server() -> FastMCP:
             )
 
         latest_draft_snapshot = _capture_draft_snapshot(current_state)
-        return latest_draft_snapshot
+        # AI sees this via UpdateContext (iframe's _capture_current_draft_action).
+        # Server-side store keeps real values; redact only the wire copy.
+        return _redact_snapshot(latest_draft_snapshot)
 
     @mcp.tool(
         name="get_draft_snapshot",
         description="Return the latest captured job designer draft. Reflects the last UI capture, not live browser state.",
     )
     def get_draft_snapshot() -> dict[str, Any]:
-        return latest_draft_snapshot
+        return _redact_snapshot(latest_draft_snapshot)
 
     @mcp.tool(
         name="patch_draft_snapshot",
@@ -2060,6 +2179,13 @@ def build_server() -> FastMCP:
         if not isinstance(patch, dict):
             raise ValueError("patch must be an object.")
 
+        # Drop redaction markers the model may echo back so we don't overwrite
+        # real secrets with `•••`.
+        for section_key in ("config", "params", "replace_config", "replace_params"):
+            section = patch.get(section_key)
+            if isinstance(section, dict):
+                patch[section_key] = {k: v for k, v in section.items() if v != SECRET_MARKER}
+
         base_draft = latest_draft_snapshot.get("draft", {})
         base_state = _draft_to_ui_state(base_draft)
 
@@ -2069,11 +2195,12 @@ def build_server() -> FastMCP:
             result["summary"] = summary
 
         latest_draft_snapshot = _capture_draft_snapshot(result)
+        redacted = _redact_snapshot(latest_draft_snapshot)
 
         return {
             **result,
-            "draft": latest_draft_snapshot["draft"],
-            "draft_json": latest_draft_snapshot["draft_json"],
+            "draft": redacted["draft"],
+            "draft_json": redacted["draft_json"],
             "note": (
                 "Patched the latest captured draft snapshot. If the browser form changed "
                 "since the last capture, click Update AI context before asking for more edits. "
