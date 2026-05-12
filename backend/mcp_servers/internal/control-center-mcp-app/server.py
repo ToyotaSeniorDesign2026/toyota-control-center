@@ -1364,7 +1364,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                             title="Review AI Suggestions",
                             description="Review and approve the proposed updates to your job draft.",
                             dismissible=False,
-                            name="suggestionsPending"
+                            name="suggestionsPending",
                         ):
                             Button(
                                 "Apply AI draft",
@@ -1377,13 +1377,14 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                             )
                             with Column(gap=3, css_class="max-h-[60vh] overflow-y-auto pr-2"):
                                 with If("{{ pendingAiSuggestions.length > 0 }}"):
+
                                     with ForEach("pendingAiSuggestions") as (i, item):
                                         with ChoiceCard(css_class="hover:bg-emerald-500/5 transition-colors"):
                                             with Row(gap=4, css_class="w-full justify-between items-center"):
 
                                                 with If(item.is_long):
-                                                    # LEFT SIDE: Checkbox + Button acting as label
-                                                    with Row(gap=2, align="center", css_class="min-w-0 flex-shrink"):
+                                                    # LEFT SIDE: Checkbox + Button acting as label (rigid, no squishing or wrapping)
+                                                    with Row(gap=2, align="center", css_class="flex-shrink-0 whitespace-nowrap"):
                                                         Checkbox(name=f"pendingAiSuggestions.{i}.selected")
                                                         with HoverCard():
                                                             Button(item.label, variant="ghost", icon="text-wrap", size="sm")
@@ -1392,24 +1393,24 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                                                 Text(content=item.before, css_class=f"{item.before_css} block whitespace-pre-wrap text-xs max-h-40 overflow-y-auto")
                                                                 Span("↓", css_class="opacity-30 mx-auto text-xs")
                                                                 Text(content=item.after, css_class=f"{item.after_css} block whitespace-pre-wrap text-xs max-h-40 overflow-y-auto")
-                                                    # RIGHT SIDE: Truncated Diff
-                                                    with Row(gap=2, align="center", css_class="flex-shrink-0"):
-                                                        Span(item.before, css_class=f"{item.before_css} truncate max-w-[120px]")
-                                                        Span("→", css_class="opacity-30 text-xs")
-                                                        Span(item.after, css_class=f"{item.after_css} truncate max-w-[120px]")
+                                                    # RIGHT SIDE: Truncated Diff (stretch to fill space, push content right)
+                                                    with Row(gap=2, align="center", css_class="flex-1 min-w-0 justify-end"):
+                                                        Span(item.before, css_class=f"{item.before_css} truncate max-w-[200px] font-mono bg-white/5 px-2 py-0.5 rounded-md text-[11px]")
+                                                        Span("→", css_class="opacity-30 text-xs mx-1 flex-shrink-0")
+                                                        Span(item.after, css_class=f"{item.after_css} truncate max-w-[200px] font-mono bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-md text-[11px]")
 
                                                 with Else():
-                                                    # LEFT SIDE: Standard Checkbox with label
-                                                    with Row(align="center", css_class="min-w-0 flex-shrink"):
+                                                    # LEFT SIDE: Standard Checkbox with label (rigid, no squishing or wrapping)
+                                                    with Row(align="center", css_class="flex-shrink-0 whitespace-nowrap"):
                                                         Checkbox(name=f"pendingAiSuggestions.{i}.selected", label=item.label)
-                                                    # RIGHT SIDE: Un-truncated Diff
-                                                    with Row(gap=2, align="center", css_class="flex-shrink-0"):
-                                                        Span(item.before, css_class=item.before_css)
-                                                        Span("→", css_class="opacity-30 text-xs")
-                                                        Span(item.after, css_class=item.after_css)
+                                                    # RIGHT SIDE: Un-truncated Diff (stretch to fill space, push content right)
+                                                    with Row(gap=2, align="center", css_class="flex-1 min-w-0 justify-end"):
+                                                        Span(item.before, css_class=f"{item.before_css} font-mono bg-white/5 px-2 py-0.5 rounded-md text-[11px]")
+                                                        Span("→", css_class="opacity-30 text-xs mx-1 flex-shrink-0")
+                                                        Span(item.after, css_class=f"{item.after_css} font-mono bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-md text-[11px]")
 
                                 with If("{{ !(pendingAiSuggestions | length) }}"):
-                                    Muted("No AI changes are available to apply.")
+                                    Muted("No changes are available to apply.")
 
                             # NEW FEATURE: JSON Deep Dive Accordion
                             with If("{{ pendingAiSuggestions.length > 0 }}"):
@@ -1457,7 +1458,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                 with CardContent():
                     with Column(gap=2):
                         Small("Allowed connector types")
-                        Muted(STATE.formSchema.connector_types.join(", ").default("any"))
+                        Muted(STATE.formSchema.connector_types.join(", ").default("N/A"))
 
         # ── Connector picker ─────────────────────────────────────────────────
         with Card(css_class="glass-card"):
