@@ -32,10 +32,9 @@ from collections.abc import Iterable
 
 import httpx
 from fastmcp import FastMCP
-from fastmcp.server.context import Context
-from fastmcp.tools import ToolResult
 from fastmcp.apps import AppConfig, ResourceCSP
 from fastmcp.apps.approval import Approval
+from fastmcp.server.middleware import Middleware
 from prefab_ui import PrefabApp
 from prefab_ui.app import ResolvedTool
 from prefab_ui.actions import PopState, SetState, ShowToast, CallHandler, CloseOverlay
@@ -336,13 +335,6 @@ JS_ACTIONS = {
 
 
 # ── Backend HTTP helpers ─────────────────────────────────────────────────────
-
-# Global AsyncClient - ensures HTTP/2 connection pooling across all users
-http_client = httpx.AsyncClient(
-    base_url=_API_BASE,
-    timeout=_HTTP_TIMEOUT,
-    headers={"Content-Type": "application/json", "Accept": "application/json"}
-)
 
 
 def _headers() -> dict[str, str]:
@@ -1374,6 +1366,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                             description="Review and approve the proposed updates to your job draft.",
                             dismissible=False,
                             name="suggestionsPending",
+                            css_class="w-full max-w-2xl",
                         ):
                             Button(
                                 "Apply AI draft",
@@ -1423,12 +1416,13 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
 
                             # NEW FEATURE: JSON Deep Dive Accordion
                             with If("{{ pendingAiSuggestions.length > 0 }}"):
-                                with Accordion(css_class="mt-2 border-t border-white/10 pt-2"):
+                                with Accordion(css_class="mt-2 border-t border-white/10 pt-2 w-full min-w-0"):
                                     with AccordionItem(value="raw_json_patch", title="View Raw JSON Payload"):
-                                        Code(
-                                            content="{{ rawAiPatchText }}", language="json",
-                                            css_class="max-h-64 overflow-y-auto text-xs"
-                                        )
+                                        with Div(css_class="w-full min-w-0 max-h-64 overflow-auto"):
+                                            Code(
+                                                content="{{ rawAiPatchText }}", language="json",
+                                                css_class="text-xs whitespace-pre block",
+                                            )
 
                             with Row(gap=2, css_class="justify-end"):
                                 Button(
@@ -1467,7 +1461,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                 with CardContent():
                     with Column(gap=2):
                         Small("Allowed connector types")
-                        Muted(STATE.formSchema.connector_types.join(", ").default("N/A"))
+                        Muted(STATE.formSchema.connector_types.join(", ").default("any"))
 
         # ── Connector picker ─────────────────────────────────────────────────
         with Card(css_class="glass-card"):
@@ -1947,9 +1941,24 @@ def _api_job_type_summaries() -> list[dict[str, Any]]:
 
 # ── Server build ─────────────────────────────────────────────────────────────
 
+class _HideInternalToolsMiddleware(Middleware):
+    """Hide tools tagged `internal` from tools/list while keeping them callable.
+
+    Prefab's `AppConfig(visibility=["app"])` does the right thing for listing
+    but FastMCP 3.2.4 also blocks `tools/call` for those tools, which breaks
+    the iframe's AppBridge. Using a tag + middleware preserves the
+    "hidden but callable" semantics the Prefab docs describe.
+    """
+
+    async def on_list_tools(self, ctx, call_next):
+        tools = await call_next(ctx)
+        return [t for t in tools if "internal" not in (t.tags or set())]
+
+
 def build_server() -> FastMCP:
     mcp = FastMCP(SERVER_NAME, instructions=SERVER_DESCRIPTION)
 
+    mcp.add_middleware(_HideInternalToolsMiddleware())
     mcp.add_provider(
         Approval(
             title="Apply AI Changes?",
@@ -1961,6 +1970,21 @@ def build_server() -> FastMCP:
 
     bootstrap_types = _static_job_types()
     logger.info("Bootstrapped %d job types into the designer", len(bootstrap_types))
+
+    # ─── Draft state (single-session, single-client) ───────────────────────
+    # These are process-global on purpose: this server is intended to run as a
+    # personal/single-tenant designer where one user drives one iframe at a
+    # time. Concurrent clients would stomp each other's drafts here.
+    #
+    # To scale to multi-tenant or production:
+    #   - swap these for ctx.set_state / ctx.get_state on each tool (session-
+    #     keyed, isolated per mcp-session-id), or
+    #   - keep the same shape but back it with a distributed store via
+    #     FastMCP(..., session_state_store=RedisStore(...)) — see
+    #     https://gofastmcp.com/servers/storage-backends
+    # Caveat: some hosts (notably ChatGPT today) don't preserve
+    # mcp-session-id across calls, so a stable per-document key
+    # (e.g. an explicit draft_id tool arg) may be needed regardless.
     current_initial_state = _initial_state(job_types=bootstrap_types)
     latest_draft_snapshot: dict[str, Any] = _capture_draft_snapshot(current_initial_state)
     blank_app = _build_app(current_initial_state)
@@ -1968,10 +1992,7 @@ def build_server() -> FastMCP:
     @mcp.resource(
         APP_RESOURCE_URI,
         name="control_center_job_designer",
-        description=(
-            "Open the Control Center job designer — pick a job type, configure "
-            "fields driven by the type's contract, and create or trigger jobs."
-        ),
+        description="Interactive job designer — pick a type, fill the contract-driven form, create or trigger jobs.",
         app=AppConfig(
             csp=_resource_csp_for(blank_app),
             domain=APP_RESOURCE_DOMAIN,
@@ -1991,6 +2012,8 @@ def build_server() -> FastMCP:
         environment: str = "dev",
         
     ) -> dict[str, Any]:
+        # Single-session draft store (see breadcrumb at top of build_server).
+        # For multi-tenant: swap to ctx.set_state or a session_state_store.
         nonlocal latest_draft_snapshot, current_initial_state
 
         normalized_job_type = _normalize_job_type(job_type)
@@ -2024,10 +2047,7 @@ def build_server() -> FastMCP:
 
     @mcp.tool(
         name="get_form_schema",
-        description=(
-            "Fetch the dynamic form schema for a job type. Returns config/params "
-            "FieldSpec lists, defaults, required-field lists, and allowed connector types."
-        ),
+        description="Fetch the form schema for a job type (config/params fields, required lists, connector types).",
     )
     def get_form_schema(job_type: str) -> dict[str, Any]:
         normalized = _normalize_job_type(job_type)
@@ -2037,10 +2057,7 @@ def build_server() -> FastMCP:
 
     @mcp.tool(
         name="list_connectors",
-        description=(
-            "List existing connectors. Optionally filter by connector_type "
-            "(e.g. 'sql-mcp', 'github') and/or environment."
-        ),
+        description="List connectors. Filter by connector_type (e.g. 'sql-mcp') and/or environment.",
     )
     def list_connectors(
         job_type: str = "",
@@ -2099,12 +2116,11 @@ def build_server() -> FastMCP:
 
     @mcp.tool(
         name="capture_current_draft",
-        description=(
-                "[APP-INTERNAL] Captures Prefab-resolved form state as the latest draft snapshot. "
-                "Use get_draft_snapshot to read drafts and patch_draft_snapshot to edit them."
-        ),
+        description="Capture iframe form state as the latest draft snapshot.",
+        tags={"internal"},
     )
     def capture_current_draft(current_state: dict[str, Any]) -> dict[str, Any]:
+        # Single-session draft store (see breadcrumb at top of build_server).
         nonlocal latest_draft_snapshot
 
         if not isinstance(current_state, dict):
@@ -2120,11 +2136,7 @@ def build_server() -> FastMCP:
 
     @mcp.tool(
         name="get_draft_snapshot",
-        description=(
-                "Return the latest captured Control Center job designer draft snapshot. "
-                "This is not live browser state; it is only as fresh as the last app capture "
-                "or Update AI context action."
-        ),
+        description="Return the latest captured job designer draft. Reflects the last UI capture, not live browser state.",
     )
     def get_draft_snapshot() -> dict[str, Any]:
         return latest_draft_snapshot
@@ -2132,19 +2144,16 @@ def build_server() -> FastMCP:
     @mcp.tool(
         name="patch_draft_snapshot",
         description=(
-            "Patch the latest captured job designer draft snapshot. Provide only fields "
-            "that should change; omitted fields are preserved. Use config/params for "
-            "merge updates and replace_config/replace_params for full replacement. "
-            "The user must sync the draft back into the form before creating the job."
+            "Patch the latest captured draft. Use config/params for merge updates; "
+            "replace_config/replace_params for full replacement. Omitted fields are preserved."
         ),
-        annotations={
-            "destructiveHint": True,
-        },
+        annotations={},
     )
     def patch_draft_snapshot(
         patch: dict[str, Any],
         summary: str = "",
     ) -> dict[str, Any]:
+        # Single-session draft store (see breadcrumb at top of build_server).
         nonlocal latest_draft_snapshot
 
         if not isinstance(patch, dict):
@@ -2173,10 +2182,8 @@ def build_server() -> FastMCP:
 
     @mcp.tool(
         name="get_current_draft_ui_state",
-        description=(
-            "Return the latest captured Control Center job designer draft as Prefab UI "
-            "state fields. The app uses this to sync an AI-patched draft back into the visible form."
-        ),
+        description="Return the latest draft as Prefab UI state for iframe sync.",
+        tags={"internal"},
     )
     def get_current_draft_ui_state() -> dict[str, Any]:
         draft = latest_draft_snapshot.get("draft", {})
@@ -2190,7 +2197,8 @@ def build_server() -> FastMCP:
 
     @mcp.tool(
         name="preview_ai_suggested_changes",
-        description="Compare the visible form state to the latest AI draft and return selectable proposed changes.",
+        description="Diff iframe form state against the latest AI draft.",
+        tags={"internal"},
     )
     def preview_ai_suggested_changes(current_state: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(current_state, dict):
@@ -2219,10 +2227,7 @@ def build_server() -> FastMCP:
 
     @mcp.tool(
         name="create_job",
-        description=(
-            "Register a new Control Center job. Config is coerced from the "
-            "selected JobTypeContract before API-side validation."
-        ),
+        description="Register a new Control Center job. Config is coerced via the selected JobTypeContract.",
     )
     def create_job(
         name: str,
