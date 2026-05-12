@@ -32,6 +32,7 @@ from collections.abc import Iterable
 
 import httpx
 from fastmcp import FastMCP
+from fastmcp.server.context import Context
 from fastmcp.tools import ToolResult
 from fastmcp.apps import AppConfig, ResourceCSP
 from fastmcp.apps.approval import Approval
@@ -336,8 +337,16 @@ JS_ACTIONS = {
 
 # ── Backend HTTP helpers ─────────────────────────────────────────────────────
 
+# Global AsyncClient - ensures HTTP/2 connection pooling across all users
+http_client = httpx.AsyncClient(
+    base_url=_API_BASE,
+    timeout=_HTTP_TIMEOUT,
+    headers={"Content-Type": "application/json", "Accept": "application/json"}
+)
+
+
 def _headers() -> dict[str, str]:
-    h = {"Content-Type": "application/json"}
+    h = {"Content-Type": "application/json", "Accept": "application/json"}
     if _API_TOKEN:
         h["Authorization"] = f"Bearer {_API_TOKEN}"
     return h
@@ -376,7 +385,7 @@ def _ui_state_to_draft(state: dict[str, Any] | None) -> dict[str, Any]:
 
     return {
         "selected_job_type": selected_job_type,
-        "environment": _normalize_environment(state.get("environment"), default="dev") or "dev",
+        "environment": str(state.get("environment")) or "dev",
         "job_name": str(state.get("jobName") or ""),
         "data_sensitivity": str(state.get("dataSensitivity") or "low"),
         "tags_text": str(state.get("tagsText") or ""),
@@ -1135,7 +1144,7 @@ def _apply_designer_patch(
         if value is None:
             continue
         if field_name == "environment":
-            environment = _normalize_environment(value, default=environment) or environment
+            environment = str(environment)
         elif field_name == "dataSensitivity":
             data_sensitivity = str(value)
         elif field_name == "jobName":
@@ -1657,7 +1666,7 @@ def _initial_state(
         "selectedConnector": "",
         "selectedConnectors": [],
         "connectorText": "",
-        "environment": _normalize_environment(environment, default="dev") or "dev",
+        "environment": environment,
         "dataSensitivity": "low",
         "jobName": "",
         "tagsText": "",
@@ -1839,29 +1848,6 @@ def _normalize_job_type(value: Any) -> str:
     return text.lower()
 
 
-def _normalize_environment(value: Any, *, default: str = "") -> str:
-    if value is None:
-        return default
-    if not isinstance(value, str):
-        value = str(value)
-    text = value.strip()
-    if not text:
-        return default
-    if _TEMPLATE_EXPR_RE.match(text):
-        return ""
-    try:
-        decoded = json.loads(text)
-    except json.JSONDecodeError:
-        decoded = text
-    if isinstance(decoded, str):
-        text = decoded.strip()
-    if not text:
-        return default
-    if _TEMPLATE_EXPR_RE.match(text):
-        return ""
-    return text
-
-
 def _contract_payload(job_type: str) -> dict[str, Any]:
     contract = KNOWN_CONTRACTS.get(_normalize_job_type(job_type))
     if contract is None:
@@ -1997,25 +1983,18 @@ def build_server() -> FastMCP:
 
     @mcp.tool(
         name="open_job_designer",
-        description=(
-            "Open the interactive Control Center job designer. Optionally "
-            "preselects a job type."
-        ),
-        # Route the host to our resource HTML (carrying stylesheets= and the
-        # baked-in initial wire data) instead of the shared Prefab renderer
-        # iframe — `app=True` would skip our HTML and our custom CSS with it.
-        app=AppConfig(
-            resource_uri=APP_RESOURCE_URI,
-            prefers_border=True,
-        ),
+        description="Open the interactive Control Center job designer.",
+        app=AppConfig(resource_uri=APP_RESOURCE_URI, prefers_border=True),
     )
     def open_job_designer(
         job_type: str = "",
         environment: str = "dev",
+        
     ) -> dict[str, Any]:
         nonlocal latest_draft_snapshot, current_initial_state
+
         normalized_job_type = _normalize_job_type(job_type)
-        normalized_environment = _normalize_environment(environment, default="dev") or "dev"
+        normalized_environment = environment.strip().lower() if environment else "dev"
         current_initial_state = _initial_state(
             job_types=bootstrap_types,
             selected_type=normalized_job_type,
@@ -2080,8 +2059,8 @@ def build_server() -> FastMCP:
         params: dict[str, str] = {}
         if len(allowed_connector_types) == 1:
             params["connector_type"] = allowed_connector_types[0]
-        if normalized_environment:
-            params["env"] = normalized_environment
+        if environment:
+            params["env"] = environment
         try:
             response = _api_get("/connectors", params=params or None)
         except Exception as exc:
@@ -2101,7 +2080,7 @@ def build_server() -> FastMCP:
                     or c.get("name") in allowed
                 )
             ]
-        items = _merge_connector_items(items, allowed_connector_types, normalized_environment)
+        items = _merge_connector_items(items, allowed_connector_types, environment)
         return {
             "items": [
                 {
@@ -2262,7 +2241,7 @@ def build_server() -> FastMCP:
             raise ValueError("Job type is required — pick one from the job-type selector.")
         if not connector or not connector.strip():
             raise ValueError("Connector is required.")
-        normalized_environment = _normalize_environment(environment, default="dev")
+        normalized_environment = environment.strip().lower() if environment else "dev"
         if not normalized_environment:
             raise ValueError("Environment is required — pick one from the environment selector.")
 
@@ -2310,7 +2289,7 @@ def build_server() -> FastMCP:
 
         body: dict[str, Any] = {
             "action": action,
-            "target_environment": _normalize_environment(target_environment, default="dev"),
+            "target_environment": target_environment,
             "params": params,
         }
         if not body["target_environment"]:
