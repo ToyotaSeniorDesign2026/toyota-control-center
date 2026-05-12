@@ -552,9 +552,14 @@ def _redact_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def _sync_ui_result_to_form_actions() -> list[Any]:
-    """Prefab actions for syncing a UI-shaped tool result into the live form."""
-    return [
+def _sync_ui_result_to_form_actions(*, silent: bool = False) -> list[Any]:
+    """Prefab actions for syncing a UI-shaped tool result into the live form.
+
+    `silent=True` drops the trailing success toast — used by the iframe's
+    on_mount auto-sync so reopening a tab doesn't surface a chatty notice
+    every time.
+    """
+    actions: list[Any] = [
         *[SetState(ui_key, getattr(RESULT, ui_key)) for ui_key, *_ in _SCALAR_FIELDS],
         SetState("selectedConnectors", RESULT.selectedConnectors),
         SetState("availableConnectors", RESULT.availableConnectors),
@@ -562,8 +567,10 @@ def _sync_ui_result_to_form_actions() -> list[Any]:
         SetState("params", RESULT.params),
         SetState("formSchema", RESULT.formSchema),
         SetState("loading", False),
-        ShowToast(RESULT.message, variant="success"),
     ]
+    if not silent:
+        actions.append(ShowToast(RESULT.message, variant="success"))
+    return actions
 
 
 # ── Styling ──────────────────────────────────────────────────────────────────
@@ -1286,11 +1293,20 @@ def _apply_designer_patch(
     }
 
 
-def _sync_ai_draft_to_form_action() -> CallTool:
+def _sync_ai_draft_to_form_action(*, silent: bool = False) -> CallTool:
+    """Pull the latest server-side draft into the iframe via SetState.
+
+    `silent=True` suppresses both the success toast and the error toast so the
+    on_mount auto-sync runs invisibly on a clean designer with nothing to
+    surface; the user-driven Sync button keeps its toasts.
+    """
+    on_error: list[Any] = [SetState("loading", False)]
+    if not silent:
+        on_error.append(ShowToast(ERROR, variant="error"))
     return CallTool(
         "get_current_draft_ui_state",
-        on_success=_sync_ui_result_to_form_actions(),
-        on_error=[SetState("loading", False), ShowToast(ERROR, variant="error")],
+        on_success=_sync_ui_result_to_form_actions(silent=silent),
+        on_error=on_error,
     )
 
 
@@ -1324,7 +1340,11 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
             on_click=[SetState("loading", True), action],
         )
 
-    with Column(gap=4) as view:
+    # on_mount auto-sync: when the iframe first paints, immediately reconcile its
+    # local Prefab state with the server-side latest_draft_snapshot. Makes opening
+    # the designer in a fresh tab pick up any draft work already in flight from
+    # another tab / earlier session. Silent so a clean designer doesn't toast.
+    with Column(gap=4, on_mount=[_sync_ai_draft_to_form_action(silent=True)]) as view:
         # ── Hero ─────────────────────────────────────────────────────────────
         with Card(css_class="designer-hero"):
             with CardHeader():
@@ -1556,8 +1576,12 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                             CallTool(
                                                 "generate_full_job_draft",
                                                 arguments={
-                                                    # Explicit Prefab templates with fallbacks — bare STATE.x refs
-                                                    # can serialize unresolved if the bound input never had focus.
+                                                    # Sole-value Prefab templates pass through as the literal string
+                                                    # when the referenced state key is undefined (per Prefab docs:
+                                                    # "{{ missing }}" → "{{ missing }}" rather than null/""). The
+                                                    # `| default` pipe forces resolution so the server gets a real
+                                                    # value, not the template text.
+
                                                     "intent": "{{ intent }}",
                                                     "job_name": "{{ jobName }}",
                                                     "environment": "{{ environment | 'dev' }}",
@@ -2082,9 +2106,9 @@ def build_server() -> FastMCP:
     # Caveat: some hosts (notably ChatGPT today) don't preserve
     # mcp-session-id across calls, so a stable per-document key
     # (e.g. an explicit draft_id tool arg) may be needed regardless.
-    current_initial_state = _initial_state(job_types=bootstrap_types)
-    latest_draft_snapshot: dict[str, Any] = _capture_draft_snapshot(current_initial_state)
-    blank_app = _build_app(current_initial_state)
+    iframe_boot_state = _initial_state(job_types=bootstrap_types)
+    latest_draft_snapshot: dict[str, Any] = _capture_draft_snapshot(iframe_boot_state)
+    blank_app = _build_app(iframe_boot_state)
 
     @mcp.resource(
         APP_RESOURCE_URI,
@@ -2097,7 +2121,7 @@ def build_server() -> FastMCP:
         ),
     )
     def control_center_job_designer_resource() -> str:
-        return _build_app(current_initial_state).html(tool_resolver=_resolve_prefab_tool)
+        return _build_app(iframe_boot_state).html(tool_resolver=_resolve_prefab_tool)
 
     @mcp.tool(
         name="open_job_designer",
@@ -2107,23 +2131,36 @@ def build_server() -> FastMCP:
     def open_job_designer(
         job_type: str = "",
         environment: str = "dev",
+        reset: bool = False,
     ) -> dict[str, Any]:
         # Single-session draft store (see breadcrumb at top of build_server).
         # For multi-tenant: swap to ctx.set_state or a session_state_store.
-        nonlocal latest_draft_snapshot, current_initial_state
+        nonlocal latest_draft_snapshot, iframe_boot_state
 
-        normalized_job_type = _normalize_job_type(job_type)
-        normalized_environment = environment.strip().lower() if environment else "dev"
-        current_initial_state = _initial_state(
-            job_types=bootstrap_types,
-            selected_type=normalized_job_type,
-            environment=normalized_environment,
+        # Idempotent by default: a second open (e.g. another tab, a re-issued
+        # tool call) preserves whatever draft is already in flight so the
+        # iframe's on_mount auto-sync can pull it in. Pass reset=True for a
+        # fresh start that wipes both vars.
+        draft = latest_draft_snapshot.get("draft", {}) if isinstance(latest_draft_snapshot, dict) else {}
+        has_work_in_progress = bool(
+            draft.get("selected_job_type") or draft.get("intent") or draft.get("job_name")
         )
-        latest_draft_snapshot = _capture_draft_snapshot(current_initial_state)
+
+        if reset or not has_work_in_progress:
+            iframe_boot_state = _initial_state(
+                job_types=bootstrap_types,
+                selected_type=_normalize_job_type(job_type),
+                environment=(environment or "dev").strip().lower(),
+            )
+            latest_draft_snapshot = _capture_draft_snapshot(iframe_boot_state)
+            status = "opened"
+        else:
+            status = "reattached"
+
         return {
-            "status": "opened",
-            "selectedJobType": current_initial_state["selectedJobType"],
-            "environment": current_initial_state["environment"],
+            "status": status,
+            "selectedJobType": iframe_boot_state["selectedJobType"],
+            "environment": iframe_boot_state["environment"],
         }
 
     @mcp.tool(
