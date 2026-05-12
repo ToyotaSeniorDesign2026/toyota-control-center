@@ -31,7 +31,7 @@ from control_center.specs.job_type import BASE_TYPE_MAP, FieldSpec, FieldType, J
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_INSTRUCTOR_MODEL = "google/gemini-2.5-flash"
+DEFAULT_INSTRUCTOR_MODEL = "google/gemini-3.1-flash-lite"
 
 
 # ── Instructor client plumbing ───────────────────────────────────────────────
@@ -97,8 +97,8 @@ def _section_model(model_name: str, specs: list[FieldSpec], required: set[str]) 
             default = spec.default
             fields[spec.name] = (optional_type, Field(default=default, description=description))
     if not fields:
-        # Empty section — return an empty object model. We avoid setting __doc__
-        # so the parent schema doesn't surface a misleading description to the LLM.
+        # Empty section — return a blank object model (no __doc__, so the parent
+        # schema doesn't surface a misleading description to the LLM).
         return create_model(model_name)
     return create_model(model_name, **fields)
 

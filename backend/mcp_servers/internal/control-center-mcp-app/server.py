@@ -1,22 +1,31 @@
 """Control Center Job Designer MCP App.
 
-Interactive Prefab app for creating Control Center jobs. Reactive to the
-selected job type's contract: built-in types are loaded from
-`control_center.specs.KNOWN_CONTRACTS`, then API-discovered types may fall
-back to the backend form-schema endpoint. The UI renders a dynamic form
-(text/number/boolean/select/secret) keyed off `FieldSpec`.
+Interactive Prefab app for authoring Control Center jobs. The form is
+contract-driven: built-in types come from `control_center.specs.KNOWN_CONTRACTS`,
+and API-discovered types fall back to the backend's form-schema endpoint. The
+config/params section renders dynamically from each contract's `FieldSpec`
+list (text/number/boolean/select/secret).
 
-Backend wiring (HTTP):
-    GET  /job-types                         refresh/discover additional types
-    GET  /job-types/{type}/form-schema      fallback for API-discovered types
-    GET  /connectors
-    POST /jobs
-    POST /jobs/{job_id}/runs
-    GET  /integrations/mcp/servers
+Three authoring paths feed the same draft:
+    - Manual edits in the iframe form.
+    - `patch_draft_snapshot` from the host model (partial JSON patches).
+    - `generate_full_job_draft` — the "Generate full draft" button — runs a
+      two-step Instructor flow (pick JobType, then fill contract-shaped fields)
+      via `job_generation.generate_job_draft_from_intent`.
 
-Required environment variables:
-    CC_API_BASE_URL    Base URL of the Control Center API (default http://localhost:8000)
-    CC_SERVICE_TOKEN   Bearer token matching CC_INTERNAL_SERVICE_TOKEN on the API
+Backend wiring (HTTP, via _api_get / _api_post):
+    GET  /job-types                         list/discover dynamic types
+    GET  /job-types/{type}/form-schema      schema fallback for dynamic types
+    GET  /connectors                        list registered connectors
+    POST /jobs                              create a job
+    POST /jobs/{job_id}/runs                trigger a run
+
+Environment variables (loaded from backend/.env on import; shell env wins):
+    CC_API_BASE_URL                         Control Center API base (default http://localhost:8000)
+    CC_SERVICE_TOKEN                        Bearer token for the Control Center API
+    GOOGLE_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY
+                                            Provider key for the Generate-draft Instructor call
+    CONTROL_CENTER_MCP_INSTRUCTOR_MODEL     Override the default `google/gemini-2.5-flash`
 """
 
 from __future__ import annotations
@@ -276,6 +285,7 @@ JS_ACTIONS = {
             return {{
                 ...resetDesignerSections(schema),
                 jobName: "",
+                intent: "",
                 tagsText: "",
             }};
         }}
@@ -398,20 +408,17 @@ _SCALAR_FIELDS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
 
 # ── Pydantic schema for AI structured output ────────────────────────────────
 #
-# This is the type a backend caller can pass to an LLM as `response_model=`
-# (Instructor / Anthropic / OpenAI structured-output / FastMCP `ctx.sample(...,
-# result_type=JobDraft)`). Get a JobDraft back, dump it with .model_dump(),
-# and feed it straight into `patch_draft_snapshot` — the draft_key names line
-# up with what _apply_designer_patch accepts.
-#
-# Container fields (config/params/selected_connectors) stay loose dicts/lists
-# because their shapes are JobTypeContract-dependent. Add a per-contract
-# Pydantic sub-model later if you want validated structured output for those.
+# Generic draft shape for callers that don't have a specific JobTypeContract in
+# hand (e.g. a backend Instructor call that just wants `JobDraft`-shaped output
+# to feed straight into `patch_draft_snapshot`). For contract-aware structured
+# output (typed config/params sub-models, Literal-constrained connectors), see
+# `job_generation._build_draft_model`.
 
 
 class JobDraft(BaseModel):
-    """Mirror of the AI-visible draft shape. Single source of truth for LLM
-    structured output that targets `patch_draft_snapshot`.
+    """Mirror of the AI-visible draft shape, suitable as `response_model=` for
+    Instructor / OpenAI / Anthropic structured-output calls. The snake_case
+    field names line up with what `patch_draft_snapshot` accepts.
     """
 
     intent: str = PydanticField(
@@ -938,7 +945,8 @@ _MISSING = object()
 
 
 def _display_value(value: Any, *, limit: int | None = 180) -> str:
-
+    """Render a draft value for the diff UI: '—' for missing/empty, JSON for
+    dicts/lists, str() otherwise; truncated with an ellipsis past `limit` chars."""
     if value is _MISSING or value is None or value == "":
         return "—"
 
@@ -948,9 +956,9 @@ def _display_value(value: Any, *, limit: int | None = 180) -> str:
         text = str(value)
 
     if limit is None:
-        return text  # Return the whole text if limit is explicitly None
+        return text
 
-    return text[:limit] + ("…" if len(text) > limit else "")  # Add ellipsis if truncated
+    return text[:limit] + ("…" if len(text) > limit else "")
 
 
 def _get_diff_items(current: dict, proposed: dict):
@@ -1344,9 +1352,8 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                     value=selected_job_type,
                                     on_change=[
                                         SetState("selectedJobType", EVENT),
-                                        # Wipe contract-shaped state up front so stale values from
-                                        # the previous JobType can't bleed into matching field names
-                                        # before applySchemaChange runs.
+                                        # Pre-wipe contract-shaped state so values from the prior
+                                        # JobType can't bleed in before applySchemaChange runs.
                                         SetState("config", {}),
                                         SetState("params", {}),
                                         SetState("selectedConnectors", []),
@@ -1459,7 +1466,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                 with If("{{ !(pendingAiSuggestions | length) }}"):
                                     Muted("No changes are available to apply.")
 
-                            # NEW FEATURE: JSON Deep Dive Accordion
+                            # Collapsible raw-JSON payload for deeper inspection.
                             with If("{{ pendingAiSuggestions.length > 0 }}"):
                                 with Accordion(css_class="mt-2 border-t border-white/10 pt-2 w-full min-w-0"):
                                     with AccordionItem(value="raw_json_patch", title="View Raw JSON Payload"):
@@ -1558,11 +1565,8 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                             CallTool(
                                                 "generate_full_job_draft",
                                                 arguments={
-                                                    # Use Prefab template strings with fallbacks; bare STATE.x Rx
-                                                    # refs occasionally serialize as unresolved "{{ x }}" when the
-                                                    # bound input never received focus (e.g. environment Select on
-                                                    # first render). The existing _create_job_action uses the same
-                                                    # pattern at server.py:_create_job_action.
+                                                    # Explicit Prefab templates with fallbacks — bare STATE.x refs
+                                                    # can serialize unresolved if the bound input never had focus.
                                                     "intent": "{{ intent }}",
                                                     "job_name": "{{ jobName }}",
                                                     "environment": "{{ environment | 'dev' }}",
@@ -1684,7 +1688,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                 description="The selected job type has no configurable fields.",
             )
 
-        # ── Run-time params (only meaningful after job creation) ─────────────
+        # ── Run-time params (filled now, forwarded at trigger_run) ───────────
         with If(STATE.formSchema.params_fields.length() > 0):
             with Card(css_class="glass-card"):
                 with CardHeader():
@@ -1811,7 +1815,7 @@ def _initial_state(
     }
 
 
-# ── CSP helper (mirrors the prototype) ───────────────────────────────────────
+# ── Resource CSP + tool-result resolver ──────────────────────────────────────
 
 def _resource_csp_for(app: PrefabApp) -> ResourceCSP:
     csp = app.csp()
@@ -1975,8 +1979,9 @@ def _schema_for_job_type(job_type: str, *, allow_api_fallback: bool = False) -> 
     metadata via `_job_type_metadata_for`. Returns an empty schema payload
     when the type is unknown and no fallback is allowed.
 
-    Callers that want the empty schema on *any* failure (e.g. preload during
-    iframe boot) should pass `safe=True` to swallow API errors.
+    Raises on API errors when `allow_api_fallback=True`. Callers that want to
+    swallow those (e.g. preload during iframe boot) should call the sibling
+    `_schema_for_job_type_safe` instead.
     """
     normalized = _normalize_job_type(job_type)
     if not normalized:
@@ -2111,7 +2116,6 @@ def build_server() -> FastMCP:
     def open_job_designer(
         job_type: str = "",
         environment: str = "dev",
-        
     ) -> dict[str, Any]:
         # Single-session draft store (see breadcrumb at top of build_server).
         # For multi-tenant: swap to ctx.set_state or a session_state_store.
@@ -2258,7 +2262,6 @@ def build_server() -> FastMCP:
             "Patch the latest captured draft. Use config/params for merge updates; "
             "replace_config/replace_params for full replacement. Omitted fields are preserved."
         ),
-        annotations={},
     )
     def patch_draft_snapshot(
         patch: dict[str, Any],
