@@ -111,10 +111,6 @@ def js_handler(body: str) -> str:
     return dedent(body).strip()
 
 
-def js_indent(source: str, prefix: str = "    ") -> str:
-    return indent(source, prefix)
-
-
 JS_DESIGNER_RESET_HELPERS = js_handler("""
     const asArray = (value) => Array.isArray(value) ? value : [];
 
@@ -261,7 +257,7 @@ JS_ACTIONS = {
             const s = ctx.state || {{}};
             const schema = s.formSchema || {{}};
 
-{js_indent(JS_DESIGNER_RESET_HELPERS, "            ")}
+{indent(JS_DESIGNER_RESET_HELPERS, "            ")}
 
             return {{
                 ...resetDesignerSections(schema, s),
@@ -277,7 +273,7 @@ JS_ACTIONS = {
             const args = ctx.arguments || {{}};
             const schema = args.schema || {{}};
 
-{js_indent(JS_DESIGNER_RESET_HELPERS, "            ")}
+{indent(JS_DESIGNER_RESET_HELPERS, "            ")}
 
             return {{
                 selectedJobType: schema.type || s.selectedJobType || "",
@@ -364,6 +360,24 @@ def _api_post(path: str, body: dict) -> Any:
 # Key Boundary: The AI cannot read iframe state directly; it only sees exported draft snapshots.
 # Key Flow: AI patches the latest draft snapshot, then the user syncs it back into the UI.
 
+# Scalar field registry. Single source of truth for the field name, draft key,
+# diff label, and patch-alias set. Used by:
+#   _ui_state_to_draft, _draft_to_ui_state, _get_diff_items,
+#   _apply_designer_patch (scalar branch), _sync_ui_result_to_form_actions.
+# Containers (config / params / connectors / formSchema) stay explicit because
+# each has bespoke patch semantics (replace_X, schema reload, list filtering).
+_SCALAR_FIELDS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
+    # ui_key, draft_key, label, patch_aliases, default
+    ("selectedJobType",  "selected_job_type", "Job type",           ("selectedJobType", "selected_job_type", "job_type", "type"), ""),
+    ("environment",      "environment",       "Environment",        ("environment",),                                              "dev"),
+    ("dataSensitivity",  "data_sensitivity",  "Data sensitivity",   ("dataSensitivity", "data_sensitivity"),                       "low"),
+    ("jobName",          "job_name",          "Job name",           ("jobName", "job_name", "name"),                               ""),
+    ("tagsText",         "tags_text",         "Tags",               ("tagsText", "tags_text", "tags"),                             ""),
+    ("selectedConnector","selected_connector","Selected connector", ("selectedConnector", "selected_connector"),                   ""),
+    ("connectorText",    "manual_connector",  "Manual connector",   ("connectorText", "connector_text", "manual_connector"),      ""),
+    ("runPrompt",        "run_prompt",        "Run prompt",         ("runPrompt", "run_prompt", "prompt"),                         ""),
+)
+
 
 def _ui_state_to_draft(state: dict[str, Any] | None) -> dict[str, Any]:
     """Convert Prefab/UI state shape into the AI-visible draft snapshot shape."""
@@ -371,46 +385,40 @@ def _ui_state_to_draft(state: dict[str, Any] | None) -> dict[str, Any]:
 
     form_schema = _patch_dict(state.get("formSchema")) or _form_schema_payload({})
 
-    selected_job_type = _normalize_job_type(state.get("selectedJobType")) or str(
+    draft: dict[str, Any] = {
+        draft_key: str(state.get(ui_key) or default)
+        for ui_key, draft_key, _, _, default in _SCALAR_FIELDS
+    }
+    # Job type has a form-schema fallback when the UI doesn't carry it.
+    draft["selected_job_type"] = _normalize_job_type(state.get("selectedJobType")) or str(
         form_schema.get("type") or ""
     )
-
-    return {
-        "selected_job_type": selected_job_type,
-        "environment": str(state.get("environment")) or "dev",
-        "job_name": str(state.get("jobName") or ""),
-        "data_sensitivity": str(state.get("dataSensitivity") or "low"),
-        "tags_text": str(state.get("tagsText") or ""),
-        "selected_connector": str(state.get("selectedConnector") or ""),
+    draft.update({
         "selected_connectors": _patch_list(state.get("selectedConnectors")) or [],
-        "manual_connector": str(state.get("connectorText") or ""),
+        "available_connectors": _patch_list(state.get("availableConnectors")) or [],
         "config": _patch_dict(state.get("config")) or {},
         "params": _patch_dict(state.get("params")) or {},
-        "run_prompt": str(state.get("runPrompt") or ""),
-        "available_connectors": _patch_list(state.get("availableConnectors")) or [],
         "form_schema": form_schema,
-    }
+    })
+    return draft
 
 
 def _draft_to_ui_state(draft: dict[str, Any] | None) -> dict[str, Any]:
     """Convert AI-visible draft snapshot shape back into Prefab/UI state shape."""
     draft = draft or {}
 
-    return {
-        "selectedJobType": draft.get("selected_job_type", ""),
-        "selectedConnector": draft.get("selected_connector", ""),
+    state: dict[str, Any] = {
+        ui_key: draft.get(draft_key, default)
+        for ui_key, draft_key, _, _, default in _SCALAR_FIELDS
+    }
+    state.update({
         "selectedConnectors": draft.get("selected_connectors", []),
-        "connectorText": draft.get("manual_connector", ""),
         "availableConnectors": draft.get("available_connectors", []),
-        "environment": draft.get("environment", "dev"),
-        "dataSensitivity": draft.get("data_sensitivity", "low"),
-        "jobName": draft.get("job_name", ""),
-        "tagsText": draft.get("tags_text", ""),
         "config": draft.get("config", {}),
         "params": draft.get("params", {}),
-        "runPrompt": draft.get("run_prompt", ""),
         "formSchema": draft.get("form_schema", _form_schema_payload({})),
-    }
+    })
+    return state
 
 
 def _capture_draft_snapshot(current_state: dict[str, Any] | None) -> dict[str, Any]:
@@ -427,18 +435,11 @@ def _capture_draft_snapshot(current_state: dict[str, Any] | None) -> dict[str, A
 def _sync_ui_result_to_form_actions() -> list[Any]:
     """Prefab actions for syncing a UI-shaped tool result into the live form."""
     return [
-        SetState("selectedJobType", RESULT.selectedJobType),
-        SetState("selectedConnector", RESULT.selectedConnector),
+        *[SetState(ui_key, getattr(RESULT, ui_key)) for ui_key, *_ in _SCALAR_FIELDS],
         SetState("selectedConnectors", RESULT.selectedConnectors),
-        SetState("connectorText", RESULT.connectorText),
         SetState("availableConnectors", RESULT.availableConnectors),
-        SetState("environment", RESULT.environment),
-        SetState("dataSensitivity", RESULT.dataSensitivity),
-        SetState("jobName", RESULT.jobName),
-        SetState("tagsText", RESULT.tagsText),
         SetState("config", RESULT.config),
         SetState("params", RESULT.params),
-        SetState("runPrompt", RESULT.runPrompt),
         SetState("formSchema", RESULT.formSchema),
         SetState("loading", False),
         ShowToast(RESULT.message, variant="success"),
@@ -519,34 +520,39 @@ MAX_ENUM_OPTIONS = 12
 
 # ── Dynamic form rendering ───────────────────────────────────────────────────
 
-def _rx_path(value: Any) -> str:
-    text = str(value).strip()
-    if text.startswith("{{") and text.endswith("}}"):
-        return text[2:-2].strip()
-    return text
-
-
 def _render_enum_select(state_root: str, field: Any, option_count: int) -> None:
-    enum_path = _rx_path(field.enum)
+    enum_text = str(field.enum).strip()
+    enum_path = enum_text[2:-2].strip() if enum_text.startswith("{{") and enum_text.endswith("}}") else enum_text
     with Select(name=f"{state_root}.{field.name}"):
         for i in range(option_count):
             option = f"{{{{ {enum_path}.{i} }}}}"
             SelectOption(option, value=option)
 
 
-def _render_enum_select_for_field(state_root: str, field: Any) -> None:
-    """Render enum select options as direct SelectOption children.
+def _render_length_unrolled(length_expr: Any, max_n: int, build_with_count) -> None:
+    """Unroll a Prefab `len(list) == N` ladder so a parent component can render
+    its N children directly. Prefab Select/Combobox do not materialize options
+    nested under ForEach when the list is loop-scoped, so callers have to
+    enumerate N option counts statically and pick one at render time via
+    If/Elif against the runtime list length.
 
-    Select does not reliably materialize SelectOption children nested under a
-    ForEach when the enum list belongs to a loop-scoped field object.
+    `build_with_count(n)` is invoked inside each branch with the option count.
     """
-    with If(field.enum.length() == 1):
-        _render_enum_select(state_root, field, 1)
-    for count in range(2, MAX_ENUM_OPTIONS + 1):
-        with Elif(field.enum.length() == count):
-            _render_enum_select(state_root, field, count)
-    with Elif(field.enum.length() > MAX_ENUM_OPTIONS):
-        _render_enum_select(state_root, field, MAX_ENUM_OPTIONS)
+    with If(length_expr == 1):
+        build_with_count(1)
+    for count in range(2, max_n + 1):
+        with Elif(length_expr == count):
+            build_with_count(count)
+    with Elif(length_expr > max_n):
+        build_with_count(max_n)
+
+
+def _render_enum_select_for_field(state_root: str, field: Any) -> None:
+    _render_length_unrolled(
+        field.enum.length(),
+        MAX_ENUM_OPTIONS,
+        lambda n: _render_enum_select(state_root, field, n),
+    )
 
 
 def _render_field_loop(state_root: str, fields_path: str) -> None:
@@ -612,18 +618,12 @@ def _render_connector_combobox(option_count: int) -> None:
 
 
 def _render_connectors_combobox() -> None:
-    """Render a connector Combobox whose direct option count matches state length.
-
-    Combobox does not materialize options produced by ForEach/If children. The
-    Condition must wrap the whole Combobox, not individual options.
-    """
-    with If(STATE.availableConnectors.length() == 1):
-        _render_connector_combobox(1)
-    for count in range(2, MAX_CONNECTOR_OPTIONS + 1):
-        with Elif(STATE.availableConnectors.length() == count):
-            _render_connector_combobox(count)
-    with Elif(STATE.availableConnectors.length() > MAX_CONNECTOR_OPTIONS):
-        _render_connector_combobox(MAX_CONNECTOR_OPTIONS)
+    _render_length_unrolled(
+        STATE.availableConnectors.length(),
+        MAX_CONNECTOR_OPTIONS,
+        _render_connector_combobox,
+    )
+    with If(STATE.availableConnectors.length() > MAX_CONNECTOR_OPTIONS):
         Alert(
             variant="warning",
             title="Connector list truncated",
@@ -764,16 +764,24 @@ def _capture_current_draft_action(
     )
 
 
-def _update_ai_context_action() -> list[Any]:
+def _capture_then(*extra: Any) -> list[Any]:
+    """Build a capture-current-draft action that always updates AI context, then chains `extra`.
+
+    Used by both 'Update AI context' (no extra) and 'Get AI feedback' (adds a SendMessage).
+    """
     return [
         _capture_current_draft_action(
             on_success=[
                 SetState("lastDraftCapturedAt", RESULT.captured_at),
                 UpdateContext(structured_content={"control_center_job_designer": RESULT.draft}),
-                ShowToast("AI context updated.", variant="success"),
+                *extra,
             ],
         ),
     ]
+
+
+def _update_ai_context_action() -> list[Any]:
+    return _capture_then(ShowToast("AI context updated.", variant="success"))
 
 
 def _preview_ai_suggested_changes_action() -> CallHandler:
@@ -801,30 +809,20 @@ def _preview_ai_suggested_changes_action() -> CallHandler:
 
 
 def _review_setup_action() -> list[Any]:
-    return [
-        _capture_current_draft_action(
-            on_success=[
-                SetState("lastDraftCapturedAt", RESULT.captured_at),
-                UpdateContext(structured_content={"control_center_job_designer": RESULT.draft}),
-                SendMessage(
-                    "Please review the current Control Center job setup. Check connectors, "
-                    "required config, and missing fields before I create it.\n\n"
-                    "If you recommend concrete edits, call `patch_draft_snapshot` with only "
-                    "the fields that should change. Do not send the full current state. "
-                    "Current draft JSON:\n```json\n{{ $result.draft_json }}\n```"
-                ),
-            ],
+    return _capture_then(
+        SendMessage(
+            "Please review the current Control Center job setup. Check connectors, "
+            "required config, and missing fields before I create it.\n\n"
+            "If you recommend concrete edits, call `patch_draft_snapshot` with only "
+            "the fields that should change. Do not send the full current state. "
+            "Current draft JSON:\n```json\n{{ $result.draft_json }}\n```"
         ),
-    ]
+    )
 
 
 # ── AI Draft Preview / Diff Helpers ──────────────────────────────────────────
 
 _MISSING = object()
-
-
-def _display_key(key: str) -> str:
-    return key.replace("_", " ").title()
 
 
 def _display_value(value: Any, *, limit: int | None = 180) -> str:
@@ -844,20 +842,19 @@ def _display_value(value: Any, *, limit: int | None = 180) -> str:
 
 
 def _get_diff_items(current: dict, proposed: dict):
-    """Yield (item_id, label, ui_key, field_key, before, after)."""
-    top_level_map = {
-        "selected_job_type": ("selectedJobType", "Job type"),
-        "environment": ("environment", "Environment"),
-        "job_name": ("jobName", "Job name"),
-        "data_sensitivity": ("dataSensitivity", "Data sensitivity"),
-        "tags_text": ("tagsText", "Tags"),
-        "selected_connector": ("selectedConnector", "Selected connector"),
-        "selected_connectors": ("selectedConnectors", "Selected connectors"),
-        "manual_connector": ("connectorText", "Manual connector"),
-        "run_prompt": ("runPrompt", "Run prompt"),
-    }
+    """Yield (item_id, label, ui_key, field_key, before, after) for visible draft fields.
 
-    for draft_key, (ui_key, label) in top_level_map.items():
+    Scalars come from `_SCALAR_FIELDS`; `selected_connectors` is the only list
+    we surface in the diff. `available_connectors` is intentionally excluded —
+    it's UI plumbing, not user intent.
+    """
+    diff_fields: list[tuple[str, str, str]] = [
+        (draft_key, ui_key, label)
+        for ui_key, draft_key, label, *_ in _SCALAR_FIELDS
+    ]
+    diff_fields.append(("selected_connectors", "selectedConnectors", "Selected connectors"))
+
+    for draft_key, ui_key, label in diff_fields:
         yield (
             draft_key,
             label,
@@ -874,7 +871,7 @@ def _get_diff_items(current: dict, proposed: dict):
         for field_key, after in after_section.items():
             yield (
                 f"{section}.{field_key}",
-                f"{section.title()}: {_display_key(field_key)}",
+                f"{section.title()}: {field_key.replace('_', ' ').title()}",
                 section,
                 field_key,
                 before_section.get(field_key, _MISSING),
@@ -1067,160 +1064,94 @@ def _apply_designer_patch(
     applied: list[str] = []
 
     # Normalize current state through the draft adapter first so all values have parsed dict/list defaults.
-    current_draft = _ui_state_to_draft(current_state)
-    state = _draft_to_ui_state(current_draft)
+    state = _draft_to_ui_state(_ui_state_to_draft(current_state))
 
-    selected_job_type = state["selectedJobType"]
-    selected_connector = state["selectedConnector"]
+    # All scalar state lives in this dict, keyed by UI key, derived from _SCALAR_FIELDS.
+    scalars: dict[str, Any] = {ui_key: state[ui_key] for ui_key, *_ in _SCALAR_FIELDS}
     selected_connectors = state["selectedConnectors"]
-    connector_text = state["connectorText"]
     available_connectors = state["availableConnectors"]
-    environment = state["environment"]
-    data_sensitivity = state["dataSensitivity"]
-    job_name = state["jobName"]
-    tags_text = state["tagsText"]
     config = state["config"]
     params = state["params"]
-    run_prompt = state["runPrompt"]
     form_schema = state["formSchema"]
 
     schema_replaced = False
 
     # -- Job Type / Schema --
+    # `selectedJobType` is special: a change reloads the schema and resets the
+    # connector list, so the scalar loop below skips it.
 
-    next_type = _patch_value(
-        patch,
-        "selectedJobType",
-        "selected_job_type",
-        "job_type",
-        "type",
-    )
-
+    next_type = _patch_value(patch, "selectedJobType", "selected_job_type", "job_type", "type")
     if next_type is not None:
         normalized_next_type = _normalize_job_type(next_type)
-        if normalized_next_type and normalized_next_type != selected_job_type:
-            selected_job_type = normalized_next_type
-            applied.append("selectedJobType")
-            form_schema = _schema_for_job_type(
-                selected_job_type,
-                allow_api_fallback=True,
-            )
+        if normalized_next_type and normalized_next_type != scalars["selectedJobType"]:
+            scalars["selectedJobType"] = normalized_next_type
+            form_schema = _schema_for_job_type(normalized_next_type, allow_api_fallback=True)
             available_connectors = form_schema.get("connector_items", [])
             schema_replaced = True
-            applied.extend(["formSchema", "availableConnectors"])
+            applied.extend(["selectedJobType", "formSchema", "availableConnectors"])
 
     next_schema = _patch_value(patch, "formSchema", "form_schema")
-
     if isinstance(next_schema, dict):
         form_schema = _form_schema_payload(next_schema)
-        selected_job_type = _normalize_job_type(form_schema.get("type")) or selected_job_type
+        scalars["selectedJobType"] = _normalize_job_type(form_schema.get("type")) or scalars["selectedJobType"]
         available_connectors = form_schema.get("connector_items", [])
         schema_replaced = True
         applied.extend(["formSchema", "availableConnectors"])
 
-    # -- Scalars --
+    # -- Scalars (driven by _SCALAR_FIELDS) --
 
-    scalar_fields: tuple[tuple[tuple[str, ...], str], ...] = (
-        (("environment",), "environment"),
-        (("dataSensitivity", "data_sensitivity"), "dataSensitivity"),
-        (("jobName", "job_name", "name"), "jobName"),
-        (("tagsText", "tags_text", "tags"), "tagsText"),
-        (("selectedConnector", "selected_connector"), "selectedConnector"),
-        (("connectorText", "connector_text", "manual_connector"), "connectorText"),
-        (("runPrompt", "run_prompt", "prompt"), "runPrompt"),
-    )
-
-    for aliases, field_name in scalar_fields:
-
+    for ui_key, _draft_key, _label, aliases, _default in _SCALAR_FIELDS:
+        if ui_key == "selectedJobType":  # handled above
+            continue
         value = _patch_value(patch, *aliases)
         if value is None:
             continue
-        if field_name == "environment":
-            environment = str(environment)
-        elif field_name == "dataSensitivity":
-            data_sensitivity = str(value)
-        elif field_name == "jobName":
-            job_name = str(value)
-        elif field_name == "tagsText":
-            tags_text = ", ".join(value) if isinstance(value, list) else str(value)
-        elif field_name == "selectedConnector":
-            selected_connector = str(value)
-        elif field_name == "connectorText":
-            connector_text = str(value)
-        elif field_name == "runPrompt":
-            run_prompt = str(value)
-
-        applied.append(field_name)
+        if ui_key == "tagsText":
+            scalars[ui_key] = ", ".join(value) if isinstance(value, list) else str(value)
+        else:
+            scalars[ui_key] = str(value)
+        applied.append(ui_key)
 
     # -- Connector Lists --
 
-    next_selected_connectors = _patch_list(
-        _patch_value(
-            patch,
-            "selectedConnectors",
-            "selected_connectors",
-            "connectors",
-        )
-    )
-
-    if next_selected_connectors is not None:
-        selected_connectors = next_selected_connectors
-        selected_connector = ""
+    next_selected = _patch_list(_patch_value(patch, "selectedConnectors", "selected_connectors", "connectors"))
+    if next_selected is not None:
+        selected_connectors = next_selected
+        scalars["selectedConnector"] = ""
         applied.append("selectedConnectors")
 
-    next_available_connectors = _patch_list(
-        _patch_value(
-            patch,
-            "availableConnectors",
-            "available_connectors",
-        )
-    )
-
-    if next_available_connectors is not None:
-        available_connectors = next_available_connectors
+    next_available = _patch_list(_patch_value(patch, "availableConnectors", "available_connectors"))
+    if next_available is not None:
+        available_connectors = next_available
         applied.append("availableConnectors")
 
-    # -- Config --
+    # -- Config / Params (replace_X wins; merge otherwise; reset on schema swap) --
 
-    replace_config = _patch_dict(_patch_value(patch, "replace_config"))
-    config_update = _patch_dict(_patch_value(patch, "config", "config_updates"))
+    def _resolve_section(
+        section: str,
+        current_value: dict[str, Any],
+        merge_aliases: tuple[str, ...],
+        defaults_key: str,
+    ) -> dict[str, Any]:
+        replace = _patch_dict(_patch_value(patch, f"replace_{section}"))
+        update = _patch_dict(_patch_value(patch, *merge_aliases))
+        if replace is not None:
+            applied.append(section)
+            return replace
+        if update is not None:
+            base = {} if schema_replaced else current_value
+            applied.append(section)
+            return {**base, **update}
+        if schema_replaced:
+            return form_schema.get(defaults_key, {})
+        return current_value
 
-    if replace_config is not None:
-        config = replace_config
-        applied.append("config")
-    elif config_update is not None:
-        base_config = {} if schema_replaced else config
-        config = {**base_config, **config_update}
-        applied.append("config")
-    elif schema_replaced:
-        config = form_schema.get("defaults_config", {})
-
-    # -- Params --
-
-    replace_params = _patch_dict(_patch_value(patch, "replace_params"))
-    params_update = _patch_dict(
-        _patch_value(
-            patch,
-            "params",
-            "run_params",
-            "params_updates",
-        )
-    )
-
-    if replace_params is not None:
-        params = replace_params
-        applied.append("params")
-    elif params_update is not None:
-        base_params = {} if schema_replaced else params
-        params = {**base_params, **params_update}
-        applied.append("params")
-    elif schema_replaced:
-        params = form_schema.get("defaults_params", {})
+    config = _resolve_section("config", config, ("config", "config_updates"), "defaults_config")
+    params = _resolve_section("params", params, ("params", "run_params", "params_updates"), "defaults_params")
 
     # -- FINAL UI-SHAPED RESULT --
 
     unique_applied = list(dict.fromkeys(applied))
-
     message = (
         f"Applied changes: {', '.join(unique_applied)}."
         if unique_applied
@@ -1231,19 +1162,11 @@ def _apply_designer_patch(
         "status": "applied",
         "message": message,
         "applied": unique_applied,
-        # UI-shaped Prefab state fields:
-        "selectedJobType": selected_job_type,
-        "selectedConnector": selected_connector,
+        **scalars,
         "selectedConnectors": selected_connectors,
-        "connectorText": connector_text,
         "availableConnectors": available_connectors,
-        "environment": environment,
-        "dataSensitivity": data_sensitivity,
-        "jobName": job_name,
-        "tagsText": tags_text,
         "config": config,
         "params": params,
-        "runPrompt": run_prompt,
         "formSchema": form_schema,
     }
 
@@ -1645,7 +1568,7 @@ def _initial_state(
     environment: str = "dev",
 ) -> dict[str, Any]:
     available_job_types = job_types or _static_job_types()
-    selected_schema = _initial_form_schema(selected_type)
+    selected_schema = _schema_for_job_type_safe(selected_type)
 
     resolved_selected_type = (selected_schema.get("type") or _normalize_job_type(selected_type) or "")
 
@@ -1780,12 +1703,6 @@ def _mark_required_fields(fields: list[dict], required: list[str]) -> list[dict]
 
 # ── Tag/JSON normalization helpers for create_job ────────────────────────────
 
-def _split_tags(tags_text: str | None) -> list[str]:
-    if not tags_text:
-        return []
-    return [t.strip() for t in tags_text.split(",") if t.strip()]
-
-
 def _coerce_field_values(fields: list[dict], data: dict) -> dict:
     """Best-effort cast textarea/json values into structured types."""
     by_name = {f["name"]: f for f in fields}
@@ -1842,25 +1759,24 @@ def _normalize_job_type(value: Any) -> str:
     return text.lower()
 
 
-def _contract_payload(job_type: str) -> dict[str, Any]:
-    contract = KNOWN_CONTRACTS.get(_normalize_job_type(job_type))
-    if contract is None:
-        return {}
-    return contract.model_dump(mode="json")
-
-
-def _static_form_schema(job_type: str) -> dict[str, Any]:
-    payload = _contract_payload(job_type)
-    return _form_schema_payload(payload) if payload else _form_schema_payload({})
-
-
 def _schema_for_job_type(job_type: str, *, allow_api_fallback: bool = False) -> dict[str, Any]:
+    """Resolve a form schema for the given job type.
+
+    Tries `KNOWN_CONTRACTS` first; if not found and `allow_api_fallback` is
+    True, fetches `/job-types/{type}/form-schema` and merges connector_types
+    metadata via `_job_type_metadata_for`. Returns an empty schema payload
+    when the type is unknown and no fallback is allowed.
+
+    Callers that want the empty schema on *any* failure (e.g. preload during
+    iframe boot) should pass `safe=True` to swallow API errors.
+    """
     normalized = _normalize_job_type(job_type)
     if not normalized:
         return _form_schema_payload({})
-    static_schema = _static_form_schema(normalized)
-    if static_schema.get("type"):
-        return static_schema
+
+    contract = KNOWN_CONTRACTS.get(normalized)
+    if contract is not None:
+        return _form_schema_payload(contract.model_dump(mode="json"))
 
     if not allow_api_fallback:
         return _form_schema_payload({})
@@ -1873,35 +1789,16 @@ def _schema_for_job_type(job_type: str, *, allow_api_fallback: bool = False) -> 
         raise
 
 
-def _static_job_types() -> list[dict[str, Any]]:
-    return [_job_type_summary(contract.model_dump(mode="json")) for contract in KNOWN_CONTRACTS.values()]
-
-
-def _initial_form_schema(job_type: str) -> dict[str, Any]:
-    """Resolve the initial schema for a preselected job type.
-
-    This allows API fallback so open_job_designer(job_type=...) can preload dynamic job types correctly.
-    """
-    normalized = _normalize_job_type(job_type)
-    if not normalized:
+def _schema_for_job_type_safe(job_type: str) -> dict[str, Any]:
+    """Like `_schema_for_job_type(..., allow_api_fallback=True)` but never raises."""
+    try:
+        return _schema_for_job_type(job_type, allow_api_fallback=True)
+    except Exception:
         return _form_schema_payload({})
 
-    try:
-        return _schema_for_job_type(normalized, allow_api_fallback=True)
-    except Exception as exc:
-        logger.warning("Failed to preload schema for %s: %s", normalized, exc)
-        return _static_form_schema(normalized)
 
-
-def _dynamic_job_type_summaries(api_job_types: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    static_types = set(KNOWN_CONTRACTS)
-    return [
-        item
-        for item in api_job_types
-        if isinstance(item, dict)
-        and item.get("type")
-        and str(item["type"]).strip().lower() not in static_types
-    ]
+def _static_job_types() -> list[dict[str, Any]]:
+    return [_job_type_summary(contract.model_dump(mode="json")) for contract in KNOWN_CONTRACTS.values()]
 
 
 def _merge_job_type_summaries(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1933,10 +1830,6 @@ def _job_type_items(response: Any) -> list[dict[str, Any]]:
             keyed_contracts.append(value)
         return keyed_contracts
     return []
-
-
-def _api_job_type_summaries() -> list[dict[str, Any]]:
-    return [_job_type_summary(c) for c in _job_type_items(_api_get("/job-types"))]
 
 
 # ── Server build ─────────────────────────────────────────────────────────────
@@ -2036,13 +1929,19 @@ def build_server() -> FastMCP:
     )
     def list_job_types() -> dict[str, Any]:
         try:
-            items = _api_job_type_summaries()
+            items = [_job_type_summary(c) for c in _job_type_items(_api_get("/job-types"))]
         except Exception as exc:
             logger.warning("list_job_types failed: %s", exc)
             items = []
+        static_keys = set(KNOWN_CONTRACTS)
         return {
             "items": _merge_job_type_summaries(_static_job_types(), items),
-            "dynamic_items": _dynamic_job_type_summaries(items),
+            "dynamic_items": [
+                item for item in items
+                if isinstance(item, dict)
+                and item.get("type")
+                and str(item["type"]).strip().lower() not in static_keys
+            ],
         }
 
     @mcp.tool(
@@ -2107,7 +2006,9 @@ def build_server() -> FastMCP:
                     "environment": c.get("environment"),
                     "status": c.get("status"),
                     "is_shared": c.get("is_shared", False),
-                    "label": _connector_label(c),
+                    "label": " · ".join(
+                        str(p) for p in (c.get("name") or c.get("id"), c.get("connector_type"), c.get("environment")) if p
+                    ),
                     "value": _connector_value(c),
                 }
                 for c in items
@@ -2250,7 +2151,7 @@ def build_server() -> FastMCP:
         if not normalized_environment:
             raise ValueError("Environment is required — pick one from the environment selector.")
 
-        merged_tags = list(tags or []) + _split_tags(tags_text)
+        merged_tags = list(tags or []) + [t.strip() for t in (tags_text or "").split(",") if t.strip()]
 
         try:
             schema = _schema_for_job_type(normalized_type, allow_api_fallback=True)
@@ -2361,15 +2262,6 @@ def _connector_types_for_job_type_or_values(
     if connector_types is not None:
         return _normalize_connector_type_list(connector_types)
     return _normalize_connector_type_list(connector_type)
-
-
-def _connector_label(connector: dict[str, Any]) -> str:
-    parts = [
-        connector.get("name") or connector.get("id"),
-        connector.get("connector_type"),
-        connector.get("environment"),
-    ]
-    return " · ".join(str(part) for part in parts if part)
 
 
 def _connector_value(connector: dict[str, Any]) -> str:
