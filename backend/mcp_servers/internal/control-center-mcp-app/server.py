@@ -73,9 +73,11 @@ from prefab_ui.components import (
     H1,
     If,
     Input,
+    Label,
     Loader,
     Muted,
     P,
+    Popover,
     RESULT,
     Row,
     STATE,
@@ -1477,6 +1479,50 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                     with If(STATE.lastDraftCapturedAt):
                         Muted(f"Last AI context update: {STATE.lastDraftCapturedAt.datetime()}")
 
+        # ── Intent-driven seed (Name + Intent, single row) ───────────────────
+        # The minimum a beginner needs to start a job: a label and an
+        # intent. Everything else can be auto-filled by an LLM consuming
+        # the JobDraft Pydantic model.
+        with Card(css_class="glass-card"):
+            with CardContent():
+                with Grid(columns={"md": 3}, gap=4):
+                    # Name — label inline with input.
+                    with Row(align="center", gap=3, css_class="w-full"):
+                        Label("Name", css_class="shrink-0")
+                        with Div(css_class="flex-1 min-w-0"):
+                            Input(name="jobName", placeholder="Brief job title")
+                    # Intent — same inline layout, label is a clickable Popover
+                    # trigger so beginners can drill into "what counts as intent?"
+                    # without polluting the row with description text.
+                    with Div(css_class="md:col-span-2"):
+                        with Row(align="center", gap=3, css_class="w-full"):
+                            with Popover(
+                                title="What is intent?",
+                                description="The plain-English seed an LLM uses to auto-fill the rest of this form.",
+                                side="bottom",
+                            ):
+                                Label(
+                                    "Intent",
+                                    css_class="shrink-0 cursor-pointer underline decoration-dotted underline-offset-4 decoration-emerald-400/40 hover:decoration-emerald-400",
+                                )
+                                with Column(gap=2, css_class="max-w-sm"):
+                                    Text(
+                                        content=(
+                                            "Describe what this job should accomplish in plain English. "
+                                            "Connectors, config, and run-time params can all be filled in later "
+                                            "from the intent — manually or via an AI draft."
+                                        ),
+                                        css_class="text-sm leading-relaxed",
+                                    )
+                                    Muted(
+                                        "Example: \"Pull daily Toyota special deals for Dallas and email a summary.\""
+                                    )
+                            with Div(css_class="flex-1 min-w-0"):
+                                Input(
+                                    name="intent",
+                                    placeholder="What should this job accomplish?",
+                                )
+
         # ── Job type contract summary ────────────────────────────────────────
         with If(STATE.formSchema.type):
             with Card(css_class="glass-card"):
@@ -1546,30 +1592,13 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
             with CardHeader():
                 CardTitle("Job basics")
             with CardContent():
-                with Column(gap=5):
-                    # Full-row "Intent" field — the human-readable seed an LLM can
-                    # consume (via the JobDraft Pydantic model) to auto-fill the
-                    # rest of the form.
-                    with Field():
-                        FieldTitle("Intent")
-                        FieldDescription("What should this job accomplish? Plain English is fine.")
-                        with FieldContent():
-                            Textarea(
-                                name="intent",
-                                placeholder="e.g. Pull the daily Toyota Financial special-deals page for Dallas dealers and email a summary.",
-                                rows=2,
-                            )
-                    with Grid(columns={"md": 2}, gap=5):
-                        with Field():
-                            FieldTitle("Name")
-                            with FieldContent():
-                                Input(name="jobName", placeholder="Daily users export")
-                        _select_field(
-                            "Data sensitivity",
-                            "dataSensitivity",
-                            _SENSITIVITY_OPTIONS,
-                            selected_value=initial_state.get("dataSensitivity", "low"),
-                        )
+                with Grid(columns={"md": 2}, gap=5):
+                    _select_field(
+                        "Data sensitivity",
+                        "dataSensitivity",
+                        _SENSITIVITY_OPTIONS,
+                        selected_value=initial_state.get("dataSensitivity", "low"),
+                    )
                     with Field():
                         FieldTitle("Tags")
                         FieldDescription("Comma-separated labels.")
