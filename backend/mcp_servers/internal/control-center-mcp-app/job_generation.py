@@ -218,25 +218,33 @@ def _build_draft_model(contract: JobTypeContract, approved_connectors: list[str]
     else:
         connectors_type = list[str]
 
+    # Optional scalars default to None so that model_dump(exclude_none=True)
+    # drops them when the LLM has no opinion. _apply_designer_patch skips
+    # absent fields (preserves the user's current value), which gives this
+    # tool the same "merge, don't clobber" semantics as patch_draft_snapshot.
+    # The required fields below (intent, job_name, selected_job_type, config,
+    # params) are always present in the output because they're the load-bearing
+    # spine of the generated draft.
+    omit_hint = " Omit (return null) if you have no strong opinion so the user's existing value survives."
     return create_model(
         "GeneratedJobDraft",
         intent=(str, Field(..., description="Plain-English statement of what this job should accomplish.")),
         job_name=(str, Field(..., description="Short, slug-friendly job title — three to six words.")),
         environment=(
-            _literal_of(["dev", "staging", "prod"]),
-            Field(default="dev", description="Target environment for execution. Default 'dev' if unsure."),
+            _literal_of(["dev", "staging", "prod"]) | None,
+            Field(default=None, description="Target environment for execution." + omit_hint),
         ),
         data_sensitivity=(
-            _literal_of(["low", "medium", "high"]),
-            Field(default="low", description="Pick 'high' for PII or regulated data, 'medium' for internal, 'low' for public."),
+            _literal_of(["low", "medium", "high"]) | None,
+            Field(default=None, description="Pick 'high' for PII or regulated data, 'medium' for internal, 'low' for public." + omit_hint),
         ),
-        tags_text=(str, Field(default="", description="Comma-separated labels, e.g. 'finance, daily'.")),
+        tags_text=(str | None, Field(default=None, description="Comma-separated labels, e.g. 'finance, daily'." + omit_hint)),
         selected_job_type=(pinned_job_type, Field(..., description="Pinned to the resolved JobType.")),
         selected_connectors=(
-            connectors_type,
-            Field(default_factory=list, description="Approved connector names required to satisfy the intent."),
+            connectors_type | None,
+            Field(default=None, description="Approved connector names required to satisfy the intent." + omit_hint),
         ),
-        run_prompt=(str, Field(default="", description="Optional per-run prompt passed alongside params.")),
+        run_prompt=(str | None, Field(default=None, description="Optional per-run prompt passed alongside params." + omit_hint)),
         config=(config_model, Field(..., description="Job-level configuration for this JobType.")),
         params=(params_model, Field(..., description="Default run-time parameters for this JobType.")),
     )
@@ -285,10 +293,12 @@ async def generate_job_draft_from_intent(
                 "role": "system",
                 "content": (
                     "You are completing a Control Center job draft for a specific JobType. "
-                    "Fill every field consistently with the user's intent. Use the JobType's "
-                    "config and params schemas exactly — do not invent fields. "
-                    "Pick connectors only from the approved list. Be conservative on "
-                    "data_sensitivity (default low unless the intent implies regulated data)."
+                    "Fill the required fields (intent, job_name, selected_job_type, config, params) "
+                    "consistently with the user's intent. For optional fields (environment, "
+                    "data_sensitivity, tags_text, selected_connectors, run_prompt): only fill them "
+                    "if the intent clearly implies a value — otherwise return null so the user's "
+                    "existing form value is preserved. Use the JobType's config and params schemas "
+                    "exactly — do not invent fields. Pick connectors only from the approved list."
                 ),
             },
             {
