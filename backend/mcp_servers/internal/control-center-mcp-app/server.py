@@ -25,7 +25,7 @@ Environment variables (loaded from backend/.env on import; shell env wins):
     CC_SERVICE_TOKEN                        Bearer token for the Control Center API
     GOOGLE_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY
                                             Provider key for the Generate-draft Instructor call
-    CONTROL_CENTER_MCP_INSTRUCTOR_MODEL     Override the default `google/gemini-2.5-flash`
+    CONTROL_CENTER_MCP_INSTRUCTOR_MODEL     Override the default `google/gemini-3.1-flash-lite`
 """
 
 from __future__ import annotations
@@ -754,15 +754,6 @@ def _render_connectors_combobox() -> None:
             title="Connector list truncated",
             description=f"Showing the first {MAX_CONNECTOR_OPTIONS} connector options.",
         )
-
-
-def _select_field(label: str, name: str, options: list[tuple[str, str]], *, selected_value: str = "") -> None:
-    with Field():
-        FieldTitle(label)
-        with FieldContent():
-            with Select(name=name, value=selected_value or None):
-                for value, opt_label in options:
-                    SelectOption(opt_label, value=value, selected=value == selected_value)
 
 
 # ── Action factories ─────────────────────────────────────────────────────────
@@ -2218,9 +2209,7 @@ def build_server() -> FastMCP:
                     "environment": c.get("environment"),
                     "status": c.get("status"),
                     "is_shared": c.get("is_shared", False),
-                    "label": " · ".join(
-                        str(p) for p in (c.get("name") or c.get("id"), c.get("connector_type"), c.get("environment")) if p
-                    ),
+                    "label": _connector_display_label(c),
                     "value": _connector_value(c),
                 }
                 for c in items
@@ -2535,14 +2524,42 @@ def _connector_value(connector: dict[str, Any]) -> str:
     return ""
 
 
+def _connector_display_label(connector: dict[str, Any]) -> str:
+    """Build the human-readable picker label for a connector option.
+
+    Parts are `(name or id) · connector_type · environment`. Consecutive equal
+    segments collapse, so synthesized rows where name == connector_type render
+    as `"filesystem · dev"` (or just `"filesystem"` when env is blank), while
+    registered rows with distinct fields preserve all three parts
+    (`"prod-github-1 · github · dev"`). Empty/None parts are dropped.
+    """
+    parts: list[str] = []
+    for raw in (
+        connector.get("name") or connector.get("id"),
+        connector.get("connector_type"),
+        connector.get("environment"),
+    ):
+        if not raw:
+            continue
+        text = str(raw)
+        if not parts or parts[-1] != text:
+            parts.append(text)
+    return " · ".join(parts)
+
+
 def _connector_items_for_types(
     connector_types: list[str],
     environment: str = "",
 ) -> list[dict[str, Any]]:
-    """Build UI-ready connector options from contract-declared connector names."""
+    """Build UI-ready connector options from contract-declared connector names.
+
+    Seeds `availableConnectors` on the form schema at initial render. After
+    Refresh data, `list_connectors` produces the same shape so the dropdown
+    labels stay consistent across the two paths.
+    """
     return [
         {
-            "label": _connector_value(c),
+            "label": _connector_display_label(c),
             "value": _connector_value(c),
         }
         for c in _merge_connector_items([], connector_types, environment)

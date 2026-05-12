@@ -26,7 +26,7 @@ except Exception:  # pragma: no cover - optional dependency
     instructor = None
 
 from control_center.specs import KNOWN_CONTRACTS
-from control_center.specs.job_type import BASE_TYPE_MAP, FieldSpec, FieldType, JobTypeContract
+from control_center.specs.job_type import BASE_TYPE_MAP, FieldSpec, JobTypeContract
 
 
 logger = logging.getLogger(__name__)
