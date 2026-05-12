@@ -25,8 +25,21 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any
 from textwrap import dedent, indent
+
+from dotenv import load_dotenv
+
+# Load the backend's .env at import time so launchers that don't propagate the
+# shell env (e.g. `fastmcp dev apps`, ChatGPT's MCP connector hitting the HTTP
+# transport) still see GOOGLE_API_KEY / OPENAI_API_KEY / CC_SERVICE_TOKEN etc.
+# Walks up from this file until it finds a `backend/.env`; safe no-op when run
+# from elsewhere because `load_dotenv` accepts a missing path silently.
+for _candidate in (Path(__file__).resolve().parents[i] / ".env" for i in range(2, 6)):
+    if _candidate.exists():
+        load_dotenv(_candidate, override=False)
+        break
 
 from pydantic import BaseModel, Field as PydanticField
 from datetime import datetime, timezone
@@ -71,6 +84,7 @@ from prefab_ui.components import (
     Grid,
     HoverCard,
     H1,
+    Icon,
     If,
     Input,
     Label,
@@ -92,6 +106,8 @@ from prefab_ui.rx import ERROR, EVENT, Rx
 from prefab_ui.themes import Theme
 
 from control_center.specs import KNOWN_CONTRACTS
+
+from job_generation import generate_job_draft_from_intent
 
 logger = logging.getLogger(__name__)
 
@@ -727,13 +743,7 @@ def _render_connectors_combobox() -> None:
         )
 
 
-def _select_field(
-    label: str,
-    name: str,
-    options: list[tuple[str, str]],
-    *,
-    selected_value: str = "",
-) -> None:
+def _select_field(label: str, name: str, options: list[tuple[str, str]], *, selected_value: str = "") -> None:
     with Field():
         FieldTitle(label)
         with FieldContent():
@@ -1235,7 +1245,12 @@ def _apply_designer_patch(
             applied.append(section)
             return replace
         if update is not None:
-            base = {} if schema_replaced else current_value
+            # On a schema swap, start from the contract's defaults so AI-filled
+            # values *override* them but absent AI keys still inherit (e.g. a
+            # contract-supplied `timezone: UTC` shouldn't disappear just because
+            # the AI didn't restate it). When no swap happened, keep the user's
+            # current values as the merge base.
+            base = form_schema.get(defaults_key, {}) if schema_replaced else current_value
             applied.append(section)
             return {**base, **update}
         if schema_replaced:
@@ -1312,10 +1327,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                 with Column(gap=2):
                     Badge("Control Center", variant="outline")
                     H1("Create a job")
-                    Muted(
-                        "Pick a job type and connector. Form fields adapt to the "
-                        "selected contract."
-                    )
+                    Muted("Describe what you need, choose how it runs, and let AI help fill in the details.")
             with CardContent():
                 with Column(gap=3):
                     with Grid(columns={"md": 3}, gap=4):
@@ -1481,8 +1493,8 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
 
         # ── Intent-driven seed (Name + Intent, single row) ───────────────────
         # The minimum a beginner needs to start a job: a label and an
-        # intent. Everything else can be auto-filled by an LLM consuming
-        # the JobDraft Pydantic model.
+        # intent. Everything else can be filled out with the help of an
+        # LLM consuming the JobDraft Pydantic model.
         with Card(css_class="glass-card"):
             with CardContent():
                 with Grid(columns={"md": 3}, gap=4):
@@ -1501,11 +1513,25 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                 description="The plain-English seed an LLM uses to auto-fill the rest of this form.",
                                 side="bottom",
                             ):
-                                Label(
-                                    "Intent",
-                                    css_class="shrink-0 cursor-pointer underline decoration-dotted underline-offset-4 decoration-emerald-400/40 hover:decoration-emerald-400",
-                                )
-                                with Column(gap=2, css_class="max-w-sm"):
+                                # Popover's first child is the trigger; group the wand icon
+                                # and label into one Row so they click as a single affordance.
+                                # The wand carries the emerald accent on its own; the label
+                                # stays default white to read as a peer of "Name".
+                                with Row(
+                                    align="center",
+                                    gap=2,
+                                    css_class="shrink-0 cursor-pointer group",
+                                ):
+                                    Icon(
+                                        "wand-sparkles",
+                                        size="sm",
+                                        css_class="text-emerald-300 group-hover:text-emerald-200",
+                                    )
+                                    Label(
+                                        "Intent",
+                                        css_class="cursor-pointer underline decoration-dotted underline-offset-4 decoration-emerald-400/40 group-hover:decoration-emerald-400",
+                                    )
+                                with Column(gap=3, css_class="max-w-sm"):
                                     Text(
                                         content=(
                                             "Describe what this job should accomplish in plain English. "
@@ -1516,6 +1542,40 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                     )
                                     Muted(
                                         "Example: \"Pull daily Toyota special deals for Dallas and email a summary.\""
+                                    )
+                                    Button(
+                                        "Generate full draft",
+                                        icon="wand-sparkles",
+                                        variant="success",
+                                        disabled="{{ !intent }}",
+                                        on_click=[
+                                            SetState("loading", True),
+                                            CallTool(
+                                                "generate_full_job_draft",
+                                                arguments={
+                                                    # Use Prefab template strings with fallbacks; bare STATE.x Rx
+                                                    # refs occasionally serialize as unresolved "{{ x }}" when the
+                                                    # bound input never received focus (e.g. environment Select on
+                                                    # first render). The existing _create_job_action uses the same
+                                                    # pattern at server.py:_create_job_action.
+                                                    "intent": "{{ intent }}",
+                                                    "job_name": "{{ jobName }}",
+                                                    "environment": "{{ environment | 'dev' }}",
+                                                },
+                                                on_success=[
+                                                    *_sync_ui_result_to_form_actions(),
+                                                    CloseOverlay(),
+                                                    ShowToast(
+                                                        "{{ $result.meta.job_type_reasoning }}",
+                                                        variant="info",
+                                                    ),
+                                                ],
+                                                on_error=[
+                                                    SetState("loading", False),
+                                                    ShowToast(ERROR, variant="error"),
+                                                ],
+                                            ),
+                                        ],
                                     )
                             with Div(css_class="flex-1 min-w-0"):
                                 Input(
@@ -1573,37 +1633,34 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                         Alert(
                             variant="info",
                             title="No connectors found",
-                            description=(
-                                "No registered connectors match this job type and environment. "
-                                "Use the manual connector field below or register a connector first."
-                            ),
+                            description=("No registered connectors match this job type and environment."),
                         )
                     with Div(css_class="border-t border-emerald-200/10 pt-4"):
                         with Field():
-                            FieldDescription("Manual fallback for a connector that is not listed above.")
+                            FieldDescription("Manual fallback for connectors that are not listed above.")
                             with FieldContent():
-                                Input(
-                                    name="connectorText",
-                                    placeholder="github / sql-mcp / control-center",
-                                )
+                                Input(name="connectorText", placeholder="Comma-separated names, e.g., github, sql, control-center")
 
         # ── Job basics ───────────────────────────────────────────────────────
         with Card(css_class="glass-card"):
             with CardHeader():
                 CardTitle("Job basics")
             with CardContent():
-                with Grid(columns={"md": 2}, gap=5):
-                    _select_field(
-                        "Data sensitivity",
-                        "dataSensitivity",
-                        _SENSITIVITY_OPTIONS,
-                        selected_value=initial_state.get("dataSensitivity", "low"),
-                    )
-                    with Field():
-                        FieldTitle("Tags")
-                        FieldDescription("Comma-separated labels.")
-                        with FieldContent():
-                            Input(name="tagsText", placeholder="finance, daily")
+                # Inline-label layout mirroring the Name/Intent card above:
+                # short field (1 col) on the left, long field (2 cols) on the right.
+                with Grid(columns={"md": 3}, gap=4):
+                    with Row(align="center", gap=3, css_class="w-full"):
+                        Label("Data sensitivity", css_class="shrink-0")
+                        with Div(css_class="flex-1 min-w-0"):
+                            initial_sensitivity = initial_state.get("dataSensitivity", "low")
+                            with Select(name="dataSensitivity", value=initial_sensitivity or None):
+                                for value, opt_label in _SENSITIVITY_OPTIONS:
+                                    SelectOption(opt_label, value=value, selected=value == initial_sensitivity)
+                    with Div(css_class="md:col-span-2"):
+                        with Row(align="center", gap=3, css_class="w-full"):
+                            Label("Tags", css_class="shrink-0")
+                            with Div(css_class="flex-1 min-w-0"):
+                                Input(name="tagsText", placeholder="finance, daily, mcp, etc.")
 
         # ── Dynamic config form (driven by the selected JobTypeContract) ─────
         with If(STATE.formSchema.config_fields.length() > 0):
@@ -2234,6 +2291,45 @@ def build_server() -> FastMCP:
                 "Patched the latest captured draft snapshot. If the browser form changed "
                 "since the last capture, click Update AI context before asking for more edits. "
                 "Click Sync AI draft to form before creating the job."
+            ),
+        }
+
+    @mcp.tool(
+        name="generate_full_job_draft",
+        description="Auto-fill the whole job draft from a plain-English intent via two Instructor calls (pick JobType, then fill contract-shaped fields). Returns a redacted snapshot.",
+        tags={"internal"},
+    )
+    async def generate_full_job_draft(
+        intent: str,
+        job_name: str = "",
+        environment: str = "dev",
+    ) -> dict[str, Any]:
+        # Single-session draft store (see breadcrumb at top of build_server).
+        nonlocal latest_draft_snapshot
+
+        if not intent or not intent.strip():
+            raise ValueError("intent must be a non-empty string.")
+
+        patch = await generate_job_draft_from_intent(
+            intent=intent.strip(),
+            name=(job_name or "").strip(),
+            environment=(environment or "dev").strip().lower(),
+        )
+
+        # Reuse the existing patch pipeline: it handles schema reload on type
+        # change, config/params merge semantics, and connector list resets.
+        base_state = _draft_to_ui_state(latest_draft_snapshot.get("draft", {}))
+        result = _apply_designer_patch(base_state, patch)
+        latest_draft_snapshot = _capture_draft_snapshot(result)
+        redacted = _redact_snapshot(latest_draft_snapshot)
+        return {
+            **result,
+            "draft": redacted["draft"],
+            "draft_json": redacted["draft_json"],
+            "meta": patch.get("meta"),
+            "note": (
+                "Generated a full AI draft. Click Apply AI draft to review the proposed "
+                "changes, or Sync AI draft to form to apply them directly."
             ),
         }
 
