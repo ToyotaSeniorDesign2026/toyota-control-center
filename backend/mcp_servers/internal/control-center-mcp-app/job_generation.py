@@ -6,10 +6,9 @@ Step 2: build a contract-specific Pydantic model with `pydantic.create_model`
         — typed config/params sub-models, a Literal-constrained connector list —
         and let Instructor fill it.
 
-The orchestrator returns a flat dict shaped like a `patch_draft_snapshot`
-patch so the caller can pipe the result straight through the existing
-`_apply_designer_patch` pipeline. No new merge logic; no state side-effects
-inside this module.
+The orchestrator returns a flat dict shaped like a `patch_draft_snapshot` patch so
+the caller can pipe the result straight through the existing `_apply_designer_patch`
+pipeline. No new merge logic; no state side effects inside this module.
 """
 
 from __future__ import annotations
