@@ -44,20 +44,17 @@ import json
 import logging
 from typing import Any
 from textwrap import dedent, indent
-
-
 from datetime import datetime, timezone
-
-from pydantic import BaseModel, Field as PydanticField
 
 from fastmcp import FastMCP
 from fastmcp.apps import AppConfig, ResourceCSP
 from fastmcp.apps.approval import Approval
-from fastmcp.server.middleware import Middleware
 from prefab_ui import PrefabApp
 from prefab_ui.app import ResolvedTool
 from prefab_ui.actions import PopState, SetState, ShowToast, CallHandler, CloseOverlay
 from prefab_ui.actions.mcp import CallTool, RequestDisplayMode, SendMessage, UpdateContext
+from prefab_ui.rx import ERROR, EVENT, Rx
+from prefab_ui.themes import Theme
 from prefab_ui.components import (
     Accordion,
     AccordionItem,
@@ -109,11 +106,8 @@ from prefab_ui.components import (
     Text,
     Textarea,
 )
-from prefab_ui.rx import ERROR, EVENT, Rx
-from prefab_ui.themes import Theme
 
 import utils
-
 import forms
 
 utils.load_backend_env()
@@ -123,6 +117,11 @@ from job_generation import generate_job_draft_from_intent
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+
+# -----------------------------------------------------------------------------
+# Setup & Utilities
+# -----------------------------------------------------------------------------
+
 SERVER_NAME = "control-center-job-creator"
 SERVER_DESCRIPTION = (
     "Interactive Control Center job designer — pick a job type, choose a "
@@ -131,13 +130,9 @@ SERVER_DESCRIPTION = (
 APP_RESOURCE_URI = "ui://control-center/job-designer.html"
 APP_RESOURCE_DOMAIN = "https://control-center-job-creator.local"
 
-_REQUIRED_UI_STATE_KEYS = {"environment", "config", "params", "formSchema"}
-
-
-# Shared JS helpers prepended into each JS_ACTIONS handler that needs them.
-# Schema-driven defaults / empty values are computed server-side in
-# `form_schema._section_reset` and arrive as `schema.reset_config` /
-# `schema.reset_params`, so the client just consumes those slots directly.
+# Shared JavaScript helpers injected into handlers that run in isolated scopes.
+# Schema-dependent reset values are computed server-side in form_schema._section_reset
+# and exposed through `schema.reset_config` and `schema.reset_params`.
 _JS_HELPERS = utils.js_handler("""
     const asArray = (v) => Array.isArray(v) ? v : [];
     const asObject = (v) => v && typeof v === "object" && !Array.isArray(v) ? v : {};
@@ -156,13 +151,14 @@ _JS_HELPERS = utils.js_handler("""
 """)
 
 
-def _js_with_helpers(body: str) -> str:
-    """Inline `_JS_HELPERS` at the top of a JS handler body for fresh-scope use."""
+def _js_handler_with_helpers(body: str) -> str:
+    """Build a JS handler with `_JS_HELPERS` available in its local scope."""
     return utils.js_handler(f"(ctx) => {{\n{indent(_JS_HELPERS, '    ')}\n{indent(dedent(body).strip(), '    ')}\n}}")
 
 
 JS_ACTIONS = {
-    "buildDraftCapture": _js_with_helpers("""
+    # Capture the designer state needed to generate or restore a draft.
+    "buildDraftCapture": _js_handler_with_helpers("""
         const s = ctx.state || {};
         return {
             intent: s.intent || "",
@@ -181,10 +177,9 @@ JS_ACTIONS = {
         };
     """),
 
-    # Picker staging: the Combobox writes its current pick to `connectorPickerValue`
-    # (transient, never serialized into the draft). This handler chips that
-    # value onto the canonical `selectedConnectors` list and clears the picker.
-    "pushConnectorToList": _js_with_helpers("""
+    # Move the Combobox's transient selection (never serialized in draft) into
+    # the canonical connector list, avoiding duplicates, then clear the combobox.
+    "pushConnectorToList": _js_handler_with_helpers("""
         const s = ctx.state || {};
         const picked = s.connectorPickerValue || "";
         if (!picked) return {};
@@ -193,7 +188,8 @@ JS_ACTIONS = {
         return { selectedConnectors: [...current, picked], connectorPickerValue: "" };
     """),
 
-    "resetDesignerForm": _js_with_helpers("""
+    # Restore the entire designer to its initial schema-derived state.
+    "resetDesignerForm": _js_handler_with_helpers("""
         const s = ctx.state || {};
         return {
             ...resetDesignerSections(s.formSchema || {}),
@@ -203,7 +199,8 @@ JS_ACTIONS = {
         };
     """),
 
-    "applySchemaChange": _js_with_helpers("""
+    # Apply the new job-type schema and reset all state whose shape depends on it.
+    "applySchemaChange": _js_handler_with_helpers("""
         const s = ctx.state || {};
         const schema = (ctx.arguments || {}).schema || {};
         return {
@@ -214,7 +211,8 @@ JS_ACTIONS = {
         };
     """),
 
-    "applySelectedAiSuggestions": _js_with_helpers("""
+    # Apply only selected AI suggestions, merging config and params with existing values.
+    "applySelectedAiSuggestions": _js_handler_with_helpers("""
         const s = ctx.state || {};
         const changes = asArray(s.pendingAiSuggestions);
         const output = {};
@@ -236,14 +234,59 @@ JS_ACTIONS = {
 }
 
 
-# ── Draft <-> UI ─────────────────────────────────────────────────────────────
-# UI state (camelCase) is authoritative for create_job. Drafts (snake_case) are
-# the AI-visible projection — secrets are masked at the wire boundary, so the
-# AI sees `•••` but the iframe sync path keeps real values. Patches flow draft→UI
-# through `_apply_designer_patch`, which the AI calls with partial JSON.
+def _resource_csp_for(app: PrefabApp) -> ResourceCSP:
+    """Convert a Prefab app's CSP into MCP resource metadata."""
+    csp = app.csp()
+    known_keys = {"connect_domains", "style_domains", "script_domains", "resource_domains"}
+    unknown = csp.keys() - known_keys
+    if unknown:
+        raise RuntimeError(f"Unsupported Prefab CSP keys: {sorted(unknown)}")
+
+    resource_domains = sorted({
+        domain
+        for key in ("resource_domains", "style_domains", "script_domains")
+        for domain in csp.get(key, [])
+    })
+
+    return ResourceCSP(
+        connect_domains=csp.get("connect_domains") or None,
+        resource_domains=resource_domains or None,
+    )
+
+
+def _resolve_prefab_tool(tool_ref: Any) -> ResolvedTool:
+    """Resolve a Prefab tool reference to its registered FastMCP name."""
+    # TODO: Resolve FastMCP metadata, test if `unwrap_result` is still apt to expose structuredContent as `$result`."""
+    name = tool_ref if isinstance(tool_ref, str) else getattr(tool_ref, "__name__", str(tool_ref))
+    return ResolvedTool(name=name, unwrap_result=True)
+
+
+# -----------------------------------------------------------------------------
+# Draft State Lifecycle
+# -----------------------------------------------------------------------------
+
+_REQUIRED_UI_STATE_KEYS = {"environment", "config", "params", "formSchema"}
+_ENVIRONMENT_OPTIONS: list[tuple[str, str]] = [
+    ("dev", "Development"),
+    ("semi-prod", "Semi-Prod"),
+    ("prod", "Production"),
+]
+_DATA_SENSITIVITY_OPTIONS: list[tuple[str, str]] = [
+    ("low", "Low"),
+    ("medium", "Medium"),
+    ("high", "High"),
+]
+
+# ── Draft <-> UI State Adapter ────────────────────────────────────────────────
+# camelCase UI state is the source of truth for job creation. snake_case drafts
+# are the AI-facing representation used for snapshots, suggestions, and patches.
 #
-# `_SCALAR_FIELDS` is the single source of truth for the scalar mapping; containers
-# (config/params/connectors/formSchema) stay explicit — each has bespoke patch semantics.
+# AI tools submit partial draft patches. `_apply_designer_patch` resolves field
+# aliases and maps those changes back into UI state. Secrets are redacted only
+# when a draft crosses the app boundary; iframe state retains original values.
+#
+# `_SCALAR_FIELDS` defines all scalar UI <-> draft mappings. Container fields (config, params,
+# connectors, formSchema) remain explicit, as each requires its own conversion and patch behavior.
 
 _SCALAR_FIELDS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
     # ui_key, draft_key, label, patch_aliases, default
@@ -255,33 +298,53 @@ _SCALAR_FIELDS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
     ("tagsText",         "tags_text",         "Tags",               ("tagsText", "tags_text", "tags"),                             ""),
     ("connectorText",    "manual_connector",  "Manual connector",   ("connectorText", "connector_text", "manual_connector"),      ""),
     ("runPrompt",        "run_prompt",        "Run prompt",         ("runPrompt", "run_prompt", "prompt"),                         ""),
-    # Note: `selectedConnector` (singular) was retired when CC moved to multi-connector
-    # jobs. `_create_job_action` resolves to "{{ selectedConnectors.0 || connectorText }}"
-    # so the singular API contract still works until the API itself migrates.
 )
 
-# Container keys mirrored in three places: `_ui_state_to_draft`, `_draft_to_ui_state`,
-# and `_sync_ui_result_to_form_actions`. Listed here to keep them in sync.
+# Container fields handled explicitly by each state adapter and sync path. Keep this list
+# aligned with `_ui_state_to_draft`, `_draft_to_ui_state`, and `_sync_ui_result_to_form_actions`.
 _CONTAINER_FIELDS: tuple[str, ...] = ("selectedConnectors", "availableConnectors", "config", "params", "formSchema")
 
 
-class JobDraft(BaseModel):
-    """Generic draft shape for Instructor / structured-output calls — snake_case
-    field names match what `patch_draft_snapshot` accepts. For contract-aware
-    typed output, see `job_generation._build_draft_model`.
-    """
+def _initial_state(
+    *,
+    job_types: list[dict] | None = None,
+    selected_type: str = "",
+    environment: str = "dev",
+) -> dict[str, Any]:
+    available_job_types = job_types or forms.static_job_types()
+    selected_schema = forms.resolve_job_type_schema_or_empty(selected_type)
 
-    intent: str = PydanticField(default="", description="Plain-English statement of what this job should accomplish.")
-    selected_job_type: str = ""
-    environment: str = "dev"
-    data_sensitivity: str = "low"
-    job_name: str = ""
-    tags_text: str = ""
-    selected_connectors: list[str] = PydanticField(default_factory=list)
-    manual_connector: str = ""
-    run_prompt: str = ""
-    config: dict[str, Any] = PydanticField(default_factory=dict)
-    params: dict[str, Any] = PydanticField(default_factory=dict)
+    resolved_selected_type = (selected_schema.get("type") or forms.normalize_job_type(selected_type) or "")
+
+    if selected_schema.get("type"):
+        available_job_types = forms.merge_job_type_summaries(available_job_types, [forms.job_type_summary(selected_schema)])
+
+    return {
+        "availableJobTypes": available_job_types,
+        "availableConnectors": selected_schema.get("connector_items", []),
+        "selectedJobType": resolved_selected_type,
+        "connectorPickerValue": "",  # Transient UI staging slot for the connector Combobox; never serialized into draft
+        "selectedConnectors": [],
+        "connectorText": "",
+        "intent": "",
+        "environment": environment,
+        "dataSensitivity": "low",
+        "jobName": "",
+        "tagsText": "",
+        "config": selected_schema.get("defaults_config", {}),
+        "params": selected_schema.get("defaults_params", {}),
+        "runPrompt": "",
+        "formSchema": selected_schema,
+
+        # UI / Status Metadata
+        "loading": False,
+        "lastDraftCapturedAt": "",
+        "pendingAiSuggestions": [],
+        "rawAiPatchText": "",
+        "suggestionsPending": False,
+        "createdJob": None,
+        "lastRun": None,
+    }
 
 
 def _ui_state_to_draft(state: dict[str, Any] | None) -> dict[str, Any]:
@@ -339,525 +402,6 @@ def _capture_draft_snapshot(current_state: dict[str, Any] | None) -> dict[str, A
         "draft_json": json.dumps(draft, indent=2, sort_keys=True),
     }
 
-
-# ── Secret redaction for AI-visible / printed snapshots ──────────────────────
-
-def _redact_draft(draft: dict[str, Any] | None) -> dict[str, Any]:
-    """Copy of `draft` with config/params secret values masked."""
-    if not isinstance(draft, dict):
-        return {}
-    schema = draft.get("form_schema") or {}
-    return {
-        **draft,
-        "config": utils.mask_secrets(draft.get("config"), utils.secret_field_names(schema.get("config_fields"))),
-        "params": utils.mask_secrets(draft.get("params"), utils.secret_field_names(schema.get("params_fields"))),
-    }
-
-
-def _redact_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
-    """Snapshot with both `draft` and `draft_json` redacted.
-
-    The server-side store keeps the full snapshot; this builds the safe-for-AI
-    view at tool return time.
-    """
-    if not isinstance(snapshot, dict):
-        return {}
-    redacted = _redact_draft(snapshot.get("draft", {}))
-    return {
-        **snapshot,
-        "draft": redacted,
-        "draft_json": json.dumps(redacted, indent=2, sort_keys=True),
-    }
-
-
-def _sync_ui_result_to_form_actions(*, silent: bool = False) -> list[Any]:
-    """Sync a UI-shaped tool result into live Prefab state. `silent` drops the toast
-    (used by the iframe's on_mount auto-sync so reopens don't chatter)."""
-    actions: list[Any] = [
-        *[SetState(k, getattr(RESULT, k)) for k, *_ in _SCALAR_FIELDS],
-        *[SetState(k, getattr(RESULT, k)) for k in _CONTAINER_FIELDS],
-        SetState("loading", False),
-    ]
-    if not silent:
-        actions.append(ShowToast(RESULT.message, variant="success"))
-    return actions
-
-
-# ── Styling ──────────────────────────────────────────────────────────────────
-
-APP_STYLES = """
-:root { color-scheme: dark; }
-
-html, body, #root {
-  background:
-    radial-gradient(circle at 12% 12%, rgba(54, 255, 181, 0.22), transparent 26%),
-    radial-gradient(circle at 88% 10%, rgba(86, 191, 255, 0.24), transparent 24%),
-    linear-gradient(180deg, #07110f 0%, #0c1717 36%, #111b1e 100%) !important;
-  color: #edf7f2;
-}
-
-.pf-app-root {
-  color: #edf7f2 !important;
-  font-family: "Avenir Next", "Inter", "Segoe UI", sans-serif;
-}
-
-.pf-app-root input,
-.pf-app-root textarea,
-.pf-app-root select,
-.pf-app-root [role="combobox"],
-.pf-app-root [role="textbox"] {
-  color: #f5fffb !important;
-  background: rgba(9, 20, 20, 0.82) !important;
-  border: 1px solid rgba(109, 247, 187, 0.18) !important;
-}
-
-.pf-app-root input::placeholder,
-.pf-app-root textarea::placeholder { color: #93a7a0 !important; }
-.pf-app-root select option { color: #081111 !important; }
-
-.pf-app-root .designer-hero,
-.pf-app-root.designer-hero,
-.designer-hero.pf-card,
-.designer-hero {
-  background:
-    radial-gradient(circle at top left, rgba(82, 255, 173, 0.18), transparent 28%),
-    radial-gradient(circle at bottom right, rgba(93, 162, 255, 0.16), transparent 34%),
-    linear-gradient(135deg, rgba(8, 18, 19, 0.96) 0%, rgba(15, 31, 30, 0.96) 52%, rgba(22, 46, 39, 0.96) 100%) !important;
-  border: 1px solid rgba(112, 244, 191, 0.28) !important;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.38) !important;
-  color: #edf7f2 !important;
-}
-
-.pf-app-root .glass-card,
-.glass-card.pf-card,
-.glass-card {
-  background: linear-gradient(180deg, rgba(11, 24, 24, 0.92) 0%, rgba(14, 29, 29, 0.94) 100%) !important;
-  border: 1px solid rgba(120, 245, 194, 0.18) !important;
-  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.28) !important;
-  backdrop-filter: blur(14px);
-  color: #edf7f2 !important;
-}
-"""
-
-_ENVIRONMENT_OPTIONS: list[tuple[str, str]] = [
-    ("dev", "Development"),
-    ("semi-prod", "Semi-Prod"),
-    ("prod", "Production"),
-]
-
-_SENSITIVITY_OPTIONS: list[tuple[str, str]] = [
-    ("low", "Low"),
-    ("medium", "Medium"),
-    ("high", "High"),
-]
-
-MAX_CONNECTOR_OPTIONS = 24
-MAX_ENUM_OPTIONS = 12
-
-
-# ── Dynamic form rendering ───────────────────────────────────────────────────
-
-def _render_enum_select(state_root: str, field: Any, option_count: int) -> None:
-    enum_text = str(field.enum).strip()
-    enum_path = enum_text[2:-2].strip() if enum_text.startswith("{{") and enum_text.endswith("}}") else enum_text
-    with Select(name=f"{state_root}.{field.name}"):
-        for i in range(option_count):
-            option = f"{{{{ {enum_path}.{i} }}}}"
-            SelectOption(option, value=option)
-
-
-def _render_length_unrolled(length_expr: Any, max_n: int, build_with_count) -> None:
-    """Unroll a `len(list) == N` ladder so a parent component renders N direct children.
-
-    Prefab `Select` / `Combobox` only materialize options that are direct
-    children — `ForEach` inside them is not expanded by the client renderer.
-    Workaround: pre-build N static option slots that each bind to
-    `array.{i}.value` via template literals, and pick the right N at render
-    time via `If`/`Elif` against the runtime list length.
-
-    `build_with_count(n)` is invoked inside each branch with the option count.
-    """
-    with If(length_expr == 1):
-        build_with_count(1)
-    for count in range(2, max_n + 1):
-        with Elif(length_expr == count):
-            build_with_count(count)
-    with Elif(length_expr > max_n):
-        build_with_count(max_n)
-
-
-def _render_enum_select_for_field(state_root: str, field: Any) -> None:
-    _render_length_unrolled(
-        field.enum.length(),
-        MAX_ENUM_OPTIONS,
-        lambda n: _render_enum_select(state_root, field, n),
-    )
-
-
-def _render_field_loop(state_root: str, fields_path: str) -> None:
-    """Render a list of FieldSpec entries as a dynamic form.
-
-    `state_root` is the state object the inputs write into (e.g. "config" or "params").
-    `fields_path` is the state path of the FieldSpec list (e.g. "formSchema.config_fields").
-    """
-    with ForEach(fields_path) as field:
-        with Field():
-            with Row(gap=2, align="center", css_class="flex-wrap"):
-                FieldTitle(field.name)
-                with If(field.required):
-                    Badge("required", variant="outline")
-                with If(field.sensitive | field.write_only):
-                    Badge("sensitive", variant="outline")
-            with If(field.description):
-                FieldDescription(field.description)
-            with FieldContent():
-                # 1. enum -> select
-                with If(field.enum):
-                    _render_enum_select_for_field(state_root, field)
-                # 2. boolean -> checkbox
-                with Elif(field.type == "boolean"):
-                    Checkbox(name=f"{state_root}.{field.name}", label=field.name)
-                # 3. secret -> password input
-                with Elif(field.format == "secret"):
-                    Input(
-                        name=f"{state_root}.{field.name}",
-                        input_type="password",
-                        placeholder=field.placeholder,
-                    )
-                # 4. numeric
-                with Elif((field.type == "integer") | (field.type == "number")):
-                    Input(
-                        name=f"{state_root}.{field.name}",
-                        input_type="number",
-                        placeholder=field.placeholder,
-                    )
-                # 5. array / object -> JSON textarea
-                with Elif((field.type == "array") | (field.type == "object")):
-                    Textarea(
-                        name=f"{state_root}.{field.name}",
-                        placeholder="JSON value",
-                        rows=4,
-                    )
-                # 6. fallback -> plain text
-                with Else():
-                    Input(
-                        name=f"{state_root}.{field.name}",
-                        placeholder=field.placeholder,
-                    )
-    # TODO: support nested FieldSpecs with dotted name paths (e.g. `config.db_password`)
-    # to render arbitrary-depth JSON sub-trees as their own form sections.
-
-
-def _render_connector_combobox(option_count: int) -> None:
-    """One Combobox with `option_count` static ComboboxOption children.
-
-    Each option binds to `availableConnectors.{i}` via a template literal so
-    the picker stays reactive as the array updates. See `_render_length_unrolled`
-    for why options can't be a `ForEach` child of `Combobox`.
-    """
-    with Combobox(name="connectorPickerValue", placeholder="Add a connector..."):
-        for i in range(option_count):
-            ComboboxOption(
-                label=f"{{{{ availableConnectors.{i}.label }}}}",
-                value=f"{{{{ availableConnectors.{i}.value }}}}",
-            )
-
-
-def _render_connectors_combobox() -> None:
-    """Reactive connector picker over `availableConnectors` (capped at MAX)."""
-    _render_length_unrolled(
-        STATE.availableConnectors.length(),
-        MAX_CONNECTOR_OPTIONS,
-        _render_connector_combobox,
-    )
-    with If(STATE.availableConnectors.length() > MAX_CONNECTOR_OPTIONS):
-        Alert(
-            variant="warning",
-            title="Connector list truncated",
-            description=f"Showing the first {MAX_CONNECTOR_OPTIONS} connector options.",
-        )
-
-
-# ── Action factories ─────────────────────────────────────────────────────────
-# `_call()` wraps the shared error-toast + loading-off settle pattern so each
-# factory only spells out its success-specific steps. Factories that nest
-# CallHandler/CallTool branches stay inline.
-
-_ERR = ShowToast(ERROR, variant="error")
-
-
-def _call(
-    tool: str,
-    *,
-    arguments: dict[str, Any] | None = None,
-    on_success: list[Any] | None = None,
-    set_loading: bool = True,
-) -> CallTool:
-    """CallTool with auto-appended loading-off + error toast handling."""
-    success = list(on_success or [])
-    error: list[Any] = [_ERR]
-    if set_loading:
-        success.append(SetState("loading", False))
-        error.insert(0, SetState("loading", False))
-    kwargs: dict[str, Any] = {"on_success": success, "on_error": error}
-    if arguments is not None:
-        kwargs["arguments"] = arguments
-    return CallTool(tool, **kwargs)
-
-
-def _refresh_job_types_action(*, set_loading: bool = True) -> CallTool:
-    return _call(
-        "list_job_types",
-        on_success=[SetState("availableJobTypes", RESULT.items)],
-        set_loading=set_loading,
-    )
-
-
-def _refresh_connectors_action(
-    *,
-    job_type_expr: Any | None = None,
-    environment_expr: Any | None = None,
-    set_loading: bool = True,
-) -> CallTool:
-    return _call(
-        "list_connectors",
-        arguments={
-            "job_type": job_type_expr if job_type_expr is not None else STATE.selectedJobType,
-            "environment": environment_expr if environment_expr is not None else STATE.environment,
-        },
-        on_success=[SetState("availableConnectors", RESULT.items)],
-        set_loading=set_loading,
-    )
-
-
-def _load_schema_action(job_type_expr: Any) -> CallTool:
-    return _call(
-        "get_form_schema",
-        arguments={"job_type": job_type_expr},
-        on_success=[
-            CallHandler(
-                "applySchemaChange",
-                arguments={"schema": RESULT},
-                on_error=[SetState("loading", False), _ERR],
-            ),
-        ],
-    )
-
-
-def _create_job_action(*, environment_expr: Any | None = None) -> CallTool:
-    return _call(
-        "create_job",
-        arguments={
-            "name": STATE.jobName,
-            "type": STATE.selectedJobType,
-            "connector": "{{ selectedConnectors.0 || connectorText }}",
-            "environment": environment_expr if environment_expr is not None else STATE.environment,
-            "config": STATE.config,
-            "data_sensitivity": STATE.dataSensitivity,
-            "tags_text": STATE.tagsText,
-        },
-        on_success=[
-            SetState("createdJob", RESULT),
-            ShowToast("Job registered.", variant="success"),
-            RequestDisplayMode("fullscreen"),
-        ],
-    )
-
-
-def _trigger_run_action(*, environment_expr: Any | None = None) -> CallTool:
-    return _call(
-        "trigger_run",
-        arguments={
-            "job_id": STATE.createdJob.id,
-            "action": "run",
-            "target_environment": environment_expr if environment_expr is not None else STATE.environment,
-            "params": STATE.params,
-            "prompt": STATE.runPrompt,
-        },
-        on_success=[
-            SetState("lastRun", RESULT),
-            ShowToast("Run queued.", variant="success"),
-        ],
-    )
-
-
-def _capture_current_draft_action(
-    *,
-    on_success: list[Any] | None = None,
-) -> CallHandler:
-    return CallHandler(
-        "buildDraftCapture",
-        on_success=CallTool(
-            "capture_current_draft",
-            arguments={"current_state": RESULT},
-            on_success=on_success or [],
-            on_error=[ShowToast(ERROR, variant="error")],
-        ),
-        on_error=[ShowToast(ERROR, variant="error")],
-    )
-
-
-def _capture_then(*extra: Any) -> list[Any]:
-    """Build a capture-current-draft action that always updates AI context, then chains `extra`.
-
-    Used by both 'Update AI context' (no extra) and 'Get AI feedback' (adds a SendMessage).
-    """
-    return [
-        _capture_current_draft_action(
-            on_success=[
-                SetState("lastDraftCapturedAt", RESULT.captured_at),
-                UpdateContext(structured_content={"control_center_job_designer": RESULT.draft}),
-                *extra,
-            ],
-        ),
-    ]
-
-
-def _update_ai_context_action() -> list[Any]:
-    return _capture_then(ShowToast("AI context updated.", variant="success"))
-
-
-def _preview_ai_suggested_changes_action() -> CallHandler:
-    return CallHandler(
-        "buildDraftCapture",
-        on_success=CallTool(
-            "preview_ai_suggested_changes",
-            arguments={"current_state": RESULT},
-            on_success=[
-                SetState("pendingAiSuggestions", RESULT.changes),
-                SetState("rawAiPatchText", RESULT.raw_changes_text),
-                SetState("suggestionsPending", True),
-                SetState("loading", False),
-            ],
-            on_error=[
-                SetState("loading", False),
-                ShowToast(ERROR, variant="error"),
-            ],
-        ),
-        on_error=[
-            SetState("loading", False),
-            ShowToast(ERROR, variant="error"),
-        ],
-    )
-
-
-def _review_setup_action() -> list[Any]:
-    return _capture_then(
-        SendMessage(
-            "Please review the current Control Center job setup. Check connectors, "
-            "required config, and missing fields before I create it.\n\n"
-            "If you recommend concrete edits, call `patch_draft_snapshot` with only "
-            "the fields that should change. Do not send the full current state. "
-            "Current draft JSON:\n```json\n{{ $result.draft_json }}\n```"
-        ),
-    )
-
-
-# ── AI Draft Preview / Diff Helpers ──────────────────────────────────────────
-
-_MISSING = object()
-
-
-def _display_value(value: Any, *, limit: int | None = 180) -> str:
-    """Render a draft value for the diff UI.
-
-    `—` for missing/empty, JSON for dicts/lists, `str()` otherwise; truncated
-    with an ellipsis past `limit` chars.
-    """
-    if value is _MISSING or value is None or value == "":
-        return "—"
-    if isinstance(value, (dict, list)):
-        text = json.dumps(value, ensure_ascii=False, sort_keys=True)
-    else:
-        text = str(value)
-    if limit is None:
-        return text
-    return text[:limit] + ("…" if len(text) > limit else "")
-
-
-def _get_diff_items(current: dict, proposed: dict):
-    """Yield `(item_id, label, ui_key, field_key, before, after)` for visible
-    draft fields.
-
-    Scalars come from `_SCALAR_FIELDS`; `selected_connectors` is the only list
-    surfaced. `available_connectors` is intentionally excluded — UI plumbing,
-    not user intent.
-    """
-    diff_fields: list[tuple[str, str, str]] = [
-        (draft_key, ui_key, label)
-        for ui_key, draft_key, label, *_ in _SCALAR_FIELDS
-    ]
-    diff_fields.append(("selected_connectors", "selectedConnectors", "Selected connectors"))
-
-    for draft_key, ui_key, label in diff_fields:
-        yield (
-            draft_key,
-            label,
-            ui_key,
-            None,
-            current.get(draft_key, _MISSING),
-            proposed.get(draft_key, _MISSING),
-        )
-
-    for section in ("config", "params"):
-        before_section = utils.patch_dict(current.get(section)) or {}
-        after_section = utils.patch_dict(proposed.get(section)) or {}
-        for field_key, after in after_section.items():
-            yield (
-                f"{section}.{field_key}",
-                f"{section.title()}: {field_key.replace('_', ' ').title()}",
-                section,
-                field_key,
-                before_section.get(field_key, _MISSING),
-                after,
-            )
-
-
-def _flatten_draft_changes(
-    current_draft: dict[str, Any],
-    proposed_draft: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Build the UI-ready list of proposed changes for the preview overlay."""
-    changes: list[dict[str, Any]] = []
-
-    for item_id, label, ui_key, field_key, before, after in _get_diff_items(
-        current_draft,
-        proposed_draft,
-    ):
-        if after is _MISSING or before == after:
-            continue
-
-        updates = (
-            {ui_key: {field_key: after}}
-            if field_key is not None
-            else {ui_key: after}
-        )
-
-        is_addition = before in (_MISSING, None, "", [], {})
-        is_deletion = after in (_MISSING, None, "", [], {})
-        before_css = "text-muted-foreground opacity-40" if is_addition else "text-red-400/80 line-through decoration-red-500/50"
-        after_css = "text-muted-foreground opacity-40" if is_deletion else "text-emerald-400 font-medium"
-
-        before_text = _display_value(before)
-        after_text = _display_value(after)
-        is_long = len(before_text) > 35 or len(after_text) > 35
-
-        changes.append({
-            "id": item_id,
-            "label": label,
-            "before": before_text,
-            "after": after_text,
-            "before_css": before_css,
-            "after_css": after_css,
-            "is_long": is_long,
-            "selected": True,
-            "updates": updates,
-        })
-
-    return changes
-
-
-# ── Patch engine ─────────────────────────────────────────────────────────────
 
 def _apply_designer_patch(
     current_state: dict[str, Any] | None,
@@ -989,6 +533,182 @@ def _apply_designer_patch(
     }
 
 
+def _redact_draft(draft: dict[str, Any] | None) -> dict[str, Any]:
+    """Copy of `draft` with config/params secret values masked."""
+    if not isinstance(draft, dict):
+        return {}
+    schema = draft.get("form_schema") or {}
+    return {
+        **draft,
+        "config": utils.mask_secrets(draft.get("config"), utils.secret_field_names(schema.get("config_fields"))),
+        "params": utils.mask_secrets(draft.get("params"), utils.secret_field_names(schema.get("params_fields"))),
+    }
+
+
+def _redact_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    """Snapshot with both `draft` and `draft_json` redacted.
+
+    The server-side store keeps the full snapshot; this builds the safe-for-AI
+    view at tool return time.
+    """
+    if not isinstance(snapshot, dict):
+        return {}
+    redacted = _redact_draft(snapshot.get("draft", {}))
+    return {
+        **snapshot,
+        "draft": redacted,
+        "draft_json": json.dumps(redacted, indent=2, sort_keys=True),
+    }
+
+
+# -----------------------------------------------------------------------------
+# AI Draft Diff Formatting
+# -----------------------------------------------------------------------------
+
+_MISSING = object()
+
+
+def _display_value(value: Any, *, limit: int | None = 180) -> str:
+    """Render a draft value for the diff UI.
+
+    `—` for missing/empty, JSON for dicts/lists, `str()` otherwise; truncated
+    with an ellipsis past `limit` chars.
+    """
+    if value is _MISSING or value is None or value == "":
+        return "—"
+    if isinstance(value, (dict, list)):
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    else:
+        text = str(value)
+    if limit is None:
+        return text
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def _get_diff_items(current: dict, proposed: dict):
+    """Yield `(item_id, label, ui_key, field_key, before, after)` for visible
+    draft fields.
+
+    Scalars come from `_SCALAR_FIELDS`; `selected_connectors` is the only list
+    surfaced. `available_connectors` is intentionally excluded — UI plumbing,
+    not user intent.
+    """
+    diff_fields: list[tuple[str, str, str]] = [
+        (draft_key, ui_key, label)
+        for ui_key, draft_key, label, *_ in _SCALAR_FIELDS
+    ]
+    diff_fields.append(("selected_connectors", "selectedConnectors", "Selected connectors"))
+
+    for draft_key, ui_key, label in diff_fields:
+        yield (
+            draft_key,
+            label,
+            ui_key,
+            None,
+            current.get(draft_key, _MISSING),
+            proposed.get(draft_key, _MISSING),
+        )
+
+    for section in ("config", "params"):
+        before_section = utils.patch_dict(current.get(section)) or {}
+        after_section = utils.patch_dict(proposed.get(section)) or {}
+        for field_key, after in after_section.items():
+            yield (
+                f"{section}.{field_key}",
+                f"{section.title()}: {field_key.replace('_', ' ').title()}",
+                section,
+                field_key,
+                before_section.get(field_key, _MISSING),
+                after,
+            )
+
+
+def _flatten_draft_changes(
+    current_draft: dict[str, Any],
+    proposed_draft: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Build the UI-ready list of proposed changes for the preview overlay."""
+    changes: list[dict[str, Any]] = []
+
+    for item_id, label, ui_key, field_key, before, after in _get_diff_items(
+        current_draft,
+        proposed_draft,
+    ):
+        if after is _MISSING or before == after:
+            continue
+
+        updates = (
+            {ui_key: {field_key: after}}
+            if field_key is not None
+            else {ui_key: after}
+        )
+
+        is_addition = before in (_MISSING, None, "", [], {})
+        is_deletion = after in (_MISSING, None, "", [], {})
+        before_css = "text-muted-foreground opacity-40" if is_addition else "text-red-400/80 line-through decoration-red-500/50"
+        after_css = "text-muted-foreground opacity-40" if is_deletion else "text-emerald-400 font-medium"
+
+        before_text = _display_value(before)
+        after_text = _display_value(after)
+        is_long = len(before_text) > 35 or len(after_text) > 35
+
+        changes.append({
+            "id": item_id,
+            "label": label,
+            "before": before_text,
+            "after": after_text,
+            "before_css": before_css,
+            "after_css": after_css,
+            "is_long": is_long,
+            "selected": True,
+            "updates": updates,
+        })
+
+    return changes
+
+
+# -----------------------------------------------------------------------------
+# Prefab Action Factories
+# -----------------------------------------------------------------------------
+
+# `_call()` centralizes the common loading cleanup and error toast so each
+# action factory only defines its tool arguments and success-specific steps.
+# Actions with nested `CallHandler` or `CallTool` branches remain explicit/inline.
+_ERR = ShowToast(ERROR, variant="error")
+
+
+def _call(
+    tool: str,
+    *,
+    arguments: dict[str, Any] | None = None,
+    on_success: list[Any] | None = None,
+    set_loading: bool = True,
+) -> CallTool:
+    """Build a `CallTool` with standard success and error handling."""
+    success = list(on_success or [])
+    error: list[Any] = [_ERR]
+    if set_loading:
+        success.append(SetState("loading", False))
+        error.insert(0, SetState("loading", False))
+    kwargs: dict[str, Any] = {"on_success": success, "on_error": error}
+    if arguments is not None:
+        kwargs["arguments"] = arguments
+    return CallTool(tool, **kwargs)
+
+
+def _sync_ui_result_to_form_actions(*, silent: bool = False) -> list[Any]:
+    """Sync a UI-shaped tool result into live Prefab state. `silent` drops the toast
+    (used by the iframe's on_mount auto-sync so reopens don't chatter)."""
+    actions: list[Any] = [
+        *[SetState(k, getattr(RESULT, k)) for k, *_ in _SCALAR_FIELDS],
+        *[SetState(k, getattr(RESULT, k)) for k in _CONTAINER_FIELDS],
+        SetState("loading", False),
+    ]
+    if not silent:
+        actions.append(ShowToast(RESULT.message, variant="success"))
+    return actions
+
+
 def _sync_ai_draft_to_form_action(*, silent: bool = False) -> CallTool:
     """Pull the latest server-side draft into the iframe via SetState.
 
@@ -1005,6 +725,344 @@ def _sync_ai_draft_to_form_action(*, silent: bool = False) -> CallTool:
         on_error=on_error,
     )
 
+
+def _refresh_job_types_action(*, set_loading: bool = True) -> CallTool:
+    return _call(
+        "list_job_types",
+        on_success=[SetState("availableJobTypes", RESULT.items)],
+        set_loading=set_loading,
+    )
+
+
+def _refresh_connectors_action(
+    *,
+    job_type_expr: Any | None = None,
+    environment_expr: Any | None = None,
+    set_loading: bool = True,
+) -> CallTool:
+    return _call(
+        "list_connectors",
+        arguments={
+            "job_type": job_type_expr if job_type_expr is not None else STATE.selectedJobType,
+            "environment": environment_expr if environment_expr is not None else STATE.environment,
+        },
+        on_success=[SetState("availableConnectors", RESULT.items)],
+        set_loading=set_loading,
+    )
+
+
+def _load_schema_action(job_type_expr: Any) -> CallTool:
+    return _call(
+        "get_form_schema",
+        arguments={"job_type": job_type_expr},
+        on_success=[
+            CallHandler(
+                "applySchemaChange",
+                arguments={"schema": RESULT},
+                on_error=[SetState("loading", False), _ERR],
+            ),
+        ],
+    )
+
+
+def _create_job_action(*, environment_expr: Any | None = None) -> CallTool:
+    return _call(
+        "create_job",
+        arguments={
+            "name": STATE.jobName,
+            "type": STATE.selectedJobType,
+            "connector": "{{ selectedConnectors.0 || connectorText }}",
+            "environment": environment_expr if environment_expr is not None else STATE.environment,
+            "config": STATE.config,
+            "data_sensitivity": STATE.dataSensitivity,
+            "tags_text": STATE.tagsText,
+        },
+        on_success=[
+            SetState("createdJob", RESULT),
+            ShowToast("Job registered.", variant="success"),
+            RequestDisplayMode("fullscreen"),
+        ],
+    )
+
+
+def _trigger_run_action(*, environment_expr: Any | None = None) -> CallTool:
+    return _call(
+        "trigger_run",
+        arguments={
+            "job_id": STATE.createdJob.id,
+            "action": "run",
+            "target_environment": environment_expr if environment_expr is not None else STATE.environment,
+            "params": STATE.params,
+            "prompt": STATE.runPrompt,
+        },
+        on_success=[
+            SetState("lastRun", RESULT),
+            ShowToast("Run queued.", variant="success"),
+        ],
+    )
+
+
+def _capture_current_draft_action(
+    *,
+    on_success: list[Any] | None = None,
+) -> CallHandler:
+    return CallHandler(
+        "buildDraftCapture",
+        on_success=CallTool(
+            "capture_current_draft",
+            arguments={"current_state": RESULT},
+            on_success=on_success or [],
+            on_error=[ShowToast(ERROR, variant="error")],
+        ),
+        on_error=[ShowToast(ERROR, variant="error")],
+    )
+
+
+#
+def _capture_and_update_context(*after_update: Any) -> list[Any]:
+    """Capture the live draft, publish it to model's context, then run any additional actions."""
+    return [
+        _capture_current_draft_action(
+            on_success=[
+                SetState("lastDraftCapturedAt", RESULT.captured_at),
+                UpdateContext(structured_content={"control_center_job_designer": RESULT.draft}),
+                *after_update,
+            ],
+        ),
+    ]
+
+
+def _update_ai_context_action() -> list[Any]:
+    return _capture_and_update_context(ShowToast("AI context updated.", variant="success"))
+
+
+def _preview_ai_suggested_changes_action() -> CallHandler:
+    return CallHandler(
+        "buildDraftCapture",
+        on_success=CallTool(
+            "preview_ai_suggested_changes",
+            arguments={"current_state": RESULT},
+            on_success=[
+                SetState("pendingAiSuggestions", RESULT.changes),
+                SetState("rawAiPatchText", RESULT.raw_changes_text),
+                SetState("suggestionsPending", True),
+                SetState("loading", False),
+            ],
+            on_error=[
+                SetState("loading", False),
+                ShowToast(ERROR, variant="error"),
+            ],
+        ),
+        on_error=[
+            SetState("loading", False),
+            ShowToast(ERROR, variant="error"),
+        ],
+    )
+
+
+def _review_draft_action() -> list[Any]:
+    return _capture_and_update_context(
+        SendMessage(
+            "Review the current configured job for readiness. Check its connectors, "
+            "required config and params, and any missing or inconsistent fields.\n\n"
+            "If changes are warranted, call `patch_draft_snapshot` with a finalized patch "
+            "containing only the fields that should change. Do not resend unchanged state."
+            "\nCurrent job draft JSON:\n```json\n{{ $result.draft_json }}\n```"
+        ),
+    )
+
+
+# -----------------------------------------------------------------------------
+# Dynamic Form Rendering
+# -----------------------------------------------------------------------------
+
+MAX_CONNECTOR_OPTIONS = 24
+MAX_ENUM_OPTIONS = 12
+
+
+def _render_enum_select(state_root: str, field: Any, option_count: int) -> None:
+    enum_text = str(field.enum).strip()
+    enum_path = enum_text[2:-2].strip() if enum_text.startswith("{{") and enum_text.endswith("}}") else enum_text
+    with Select(name=f"{state_root}.{field.name}"):
+        for i in range(option_count):
+            option = f"{{{{ {enum_path}.{i} }}}}"
+            SelectOption(option, value=option)
+
+
+def _render_length_unrolled(length_expr: Any, max_n: int, build_with_count) -> None:
+    """Unroll a `len(list) == N` ladder so a parent component renders N direct children.
+
+    Prefab `Select` / `Combobox` only materialize options that are direct
+    children — `ForEach` inside them is not expanded by the client renderer.
+    Workaround: pre-build N static option slots that each bind to
+    `array.{i}.value` via template literals, and pick the right N at render
+    time via `If`/`Elif` against the runtime list length.
+
+    `build_with_count(n)` is invoked inside each branch with the option count.
+    """
+    with If(length_expr == 1):
+        build_with_count(1)
+    for count in range(2, max_n + 1):
+        with Elif(length_expr == count):
+            build_with_count(count)
+    with Elif(length_expr > max_n):
+        build_with_count(max_n)
+
+
+def _render_enum_select_for_field(state_root: str, field: Any) -> None:
+    _render_length_unrolled(
+        field.enum.length(),
+        MAX_ENUM_OPTIONS,
+        lambda n: _render_enum_select(state_root, field, n),
+    )
+
+
+def _render_field_loop(state_root: str, fields_path: str) -> None:
+    """Render a list of FieldSpec entries as a dynamic form.
+
+    `state_root` is the state object the inputs write into (e.g. "config" or "params").
+    `fields_path` is the state path of the FieldSpec list (e.g. "formSchema.config_fields").
+    """
+    with ForEach(fields_path) as field:
+        with Field():
+            with Row(gap=2, align="center", css_class="flex-wrap"):
+                FieldTitle(field.name)
+                with If(field.required):
+                    Badge("required", variant="outline")
+                with If(field.sensitive | field.write_only):
+                    Badge("sensitive", variant="outline")
+            with If(field.description):
+                FieldDescription(field.description)
+            with FieldContent():
+                # 1. enum -> select
+                with If(field.enum):
+                    _render_enum_select_for_field(state_root, field)
+                # 2. boolean -> checkbox
+                with Elif(field.type == "boolean"):
+                    Checkbox(name=f"{state_root}.{field.name}", label=field.name)
+                # 3. secret -> password input
+                with Elif(field.format == "secret"):
+                    Input(
+                        name=f"{state_root}.{field.name}",
+                        input_type="password",
+                        placeholder=field.placeholder,
+                    )
+                # 4. numeric
+                with Elif((field.type == "integer") | (field.type == "number")):
+                    Input(
+                        name=f"{state_root}.{field.name}",
+                        input_type="number",
+                        placeholder=field.placeholder,
+                    )
+                # 5. array / object -> JSON textarea
+                with Elif((field.type == "array") | (field.type == "object")):
+                    Textarea(
+                        name=f"{state_root}.{field.name}",
+                        placeholder="JSON value",
+                        rows=4,
+                    )
+                # 6. fallback -> plain text
+                with Else():
+                    Input(
+                        name=f"{state_root}.{field.name}",
+                        placeholder=field.placeholder,
+                    )
+    # TODO: support nested FieldSpecs with dotted name paths (e.g. `config.db_password`)
+    # to render arbitrary-depth JSON sub-trees as their own form sections.
+
+
+def _render_connector_combobox(option_count: int) -> None:
+    """One Combobox with `option_count` static ComboboxOption children.
+
+    Each option binds to `availableConnectors.{i}` via a template literal so
+    the picker stays reactive as the array updates. See `_render_length_unrolled`
+    for why options can't be a `ForEach` child of `Combobox`.
+    """
+    with Combobox(name="connectorPickerValue", placeholder="Add a connector..."):
+        for i in range(option_count):
+            ComboboxOption(
+                label=f"{{{{ availableConnectors.{i}.label }}}}",
+                value=f"{{{{ availableConnectors.{i}.value }}}}",
+            )
+
+
+def _render_connectors_combobox() -> None:
+    """Reactive connector picker over `availableConnectors` (capped at MAX)."""
+    _render_length_unrolled(
+        STATE.availableConnectors.length(),
+        MAX_CONNECTOR_OPTIONS,
+        _render_connector_combobox,
+    )
+    with If(STATE.availableConnectors.length() > MAX_CONNECTOR_OPTIONS):
+        Alert(
+            variant="warning",
+            title="Connector list truncated",
+            description=f"Showing the first {MAX_CONNECTOR_OPTIONS} connector options.",
+        )
+
+
+# -----------------------------------------------------------------------------
+# Custom App Styling
+# -----------------------------------------------------------------------------
+
+APP_STYLES = """
+:root { color-scheme: dark; }
+
+html, body, #root {
+  background:
+    radial-gradient(circle at 12% 12%, rgba(54, 255, 181, 0.22), transparent 26%),
+    radial-gradient(circle at 88% 10%, rgba(86, 191, 255, 0.24), transparent 24%),
+    linear-gradient(180deg, #07110f 0%, #0c1717 36%, #111b1e 100%) !important;
+  color: #edf7f2;
+}
+
+.pf-app-root {
+  color: #edf7f2 !important;
+  font-family: "Avenir Next", "Inter", "Segoe UI", sans-serif;
+}
+
+.pf-app-root input,
+.pf-app-root textarea,
+.pf-app-root select,
+.pf-app-root [role="combobox"],
+.pf-app-root [role="textbox"] {
+  color: #f5fffb !important;
+  background: rgba(9, 20, 20, 0.82) !important;
+  border: 1px solid rgba(109, 247, 187, 0.18) !important;
+}
+
+.pf-app-root input::placeholder,
+.pf-app-root textarea::placeholder { color: #93a7a0 !important; }
+.pf-app-root select option { color: #081111 !important; }
+
+.pf-app-root .designer-hero,
+.pf-app-root.designer-hero,
+.designer-hero.pf-card,
+.designer-hero {
+  background:
+    radial-gradient(circle at top left, rgba(82, 255, 173, 0.18), transparent 28%),
+    radial-gradient(circle at bottom right, rgba(93, 162, 255, 0.16), transparent 34%),
+    linear-gradient(135deg, rgba(8, 18, 19, 0.96) 0%, rgba(15, 31, 30, 0.96) 52%, rgba(22, 46, 39, 0.96) 100%) !important;
+  border: 1px solid rgba(112, 244, 191, 0.28) !important;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.38) !important;
+  color: #edf7f2 !important;
+}
+
+.pf-app-root .glass-card,
+.glass-card.pf-card,
+.glass-card {
+  background: linear-gradient(180deg, rgba(11, 24, 24, 0.92) 0%, rgba(14, 29, 29, 0.94) 100%) !important;
+  border: 1px solid rgba(120, 245, 194, 0.18) !important;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.28) !important;
+  backdrop-filter: blur(14px);
+  color: #edf7f2 !important;
+}
+"""
+
+
+# -----------------------------------------------------------------------------
+# MCP App Assembly & Server Setup
+# -----------------------------------------------------------------------------
 
 def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
     selected_job_type = initial_state.get("selectedJobType") or ""
@@ -1024,8 +1082,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
     create_action = _create_job_action(environment_expr=environment_ref)
     run_action = _trigger_run_action(environment_expr=environment_ref)
     update_ai_context_action = _update_ai_context_action()
-    review_setup_action = _review_setup_action()
-    sync_ai_draft_action = _sync_ai_draft_to_form_action()
+    review_draft_action = _review_draft_action()
     preview_ai_suggested_changes_action = _preview_ai_suggested_changes_action()
     # Build-time job type list — what we render into SelectOptions. Prefab Select
     # children must be static (see `_render_length_unrolled`), so post-boot
@@ -1365,7 +1422,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                         with Div(css_class="flex-1 min-w-0"):
                             initial_sensitivity = initial_state.get("dataSensitivity", "low")
                             with Select(name="dataSensitivity", value=initial_sensitivity or None):
-                                for value, opt_label in _SENSITIVITY_OPTIONS:
+                                for value, opt_label in _DATA_SENSITIVITY_OPTIONS:
                                     SelectOption(opt_label, value=value, selected=value == initial_sensitivity)
                     with Div(css_class="md:col-span-2"):
                         with Row(align="center", gap=3, css_class="w-full"):
@@ -1419,7 +1476,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                         "Get AI feedback",
                         icon="lightbulb",
                         variant="outline",
-                        on_click=review_setup_action,
+                        on_click=review_draft_action,
                     )
                     Button(
                         "Reset form",
@@ -1474,409 +1531,9 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
     )
 
 
-def _initial_state(
-    *,
-    job_types: list[dict] | None = None,
-    selected_type: str = "",
-    environment: str = "dev",
-) -> dict[str, Any]:
-    available_job_types = job_types or forms.static_job_types()
-    selected_schema = forms.resolve_job_type_schema_or_empty(selected_type)
-
-    resolved_selected_type = (selected_schema.get("type") or forms.normalize_job_type(selected_type) or "")
-
-    if selected_schema.get("type"):
-        available_job_types = forms.merge_job_type_summaries(available_job_types, [forms.job_type_summary(selected_schema)])
-
-    return {
-        "availableJobTypes": available_job_types,
-        "availableConnectors": selected_schema.get("connector_items", []),
-        "selectedJobType": resolved_selected_type,
-        "connectorPickerValue": "",  # Transient UI staging slot for the connector Combobox; never serialized into draft
-        "selectedConnectors": [],
-        "connectorText": "",
-        "intent": "",
-        "environment": environment,
-        "dataSensitivity": "low",
-        "jobName": "",
-        "tagsText": "",
-        "config": selected_schema.get("defaults_config", {}),
-        "params": selected_schema.get("defaults_params", {}),
-        "runPrompt": "",
-        "formSchema": selected_schema,
-
-        # UI / Status Metadata
-        "loading": False,
-        "lastDraftCapturedAt": "",
-        "pendingAiSuggestions": [],
-        "rawAiPatchText": "",
-        "suggestionsPending": False,
-        "createdJob": None,
-        "lastRun": None,
-    }
-
-
-# ── Resource CSP + tool-result resolver ──────────────────────────────────────
-
-def _resource_csp_for(app: PrefabApp) -> ResourceCSP:
-    csp = app.csp()
-    known = {"connect_domains", "style_domains", "script_domains", "resource_domains"}
-    unknown = set(csp) - known
-    if unknown:
-        raise RuntimeError(f"Prefab CSP added new keys: {unknown}")
-    merged = sorted(
-        set(
-            (csp.get("style_domains") or [])
-            + (csp.get("script_domains") or [])
-            + (csp.get("resource_domains") or [])
-        )
-    ) or None
-    return ResourceCSP(
-        connect_domains=csp.get("connect_domains") or None,
-        resource_domains=merged,
-    )
-
-
-def _resolve_prefab_tool(tool_ref: Any) -> ResolvedTool:
-    """Tell Prefab to expose FastMCP structuredContent as `$result`."""
-    name = tool_ref if isinstance(tool_ref, str) else getattr(tool_ref, "__name__", str(tool_ref))
-    return ResolvedTool(name=name, unwrap_result=True)
-
-
-# ── Connector risk profile (MCP tool annotations → visualization) ────────────
-# Tool authors set ToolAnnotations hints on each tool. They're advisory — not
-# always truthful — but they're the only structured risk signal in the MCP
-# spec today. When a hint is None the spec's paranoid defaults apply
-# (destructive=True, openWorld=True). Better signal will come from execution-
-# time evidence (which scopes a tool actually touches), but that's down the road.
-
-_RISK_BANDS: tuple[tuple[str, str, str, str], ...] = (
-    # (band_key, label, badge_variant, left-border css for the tool card)
-    ("high",    "High risk",   "destructive", "border-l-4 border-rose-500/70"),
-    ("medium",  "Medium risk", "warning",     "border-l-4 border-amber-500/70"),
-    ("low",     "Low risk",    "success",     "border-l-4 border-emerald-500/60"),
-    ("unknown", "Unannotated", "outline",     "border-l-4 border-zinc-500/40"),
-)
-
-_SPEC_HINT_DEFAULTS = {
-    "readOnlyHint": False,
-    "destructiveHint": True,
-    "idempotentHint": False,
-    "openWorldHint": True,
-}
-
-
-def _classify_tool_risk(tool_annotations: dict[str, Any] | None) -> dict[str, Any]:
-    """Bucket an MCP ToolAnnotations dict into a risk band + flag summary."""
-    if not isinstance(tool_annotations, dict):
-        return {
-            "band": "unknown",
-            "title": "",
-            "flags": ["unannotated"],
-            "read_only": False, "destructive": False, "idempotent": False, "open_world": False,
-        }
-    resolved = {
-        k: (tool_annotations[k] if tool_annotations.get(k) is not None else default)
-        for k, default in _SPEC_HINT_DEFAULTS.items()
-    }
-    read_only = bool(resolved["readOnlyHint"])
-    destructive = bool(resolved["destructiveHint"])
-    idempotent = bool(resolved["idempotentHint"])
-    open_world = bool(resolved["openWorldHint"])
-
-    if read_only and not open_world:
-        band = "low"
-    elif read_only:
-        band = "medium"  # reads from external systems — still some risk
-    elif destructive and open_world:
-        band = "high"
-    elif destructive or open_world:
-        band = "medium"
-    else:
-        band = "low"
-
-    flags: list[str] = []
-    if read_only:
-        flags.append("read-only")
-    if destructive:
-        flags.append("destructive")
-    if idempotent:
-        flags.append("idempotent")
-    if open_world:
-        flags.append("external")
-
-    return {
-        "band": band,
-        "title": str(tool_annotations.get("title") or ""),
-        "read_only": read_only, "destructive": destructive,
-        "idempotent": idempotent, "open_world": open_world,
-        "flags": flags,
-    }
-
-
-async def _fetch_connector_tool_profile(connector_name: str) -> dict[str, Any]:
-    """Probe `connector_name` for tools, classify each by risk, compute aggregates.
-
-    Adapted from `backend/scripts/check_registry.py::_probe_and_dump` — same
-    LLMClient connect/cleanup discipline, narrowed to one server's tools.
-    """
-    try:
-        from control_center.mcp import LLMClient
-        from control_center.registry import RegistryManager
-    except ImportError as exc:
-        return _profile_error(connector_name, f"missing dependency: {exc}")
-
-    manager = RegistryManager()
-    try:
-        cfg = manager.get_server_config(connector_name)
-    except Exception as exc:
-        return _profile_error(connector_name, f"registry lookup: {exc}")
-
-    client = LLMClient()
-    tools_data: list[dict[str, Any]] = []
-    try:
-        await client.connect_to_server(connector_name, cfg)
-        raw_tools = await client.list_tools(connector_name)
-        for t in raw_tools:
-            dump = t.model_dump(mode="json", exclude_none=False) if hasattr(t, "model_dump") else dict(t)
-            input_schema = dump.get("inputSchema") or {}
-            props = input_schema.get("properties") or {}
-            tools_data.append({
-                "name": dump.get("name", "?"),
-                "description": (dump.get("description") or "").strip(),
-                "param_count": len(props),
-                "required_count": len(input_schema.get("required") or []),
-                "has_output_schema": bool(dump.get("outputSchema")),
-                **_classify_tool_risk(dump.get("annotations")),
-            })
-    except Exception as exc:
-        return _profile_error(connector_name, f"probe failed: {exc}")
-    finally:
-        try:
-            await client.cleanup()
-        except Exception:
-            pass
-
-    band_order = {"high": 0, "medium": 1, "low": 2, "unknown": 3}
-    tools_data.sort(key=lambda t: (band_order.get(t["band"], 4), t["name"]))
-    band_counts = {b[0]: 0 for b in _RISK_BANDS}
-    for t in tools_data:
-        band_counts[t["band"]] = band_counts.get(t["band"], 0) + 1
-
-    return {
-        "connector": connector_name,
-        "ok": True,
-        "error": None,
-        "tool_count": len(tools_data),
-        "band_counts": band_counts,
-        "tools": tools_data,
-        "aggregates": _compute_profile_aggregates(tools_data),
-    }
-
-
-def _profile_error(connector: str, error: str) -> dict[str, Any]:
-    return {
-        "connector": connector, "ok": False, "error": error,
-        "tool_count": 0, "band_counts": {b[0]: 0 for b in _RISK_BANDS},
-        "tools": [], "aggregates": {},
-    }
-
-
-def _compute_profile_aggregates(tools: list[dict[str, Any]]) -> dict[str, Any]:
-    """Roll up tool list into summary stats for the at-launch overview.
-
-    - annotation_coverage: how many tools ship at least one explicit hint
-    - families: top tool-name prefixes (everything before the first `_`)
-    - param_complexity: 0 / 1-3 / 4+ buckets
-    - output_schema_coverage: how many tools declare an outputSchema
-    """
-    from collections import Counter
-
-    total = len(tools)
-    annotated = sum(1 for t in tools if t["band"] != "unknown")
-
-    # Family grouping: 1-token prefix is the default, but if one prefix
-    # swallows >70% of the tools (e.g. playwright's all-`browser_*`), fall
-    # back to 2-token prefixes for finer-grained signal.
-    def _prefix(name: str, depth: int) -> str:
-        parts = name.split("_", depth)
-        return "_".join(parts[:depth]) if len(parts) > depth else (parts[0] if parts else "?")
-    one = Counter(_prefix(t["name"], 1) for t in tools if t.get("name"))
-    fams = one
-    if total and one and one.most_common(1)[0][1] > 0.7 * total:
-        two = Counter(_prefix(t["name"], 2) for t in tools if t.get("name"))
-        if len(two) > len(one):
-            fams = two
-    pc = {"zero": 0, "few": 0, "many": 0}
-    for t in tools:
-        n = t.get("param_count", 0)
-        if n == 0: pc["zero"] += 1
-        elif n <= 3: pc["few"] += 1
-        else: pc["many"] += 1
-    out_schema = sum(1 for t in tools if t.get("has_output_schema"))
-
-    return {
-        "annotated": annotated,
-        "annotation_pct": round(100 * annotated / total) if total else 0,
-        "families": fams.most_common(8),
-        # "param_complexity": pc,
-        "output_schema_count": out_schema,
-        "output_schema_pct": round(100 * out_schema / total) if total else 0,
-    }
-
-
-def _build_risk_profile_app(profile: dict[str, Any]) -> PrefabApp:
-    """Render the connector-risk-profile UI."""
-    title = f"Risk profile: {profile['connector']}"
-
-    if not profile["ok"]:
-        with Column(gap=4, css_class="p-6 max-w-3xl") as view:
-            with Alert(variant="error"):
-                AlertTitle(f"Cannot probe '{profile['connector']}'")
-                AlertDescription(profile.get("error") or "Unknown error.")
-        return PrefabApp(
-            view=view, theme=Theme(mode="dark", gradient=False),
-            stylesheets=[APP_STYLES], title=title,
-        )
-
-    agg = profile.get("aggregates") or {}
-
-    with Column(gap=4, css_class="p-6 max-w-4xl") as view:
-        # ── Hero ─────────────────────────────────────────────────────────
-        with Card(css_class="designer-hero"):
-            with CardHeader():
-                with Column(gap=2):
-                    Badge("Connector risk profile", variant="outline")
-                    H1(profile["connector"])
-                    Muted(
-                        f"{profile['tool_count']} tools exposed. Risk is derived from "
-                        "MCP ToolAnnotations: author hints, not always truthful."
-                    )
-
-        # ── Risk band counters ───────────────────────────────────────────
-        with Grid(columns={"md": 4}, gap=3):
-            for key, label, variant, _border in _RISK_BANDS:
-                count = profile["band_counts"].get(key, 0)
-                with Card(css_class="glass-card text-center"):
-                    with CardContent():
-                        with Column(gap=1, css_class="items-center"):
-                            H1(str(count))
-                            Badge(label, variant=variant)
-
-        # ── Aggregate stats (annotation coverage, output schema, param mix) ─
-        if profile["tool_count"]:
-            with Card(css_class="glass-card"):
-                with CardContent():
-                    with Grid(columns={"md": 2}, gap=4):
-                        # Annotation coverage with progress bar
-                        with Column(gap=2):
-                            with Row(gap=2, align="center", css_class="justify-between"):
-                                Small("Annotated by author")
-                                Text(content=f"{agg.get('annotated', 0)} / {profile['tool_count']} ({agg.get('annotation_pct', 0)}%)",
-                                     css_class="font-mono text-sm")
-                            Progress(
-                                value=agg.get("annotation_pct", 0),
-                                max=100,
-                                variant="success" if agg.get("annotation_pct", 0) >= 80 else ("warning" if agg.get("annotation_pct", 0) >= 50 else "destructive"),
-                            )
-                        # Output schema coverage
-                        with Column(gap=2):
-                            with Row(gap=2, align="center", css_class="justify-between"):
-                                Small("Output schema declared")
-                                Text(content=f"{agg.get('output_schema_count', 0)} / {profile['tool_count']} ({agg.get('output_schema_pct', 0)}%)",
-                                     css_class="font-mono text-sm")
-                            Progress(
-                                value=agg.get("output_schema_pct", 0),
-                                max=100,
-                                variant="info",
-                            )
-
-        # ── Tool families ────────────────────────────────────────────────
-        families = agg.get("families") or []
-        # Render only when there's actual variety AND at least one cluster — a
-        # list of all-singletons (every tool in its own "family") is noise.
-        if len(families) > 1 and any(count > 1 for _, count in families):
-            with Card(css_class="glass-card"):
-                with CardHeader():
-                    CardTitle("Tool families")
-                    CardDescription("Grouped by name prefix.")
-                with CardContent():
-                    with Row(gap=2, css_class="flex-wrap"):
-                        for prefix, count in families:
-                            Badge(f"{prefix} × {count}", variant="outline")
-
-        # ── Tools grouped by risk band, collapsed by default ─────────────
-        if not profile["tools"]:
-            with Card(css_class="glass-card"):
-                with CardContent():
-                    Muted("This connector exposes no tools.")
-        else:
-            with Card(css_class="glass-card"):
-                with CardHeader():
-                    CardTitle("Tools")
-                    CardDescription("Click a risk band to expand. Sorted by name within each band.")
-                with CardContent():
-                    with Accordion():
-                        for band_key, band_label, badge_variant, border_css in _RISK_BANDS:
-                            tools_in_band = [t for t in profile["tools"] if t["band"] == band_key]
-                            if not tools_in_band:
-                                continue
-                            with AccordionItem(
-                                value=f"band-{band_key}",
-                                title=f"{band_label}  ·  {len(tools_in_band)} tool{'s' if len(tools_in_band) != 1 else ''}",
-                            ):
-                                with Column(gap=2):
-                                    for tool in tools_in_band:
-                                        _render_tool_row(tool, badge_variant, border_css)
-
-    return PrefabApp(
-        view=view, theme=Theme(mode="dark", gradient=False),
-        stylesheets=[APP_STYLES], title=title,
-    )
-
-
-def _render_tool_row(tool: dict[str, Any], badge_variant: str, border_css: str) -> None:
-    """One compact row inside a risk-band AccordionItem."""
-    with Card(css_class=f"glass-card {border_css}"):
-        with CardContent():
-            with Column(gap=2):
-                with Row(gap=2, align="center", css_class="flex-wrap"):
-                    Text(content=tool["name"], css_class="font-mono font-semibold")
-                    for flag in tool["flags"]:
-                        Badge(flag, variant=badge_variant if flag == "destructive" else "outline")
-                    # Param signal: e.g. "3 params · 1 required"
-                    n = tool.get("param_count", 0)
-                    if n:
-                        req = tool.get("required_count", 0)
-                        param_text = f"{n} param{'s' if n != 1 else ''}"
-                        if req:
-                            param_text += f" · {req} required"
-                        Muted(param_text, css_class="text-xs")
-                if tool["description"]:
-                    desc = tool["description"]
-                    Muted(desc[:280] + ("…" if len(desc) > 280 else ""))
-
-
-# ── Server build ─────────────────────────────────────────────────────────────
-
-class _HideInternalToolsMiddleware(Middleware):
-    """Hide tools tagged `internal` from tools/list while keeping them callable.
-
-    Prefab's `AppConfig(visibility=["app"])` does the right thing for listing
-    but FastMCP 3.2.4 also blocks `tools/call` for those tools, which breaks
-    the iframe's AppBridge. Using a tag + middleware preserves the
-    "hidden but callable" semantics the Prefab docs describe.
-    """
-
-    async def on_list_tools(self, ctx, call_next):
-        tools = await call_next(ctx)
-        return [t for t in tools if "internal" not in (t.tags or set())]
-
-
 def build_server() -> FastMCP:
     mcp = FastMCP(SERVER_NAME, instructions=SERVER_DESCRIPTION)
 
-    # mcp.add_middleware(_HideInternalToolsMiddleware())
     mcp.add_provider(
         Approval(
             title="Apply AI Changes?",
@@ -2301,6 +1958,328 @@ def build_server() -> FastMCP:
 
     return mcp
 
+# -----------------------------------------------------------------------------
+# EXTENSION: Connector Risk Profile MCP App
+# -----------------------------------------------------------------------------
+
+
+# ── Connector risk profile (MCP tool annotations → visualization) ────────────
+# Tool authors set ToolAnnotations hints on each tool. They're advisory — not
+# always truthful — but they're the only structured risk signal in the MCP
+# spec today. When a hint is None the spec's paranoid defaults apply
+# (destructive=True, openWorld=True). Better signal will come from execution-
+# time evidence (which scopes a tool actually touches), but that's down the road.
+
+_RISK_BANDS: tuple[tuple[str, str, str, str], ...] = (
+    # (band_key, label, badge_variant, left-border css for the tool card)
+    ("high",    "High risk",   "destructive", "border-l-4 border-rose-500/70"),
+    ("medium",  "Medium risk", "warning",     "border-l-4 border-amber-500/70"),
+    ("low",     "Low risk",    "success",     "border-l-4 border-emerald-500/60"),
+    ("unknown", "Unannotated", "outline",     "border-l-4 border-zinc-500/40"),
+)
+
+_SPEC_HINT_DEFAULTS = {
+    "readOnlyHint": False,
+    "destructiveHint": True,
+    "idempotentHint": False,
+    "openWorldHint": True,
+}
+
+
+def _classify_tool_risk(tool_annotations: dict[str, Any] | None) -> dict[str, Any]:
+    """Bucket an MCP ToolAnnotations dict into a risk band + flag summary."""
+    if not isinstance(tool_annotations, dict):
+        return {
+            "band": "unknown",
+            "title": "",
+            "flags": ["unannotated"],
+            "read_only": False, "destructive": False, "idempotent": False, "open_world": False,
+        }
+    resolved = {
+        k: (tool_annotations[k] if tool_annotations.get(k) is not None else default)
+        for k, default in _SPEC_HINT_DEFAULTS.items()
+    }
+    read_only = bool(resolved["readOnlyHint"])
+    destructive = bool(resolved["destructiveHint"])
+    idempotent = bool(resolved["idempotentHint"])
+    open_world = bool(resolved["openWorldHint"])
+
+    if read_only and not open_world:
+        band = "low"
+    elif read_only:
+        band = "medium"  # reads from external systems — still some risk
+    elif destructive and open_world:
+        band = "high"
+    elif destructive or open_world:
+        band = "medium"
+    else:
+        band = "low"
+
+    flags: list[str] = []
+    if read_only:
+        flags.append("read-only")
+    if destructive:
+        flags.append("destructive")
+    if idempotent:
+        flags.append("idempotent")
+    if open_world:
+        flags.append("external")
+
+    return {
+        "band": band,
+        "title": str(tool_annotations.get("title") or ""),
+        "read_only": read_only, "destructive": destructive,
+        "idempotent": idempotent, "open_world": open_world,
+        "flags": flags,
+    }
+
+
+async def _fetch_connector_tool_profile(connector_name: str) -> dict[str, Any]:
+    """Probe `connector_name` for tools, classify each by risk, compute aggregates.
+
+    Adapted from `backend/scripts/check_registry.py::_probe_and_dump` — same
+    LLMClient connect/cleanup discipline, narrowed to one server's tools.
+    """
+    try:
+        from control_center.mcp import LLMClient
+        from control_center.registry import RegistryManager
+    except ImportError as exc:
+        return _profile_error(connector_name, f"missing dependency: {exc}")
+
+    manager = RegistryManager()
+    try:
+        cfg = manager.get_server_config(connector_name)
+    except Exception as exc:
+        return _profile_error(connector_name, f"registry lookup: {exc}")
+
+    client = LLMClient()
+    tools_data: list[dict[str, Any]] = []
+    try:
+        await client.connect_to_server(connector_name, cfg)
+        raw_tools = await client.list_tools(connector_name)
+        for t in raw_tools:
+            dump = t.model_dump(mode="json", exclude_none=False) if hasattr(t, "model_dump") else dict(t)
+            input_schema = dump.get("inputSchema") or {}
+            props = input_schema.get("properties") or {}
+            tools_data.append({
+                "name": dump.get("name", "?"),
+                "description": (dump.get("description") or "").strip(),
+                "param_count": len(props),
+                "required_count": len(input_schema.get("required") or []),
+                "has_output_schema": bool(dump.get("outputSchema")),
+                **_classify_tool_risk(dump.get("annotations")),
+            })
+    except Exception as exc:
+        return _profile_error(connector_name, f"probe failed: {exc}")
+    finally:
+        try:
+            await client.cleanup()
+        except Exception:
+            pass
+
+    band_order = {"high": 0, "medium": 1, "low": 2, "unknown": 3}
+    tools_data.sort(key=lambda t: (band_order.get(t["band"], 4), t["name"]))
+    band_counts = {b[0]: 0 for b in _RISK_BANDS}
+    for t in tools_data:
+        band_counts[t["band"]] = band_counts.get(t["band"], 0) + 1
+
+    return {
+        "connector": connector_name,
+        "ok": True,
+        "error": None,
+        "tool_count": len(tools_data),
+        "band_counts": band_counts,
+        "tools": tools_data,
+        "aggregates": _compute_profile_aggregates(tools_data),
+    }
+
+
+def _profile_error(connector: str, error: str) -> dict[str, Any]:
+    return {
+        "connector": connector, "ok": False, "error": error,
+        "tool_count": 0, "band_counts": {b[0]: 0 for b in _RISK_BANDS},
+        "tools": [], "aggregates": {},
+    }
+
+
+def _compute_profile_aggregates(tools: list[dict[str, Any]]) -> dict[str, Any]:
+    """Roll up tool list into summary stats for the at-launch overview.
+
+    - annotation_coverage: how many tools ship at least one explicit hint
+    - families: top tool-name prefixes (everything before the first `_`)
+    - param_complexity: 0 / 1-3 / 4+ buckets
+    - output_schema_coverage: how many tools declare an outputSchema
+    """
+    from collections import Counter
+
+    total = len(tools)
+    annotated = sum(1 for t in tools if t["band"] != "unknown")
+
+    # Family grouping: 1-token prefix is the default, but if one prefix
+    # swallows >70% of the tools (e.g. playwright's all-`browser_*`), fall
+    # back to 2-token prefixes for finer-grained signal.
+    def _prefix(name: str, depth: int) -> str:
+        parts = name.split("_", depth)
+        return "_".join(parts[:depth]) if len(parts) > depth else (parts[0] if parts else "?")
+    one = Counter(_prefix(t["name"], 1) for t in tools if t.get("name"))
+    fams = one
+    if total and one and one.most_common(1)[0][1] > 0.7 * total:
+        two = Counter(_prefix(t["name"], 2) for t in tools if t.get("name"))
+        if len(two) > len(one):
+            fams = two
+    pc = {"zero": 0, "few": 0, "many": 0}
+    for t in tools:
+        n = t.get("param_count", 0)
+        if n == 0: pc["zero"] += 1
+        elif n <= 3: pc["few"] += 1
+        else: pc["many"] += 1
+    out_schema = sum(1 for t in tools if t.get("has_output_schema"))
+
+    return {
+        "annotated": annotated,
+        "annotation_pct": round(100 * annotated / total) if total else 0,
+        "families": fams.most_common(8),
+        # "param_complexity": pc,
+        "output_schema_count": out_schema,
+        "output_schema_pct": round(100 * out_schema / total) if total else 0,
+    }
+
+
+def _build_risk_profile_app(profile: dict[str, Any]) -> PrefabApp:
+    """Render the connector-risk-profile UI."""
+    title = f"Risk profile: {profile['connector']}"
+
+    if not profile["ok"]:
+        with Column(gap=4, css_class="p-6 max-w-3xl") as view:
+            with Alert(variant="error"):
+                AlertTitle(f"Cannot probe '{profile['connector']}'")
+                AlertDescription(profile.get("error") or "Unknown error.")
+        return PrefabApp(
+            view=view, theme=Theme(mode="dark", gradient=False),
+            stylesheets=[APP_STYLES], title=title,
+        )
+
+    agg = profile.get("aggregates") or {}
+
+    with Column(gap=4, css_class="p-6 max-w-4xl") as view:
+        # ── Hero ─────────────────────────────────────────────────────────
+        with Card(css_class="designer-hero"):
+            with CardHeader():
+                with Column(gap=2):
+                    Badge("Connector risk profile", variant="outline")
+                    H1(profile["connector"])
+                    Muted(
+                        f"{profile['tool_count']} tools exposed. Risk is derived from "
+                        "MCP ToolAnnotations: author hints, not always truthful."
+                    )
+
+        # ── Risk band counters ───────────────────────────────────────────
+        with Grid(columns={"md": 4}, gap=3):
+            for key, label, variant, _border in _RISK_BANDS:
+                count = profile["band_counts"].get(key, 0)
+                with Card(css_class="glass-card text-center"):
+                    with CardContent():
+                        with Column(gap=1, css_class="items-center"):
+                            H1(str(count))
+                            Badge(label, variant=variant)
+
+        # ── Aggregate stats (annotation coverage, output schema, param mix) ─
+        if profile["tool_count"]:
+            with Card(css_class="glass-card"):
+                with CardContent():
+                    with Grid(columns={"md": 2}, gap=4):
+                        # Annotation coverage with progress bar
+                        with Column(gap=2):
+                            with Row(gap=2, align="center", css_class="justify-between"):
+                                Small("Annotated by author")
+                                Text(content=f"{agg.get('annotated', 0)} / {profile['tool_count']} ({agg.get('annotation_pct', 0)}%)",
+                                     css_class="font-mono text-sm")
+                            Progress(
+                                value=agg.get("annotation_pct", 0),
+                                max=100,
+                                variant="success" if agg.get("annotation_pct", 0) >= 80 else ("warning" if agg.get("annotation_pct", 0) >= 50 else "destructive"),
+                            )
+                        # Output schema coverage
+                        with Column(gap=2):
+                            with Row(gap=2, align="center", css_class="justify-between"):
+                                Small("Output schema declared")
+                                Text(content=f"{agg.get('output_schema_count', 0)} / {profile['tool_count']} ({agg.get('output_schema_pct', 0)}%)",
+                                     css_class="font-mono text-sm")
+                            Progress(
+                                value=agg.get("output_schema_pct", 0),
+                                max=100,
+                                variant="info",
+                            )
+
+        # ── Tool families ────────────────────────────────────────────────
+        families = agg.get("families") or []
+        # Render only when there's actual variety AND at least one cluster — a
+        # list of all-singletons (every tool in its own "family") is noise.
+        if len(families) > 1 and any(count > 1 for _, count in families):
+            with Card(css_class="glass-card"):
+                with CardHeader():
+                    CardTitle("Tool families")
+                    CardDescription("Grouped by name prefix.")
+                with CardContent():
+                    with Row(gap=2, css_class="flex-wrap"):
+                        for prefix, count in families:
+                            Badge(f"{prefix} × {count}", variant="outline")
+
+        # ── Tools grouped by risk band, collapsed by default ─────────────
+        if not profile["tools"]:
+            with Card(css_class="glass-card"):
+                with CardContent():
+                    Muted("This connector exposes no tools.")
+        else:
+            with Card(css_class="glass-card"):
+                with CardHeader():
+                    CardTitle("Tools")
+                    CardDescription("Click a risk band to expand. Sorted by name within each band.")
+                with CardContent():
+                    with Accordion():
+                        for band_key, band_label, badge_variant, border_css in _RISK_BANDS:
+                            tools_in_band = [t for t in profile["tools"] if t["band"] == band_key]
+                            if not tools_in_band:
+                                continue
+                            with AccordionItem(
+                                value=f"band-{band_key}",
+                                title=f"{band_label}  ·  {len(tools_in_band)} tool{'s' if len(tools_in_band) != 1 else ''}",
+                            ):
+                                with Column(gap=2):
+                                    for tool in tools_in_band:
+                                        _render_tool_row(tool, badge_variant, border_css)
+
+    return PrefabApp(
+        view=view, theme=Theme(mode="dark", gradient=False),
+        stylesheets=[APP_STYLES], title=title,
+    )
+
+
+def _render_tool_row(tool: dict[str, Any], badge_variant: str, border_css: str) -> None:
+    """One compact row inside a risk-band AccordionItem."""
+    with Card(css_class=f"glass-card {border_css}"):
+        with CardContent():
+            with Column(gap=2):
+                with Row(gap=2, align="center", css_class="flex-wrap"):
+                    Text(content=tool["name"], css_class="font-mono font-semibold")
+                    for flag in tool["flags"]:
+                        Badge(flag, variant=badge_variant if flag == "destructive" else "outline")
+                    # Param signal: e.g. "3 params · 1 required"
+                    n = tool.get("param_count", 0)
+                    if n:
+                        req = tool.get("required_count", 0)
+                        param_text = f"{n} param{'s' if n != 1 else ''}"
+                        if req:
+                            param_text += f" · {req} required"
+                        Muted(param_text, css_class="text-xs")
+                if tool["description"]:
+                    desc = tool["description"]
+                    Muted(desc[:280] + ("…" if len(desc) > 280 else ""))
+
+
+# -----------------------------------------------------------------------------
+# Control Center MCP Server Initialization
+# -----------------------------------------------------------------------------
 
 mcp = build_server()
 
