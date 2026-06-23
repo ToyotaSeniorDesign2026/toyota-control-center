@@ -3,8 +3,7 @@
 Interactive Prefab app for authoring Control Center jobs. The form is
 contract-driven: built-in types come from `control_center.specs.KNOWN_CONTRACTS`,
 and API-discovered types fall back to the backend's form-schema endpoint. The
-config/params section renders dynamically from each contract's `FieldSpec`
-list (text/number/boolean/select/secret).
+config/params section renders dynamically from each contract's `FieldSpec` list.
 
 Three authoring paths feed the same draft:
     - Manual edits in the iframe form.
@@ -14,19 +13,20 @@ Three authoring paths feed the same draft:
       via `job_generation.generate_job_draft_from_intent`.
 
 Module layout (4 files total):
-    server.py        — this file. Prefab UI tree, MCP tools, draft↔UI plumbing,
-                       action factories. Edit this when iterating on UI/tools.
-    form_schema.py   — JobTypeContract ↔ UI form-payload translation, connector
-                       resolution, /job-types response parsing. Stable surface.
-    utils.py         — stateless helpers: shared httpx.Client, JSON-ish/template
-                       shape coercion (patch_list/patch_dict), secret masking,
-                       JS handler trim. No domain knowledge.
+    server.py         — this file. Prefab UI tree, MCP tools, draft↔UI plumbing,
+                        action factories. Edit this when iterating on UI/tools.
+    forms.py          — JobTypeContract ↔ UI form-payload translation, connector
+                        resolution, /job-types response parsing. Stable surface.
+    utils.py          — domain-free helpers: shared `httpx.Client`, JSON-ish/template
+                        shape coercion (`patch_list`/`patch_dict`), secret masking,
+                        JS handler trim.
     job_generation.py — two-step Instructor flow that backs `generate_full_job_draft`.
 
-Backend wiring (HTTP, via utils.api_get / utils.api_post):
+Backend wiring (HTTP, via `utils.api_get` / `utils.api_post`):
     GET  /job-types                         list/discover dynamic types
     GET  /job-types/{type}/form-schema      schema fallback for dynamic types
     GET  /connectors                        list registered connectors
+    GET  /jobs/{job_id}                     look up a job's type for param coercion
     POST /jobs                              create a job
     POST /jobs/{job_id}/runs                trigger a run
 
@@ -131,7 +131,7 @@ APP_RESOURCE_URI = "ui://control-center/job-designer.html"
 APP_RESOURCE_DOMAIN = "https://control-center-job-creator.local"
 
 # Shared JavaScript helpers injected into handlers that run in isolated scopes.
-# Schema-dependent reset values are computed server-side in form_schema._section_reset
+# Schema-dependent reset values are computed server-side in `forms._section_reset`
 # and exposed through `schema.reset_config` and `schema.reset_params`.
 _JS_HELPERS = utils.js_handler("""
     const asArray = (v) => Array.isArray(v) ? v : [];
@@ -256,7 +256,8 @@ def _resource_csp_for(app: PrefabApp) -> ResourceCSP:
 
 def _resolve_prefab_tool(tool_ref: Any) -> ResolvedTool:
     """Resolve a Prefab tool reference to its registered FastMCP name."""
-    # TODO: Resolve FastMCP metadata, test if `unwrap_result` is still apt to expose structuredContent as `$result`."""
+    # TODO: Resolve FastMCP metadata; verify `unwrap_result` is still needed to
+    # expose structuredContent as `$result`.
     name = tool_ref if isinstance(tool_ref, str) else getattr(tool_ref, "__name__", str(tool_ref))
     return ResolvedTool(name=name, unwrap_result=True)
 
@@ -282,11 +283,12 @@ _DATA_SENSITIVITY_OPTIONS: list[tuple[str, str]] = [
 # are the AI-facing representation used for snapshots, suggestions, and patches.
 #
 # AI tools submit partial draft patches. `_apply_designer_patch` resolves field
-# aliases and maps those changes back into UI state. Secrets are redacted only
-# when a draft crosses the app boundary; iframe state retains original values.
+# aliases and maps those changes back into UI state. Secrets are masked only in
+# AI-facing tool returns (`_redact_snapshot`); the iframe sync path keeps real values.
 #
-# `_SCALAR_FIELDS` defines all scalar UI <-> draft mappings. Container fields (config, params,
-# connectors, formSchema) remain explicit, as each requires its own conversion and patch behavior.
+# `_SCALAR_FIELDS` defines all scalar UI <-> draft mappings. Container fields
+# (`config`, `params`, connectors, `formSchema`) remain explicit, as each requires
+# its own conversion and patch behavior.
 
 _SCALAR_FIELDS: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
     # ui_key, draft_key, label, patch_aliases, default
@@ -390,9 +392,9 @@ def _draft_to_ui_state(draft: dict[str, Any] | None) -> dict[str, Any]:
 def _capture_draft_snapshot(current_state: dict[str, Any] | None) -> dict[str, Any]:
     """Capture Prefab/UI state as the latest AI-visible draft snapshot.
 
-    The stored draft holds FULL values (including secrets). Redaction runs at
+    The stored draft holds full values (including secrets). Redaction runs at
     MCP tool return time so the iframe sync path keeps real values while
-    AI/print surfaces see masks. See `_redact_snapshot`.
+    AI-facing surfaces see masks. See `_redact_snapshot`.
     """
     draft = _ui_state_to_draft(current_state)
     return {
@@ -413,9 +415,11 @@ def _apply_designer_patch(
       • `current_state` is Prefab/UI-shaped state.
       • `patch` may use either UI-style or AI/draft-style aliases.
       • Omitted fields are preserved.
-      • `config`/`params` merge into existing values.
+      • `config`/`params` merge into existing values (after a schema swap, into
+        the new contract's defaults).
       • `replace_config`/`replace_params` replace the whole object.
-      • A `selectedJobType` change reloads the schema and resets connectors.
+      • A `selectedJobType` change reloads the schema and replaces
+        `availableConnectors`; `selectedConnectors` is left untouched.
       • Return value is UI-shaped so Prefab can `SetState` directly.
     """
     if current_state is not None and not isinstance(current_state, dict):
@@ -534,7 +538,7 @@ def _apply_designer_patch(
 
 
 def _redact_draft(draft: dict[str, Any] | None) -> dict[str, Any]:
-    """Copy of `draft` with config/params secret values masked."""
+    """Copy of `draft` with `config`/`params` secret values masked."""
     if not isinstance(draft, dict):
         return {}
     schema = draft.get("form_schema") or {}
@@ -697,8 +701,11 @@ def _call(
 
 
 def _sync_ui_result_to_form_actions(*, silent: bool = False) -> list[Any]:
-    """Sync a UI-shaped tool result into live Prefab state. `silent` drops the toast
-    (used by the iframe's on_mount auto-sync so reopens don't chatter)."""
+    """Sync a UI-shaped tool result into live Prefab state.
+
+    `silent=True` drops the success toast (used by the iframe's on_mount
+    auto-sync so reopens don't chatter).
+    """
     actions: list[Any] = [
         *[SetState(k, getattr(RESULT, k)) for k, *_ in _SCALAR_FIELDS],
         *[SetState(k, getattr(RESULT, k)) for k in _CONTAINER_FIELDS],
@@ -818,9 +825,8 @@ def _capture_current_draft_action(
     )
 
 
-#
 def _capture_and_update_context(*after_update: Any) -> list[Any]:
-    """Capture the live draft, publish it to model's context, then run any additional actions."""
+    """Capture the live draft, publish it to the model's context, then run `after_update`."""
     return [
         _capture_current_draft_action(
             on_success=[
@@ -894,8 +900,8 @@ def _render_length_unrolled(length_expr: Any, max_n: int, build_with_count) -> N
 
     Prefab `Select` / `Combobox` only materialize options that are direct
     children — `ForEach` inside them is not expanded by the client renderer.
-    Workaround: pre-build N static option slots that each bind to
-    `array.{i}.value` via template literals, and pick the right N at render
+    Workaround: pre-build N static option slots that each bind to a
+    `list.{i}` path via template literals, and pick the right N at render
     time via `If`/`Elif` against the runtime list length.
 
     `build_with_count(n)` is invoked inside each branch with the option count.
@@ -920,8 +926,8 @@ def _render_enum_select_for_field(state_root: str, field: Any) -> None:
 def _render_field_loop(state_root: str, fields_path: str) -> None:
     """Render a list of FieldSpec entries as a dynamic form.
 
-    `state_root` is the state object the inputs write into (e.g. "config" or "params").
-    `fields_path` is the state path of the FieldSpec list (e.g. "formSchema.config_fields").
+    `state_root` is the state object the inputs write into (e.g. `config` or `params`).
+    `fields_path` is the state path of the FieldSpec list (e.g. `formSchema.config_fields`).
     """
     with ForEach(fields_path) as field:
         with Field():
@@ -987,7 +993,7 @@ def _render_connector_combobox(option_count: int) -> None:
 
 
 def _render_connectors_combobox() -> None:
-    """Reactive connector picker over `availableConnectors` (capped at MAX)."""
+    """Reactive connector picker over `availableConnectors` (capped at `MAX_CONNECTOR_OPTIONS`)."""
     _render_length_unrolled(
         STATE.availableConnectors.length(),
         MAX_CONNECTOR_OPTIONS,
@@ -1084,13 +1090,13 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
     update_ai_context_action = _update_ai_context_action()
     review_draft_action = _review_draft_action()
     preview_ai_suggested_changes_action = _preview_ai_suggested_changes_action()
-    # Build-time job type list — what we render into SelectOptions. Prefab Select
-    # children must be static (see `_render_length_unrolled`), so post-boot
-    # `availableJobTypes` state updates won't add new options to this dropdown.
+    # Build-time job type list — rendered into static `SelectOption` children
+    # (see `_render_length_unrolled`), so post-boot `availableJobTypes` state
+    # updates won't add new options to this dropdown.
     static_job_types = list(initial_state.get("availableJobTypes") or [])
 
     # on_mount auto-sync: when the iframe first paints, immediately reconcile its
-    # local Prefab state with the server-side latest_draft_snapshot. Makes opening
+    # local Prefab state with the server-side `latest_draft_snapshot`. Makes opening
     # the designer in a fresh tab pick up any draft work already in flight from
     # another tab / earlier session. Silent so a clean designer doesn't toast.
     with Column(gap=4, on_mount=[_sync_ai_draft_to_form_action(silent=True)]) as view:
@@ -1113,7 +1119,7 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                     on_change=[
                                         SetState("selectedJobType", EVENT),
                                         # Pre-wipe contract-shaped state so values from the prior
-                                        # JobType can't bleed in before applySchemaChange runs.
+                                        # JobType can't bleed in before `applySchemaChange` runs.
                                         SetState("config", {}),
                                         SetState("params", {}),
                                         SetState("selectedConnectors", []),
@@ -1259,9 +1265,9 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                         Muted(f"Last AI context update: {STATE.lastDraftCapturedAt.datetime()}")
 
         # ── Intent-driven seed (Name + Intent, single row) ───────────────────
-        # The minimum a beginner needs to start a job: a label and an
-        # intent. Everything else can be filled out with the help of an
-        # LLM consuming the JobDraft Pydantic model.
+        # The minimum a beginner needs to start a job: a label and an intent.
+        # Everything else can be filled in later — manually, via AI patches, or
+        # all at once through `generate_full_job_draft`.
         with Card(css_class="glass-card"):
             with CardContent():
                 with Grid(columns={"md": 3}, gap=4):
@@ -1320,12 +1326,10 @@ def _build_app(initial_state: dict[str, Any]) -> PrefabApp:
                                             CallTool(
                                                 "generate_full_job_draft",
                                                 arguments={
-                                                    # Sole-value Prefab templates pass through as the literal string
-                                                    # when the referenced state key is undefined (per Prefab docs:
-                                                    # "{{ missing }}" → "{{ missing }}" rather than null/""). The
-                                                    # `| default` pipe forces resolution so the server gets a real
-                                                    # value, not the template text.
-
+                                                    # Sole-value Prefab templates pass through as literal text when
+                                                    # the state key is undefined ("{{ missing }}" → "{{ missing }}",
+                                                    # not null/""). The `| 'dev'` fallback pipe forces `environment`
+                                                    # to resolve to a real value, not the template text.
                                                     "intent": "{{ intent }}",
                                                     "job_name": "{{ jobName }}",
                                                     "environment": "{{ environment | 'dev' }}",
@@ -1546,14 +1550,14 @@ def build_server() -> FastMCP:
     bootstrap_types = forms.static_job_types()
     logger.info("Bootstrapped %d job types into the designer", len(bootstrap_types))
 
-    # ─── Draft state (single-session, single-client) ───────────────────────
+    # ── Draft state (single-session, single-client) ─────────────────────
     # These are process-global on purpose: this server is intended to run as a
     # personal/single-tenant designer where one user drives one iframe at a
     # time. Concurrent clients would stomp each other's drafts here.
     #
     # To scale to multi-tenant or production:
     #   - swap these for ctx.set_state / ctx.get_state on each tool (session-
-    #     keyed, isolated per mcp-session-id), or
+    #     keyed, isolated per mcp-session-id until MCP 2026-07-28 Spec), or
     #   - keep the same shape but back it with a distributed store via
     #     FastMCP(..., session_state_store=RedisStore(...)) — see
     #     https://gofastmcp.com/servers/storage-backends
@@ -1591,8 +1595,8 @@ def build_server() -> FastMCP:
 
         # Idempotent by default: a second open (e.g. another tab, a re-issued
         # tool call) preserves whatever draft is already in flight so the
-        # iframe's on_mount auto-sync can pull it in. Pass reset=True for a
-        # fresh start that wipes both vars.
+        # iframe's on_mount auto-sync can pull it in. `reset=True` rebuilds
+        # both `iframe_boot_state` and `latest_draft_snapshot` from scratch.
         draft = latest_draft_snapshot.get("draft", {}) if isinstance(latest_draft_snapshot, dict) else {}
         has_work_in_progress = bool(
             draft.get("selected_job_type") or draft.get("intent") or draft.get("job_name")
@@ -1714,7 +1718,7 @@ def build_server() -> FastMCP:
             )
 
         latest_draft_snapshot = _capture_draft_snapshot(current_state)
-        # AI sees this via UpdateContext (iframe's _capture_current_draft_action).
+        # AI sees this via `UpdateContext` (iframe's `_capture_current_draft_action`).
         # Server-side store keeps real values; redact only the wire copy.
         return _redact_snapshot(latest_draft_snapshot)
 
@@ -1792,8 +1796,8 @@ def build_server() -> FastMCP:
             environment=(environment or "dev").strip().lower(),
         )
 
-        # Reuse the existing patch pipeline: it handles schema reload on type
-        # change, config/params merge semantics, and connector list resets.
+        # Reuse the patch pipeline: it handles schema reload on type change,
+        # config/params merge semantics, and the available-connector refresh.
         base_state = _draft_to_ui_state(latest_draft_snapshot.get("draft", {}))
         result = _apply_designer_patch(base_state, patch)
         latest_draft_snapshot = _capture_draft_snapshot(result)
@@ -1958,17 +1962,16 @@ def build_server() -> FastMCP:
 
     return mcp
 
+
 # -----------------------------------------------------------------------------
 # EXTENSION: Connector Risk Profile MCP App
 # -----------------------------------------------------------------------------
-
-
-# ── Connector risk profile (MCP tool annotations → visualization) ────────────
-# Tool authors set ToolAnnotations hints on each tool. They're advisory — not
-# always truthful — but they're the only structured risk signal in the MCP
-# spec today. When a hint is None the spec's paranoid defaults apply
-# (destructive=True, openWorld=True). Better signal will come from execution-
-# time evidence (which scopes a tool actually touches), but that's down the road.
+# Visualizes MCP ToolAnnotations as risk bands. Hints are author-set and
+# advisory — not always truthful — but they're the only structured risk signal
+# in the MCP spec today. When a hint is `None` the spec's paranoid defaults
+# apply (`destructiveHint=True`, `openWorldHint=True`). Better signal would be
+# execution-time evidence (which scopes a tool actually touches), but that's
+# down the road.
 
 _RISK_BANDS: tuple[tuple[str, str, str, str], ...] = (
     # (band_key, label, badge_variant, left-border css for the tool card)
@@ -2103,12 +2106,11 @@ def _profile_error(connector: str, error: str) -> dict[str, Any]:
 
 
 def _compute_profile_aggregates(tools: list[dict[str, Any]]) -> dict[str, Any]:
-    """Roll up tool list into summary stats for the at-launch overview.
+    """Roll up the tool list into summary stats for the overview cards.
 
-    - annotation_coverage: how many tools ship at least one explicit hint
-    - families: top tool-name prefixes (everything before the first `_`)
-    - param_complexity: 0 / 1-3 / 4+ buckets
-    - output_schema_coverage: how many tools declare an outputSchema
+    - `annotated` / `annotation_pct`: tools that ship at least one explicit hint
+    - `families`: top tool-name prefixes (see fallback logic below)
+    - `output_schema_count` / `output_schema_pct`: tools declaring an `outputSchema`
     """
     from collections import Counter
 
@@ -2183,7 +2185,7 @@ def _build_risk_profile_app(profile: dict[str, Any]) -> PrefabApp:
                             H1(str(count))
                             Badge(label, variant=variant)
 
-        # ── Aggregate stats (annotation coverage, output schema, param mix) ─
+        # ── Aggregate stats (annotation + output-schema coverage) ───────
         if profile["tool_count"]:
             with Card(css_class="glass-card"):
                 with CardContent():

@@ -363,7 +363,6 @@ def _job_type_metadata_for(form_schema: dict) -> dict[str, Any]:
 
 # ── Connector Extraction & Option Building ───────────────────────────────────
 
-
 def merge_connector_items(
     items: list[dict[str, Any]],
     allowed_connector_names: list[str],
@@ -464,7 +463,7 @@ def _connector_items_for_types(
 
 
 def _extract_connector_types(contract: dict) -> list[str]:
-    """Flatten `JobTypeContract.requires[*].names`, deduped, order preserved.
+    """Flatten `JobTypeContract.requires[*].names`, de-duped, order preserved.
 
     Handles current list-of-ExecutionRequirement shape, the pre-list single-dict
     shape, and the legacy top-level `connector_types` field on API-discovered
