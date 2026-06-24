@@ -50,3 +50,4 @@ generated/types/api-types.ts
 *.egg-info/
 backend/mcp_servers/sql-mcp-server/test.db
 /backend/mcp_servers/internal/control-center-mcp-app/.local/
+/backend/mcp_servers/internal/control-center-mcp-app/tests/examples

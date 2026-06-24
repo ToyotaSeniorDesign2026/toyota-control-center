@@ -1826,17 +1826,6 @@ def build_server() -> FastMCP:
         }
 
     @mcp.tool(
-        name="test_tool",
-        description="THIS WORK ????.",
-        app=AppConfig(resource_uri=APP_RESOURCE_URI, visibility=["app"]),
-    )
-    def get_current_draft_ui_state() -> dict[str, Any]:
-        return {
-            "status": "loaded",
-            "message": "YUP, IT WORKS.",
-        }
-
-    @mcp.tool(
         name="preview_ai_suggested_changes",
         description="Diff iframe form state against the latest AI draft.",
         app=AppConfig(resource_uri=APP_RESOURCE_URI, visibility=["app"]),
