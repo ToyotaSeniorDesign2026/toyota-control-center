@@ -49,6 +49,7 @@ from datetime import datetime, timezone
 from fastmcp import FastMCP
 from fastmcp.apps import AppConfig, ResourceCSP
 from fastmcp.apps.approval import Approval
+from fastmcp.server.middleware.logging import StructuredLoggingMiddleware
 from prefab_ui import PrefabApp
 from prefab_ui.app import ResolvedTool
 from prefab_ui.actions import PopState, SetState, ShowToast, CallHandler, CloseOverlay
@@ -116,6 +117,27 @@ from job_generation import generate_job_draft_from_intent
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+
+
+def log_tool_degradation(tool: str, exc: Exception, degraded_to: str) -> None:
+    """Emit a structured `tool_degraded` event when a tool catches an exception and
+    returns a degraded result or continues with a fallback instead of raising.
+
+    Because `StructuredLoggingMiddleware` sees only the tool's final return value, it
+    records degraded calls as `request_success` and misses the caught exception. This
+    function emits a `WARNING` event to the same JSON stream so degradations remain visible.
+    """
+    logger.warning(
+        json.dumps(
+            {
+                "event": "tool_degraded",
+                "tool": tool,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "degraded_to": degraded_to,
+            }
+        )
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -1627,7 +1649,7 @@ def build_server() -> FastMCP:
         try:
             items = [forms.job_type_summary(c) for c in forms.job_type_items(utils.api_get("/job-types"))]
         except Exception as exc:
-            logger.warning("list_job_types failed: %s", exc)
+            log_tool_degradation("list_job_types", exc, "static job types only (API-discovered types omitted)")
             items = []
         return {"items": forms.merge_job_type_summaries(forms.static_job_types(), items)}
 
@@ -1667,7 +1689,7 @@ def build_server() -> FastMCP:
         try:
             response = utils.api_get("/connectors", params=params or None)
         except Exception as exc:
-            logger.warning("list_connectors failed: %s", exc)
+            log_tool_degradation("list_connectors", exc, "empty connector list")
             response = {"items": []}
 
         items = response.get("items", []) if isinstance(response, dict) else (response or [])
@@ -1887,7 +1909,7 @@ def build_server() -> FastMCP:
             schema = forms.resolve_job_type_schema(normalized_type, allow_api_fallback=True)
             config = forms.coerce_field_values(schema["config_fields"], config or {})
         except Exception as exc:
-            logger.warning("create_job: schema coercion skipped, sending raw config: %s", exc)
+            log_tool_degradation("create_job", exc, "raw config (schema coercion skipped)")
             config = config or {}
 
         body = {
@@ -1920,7 +1942,7 @@ def build_server() -> FastMCP:
             schema = forms.resolve_job_type_schema(job["type"], allow_api_fallback=True)
             params = forms.coerce_field_values(schema["params_fields"], params or {})
         except Exception as exc:
-            logger.warning("trigger_run: param coercion skipped: %s", exc)
+            log_tool_degradation("trigger_run", exc, "raw params (param coercion skipped)")
             params = params or {}
 
         body: dict[str, Any] = {
@@ -2273,6 +2295,7 @@ def _render_tool_row(tool: dict[str, Any], badge_variant: str, border_css: str) 
 # -----------------------------------------------------------------------------
 
 mcp = build_server()
+mcp.add_middleware(StructuredLoggingMiddleware(include_payloads=True, logger=logger))
 
 
 if __name__ == "__main__":
